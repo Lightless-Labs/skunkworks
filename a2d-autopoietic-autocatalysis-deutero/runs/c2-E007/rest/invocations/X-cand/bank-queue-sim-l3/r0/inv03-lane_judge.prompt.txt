@@ -1,0 +1,481 @@
+SYSTEM:
+You are selecting and reviewing Rust solutions.
+
+TASK is exactly the programmer's task. Hidden acceptance tests check every
+numbered requirement. Candidate files are fallible even when public-green.
+
+Choose the candidate most likely to become fully correct with a small,
+well-founded repair. If public-green candidates are supplied, select among
+them. Audit the chosen file against the full task, including required API
+compatibility and algorithmic scaling.
+
+Identify only concrete defects supported by the task and the actual code.
+For each defect, name the relevant requirement, explain how the code
+violates it, and describe a triggering input or input class when possible.
+Do not invent requirements. Do not request stylistic changes.
+Do not write Rust code, replacement functions, patches, or pseudocode.
+
+Return exactly one JSON object:
+{"pick":"<letter>","fixes":["<concrete defect and required correction>", ...]}
+
+Use an empty fixes list if you cannot establish a concrete defect.
+Selection and feedback must refer to the same candidate.
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64, pub priority: u8 }
+pub enum Kind {
+    Arrive, Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 }, Finish
+}
+pub struct Event { pub time: u64, pub customer: u32, pub kind: Kind }
+pub enum Error {
+    ZeroId { index: usize }, DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 }, TimeOverflow { customer: u32, time: u64 }
+}
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error>;
+```
+
+R3. Time, service and switch_cost are u64 integer ticks; IDs are u32. The customer input may be unsorted or empty. Empty input returns Ok(vec![]) for any switch_cost.
+
+R4. Validate the entire original slice before simulation, scanning index 0 upward. At each row check zero ID, then duplicate of an earlier ID, then priority > 3, returning respectively ZeroId, DuplicateId, BadPriority at the original index. Stop at the first failing check; this precedence also overrides runtime overflow.
+
+R5. Priorities are 0, 1, 2, 3 with 0 the highest. Smaller numeric priority is strictly superior; equal priority never preempts.
+
+R6. Sort arrivals by time ascending, then priority ascending, then ID descending. All arrivals at a tick form one cohort even when their priorities differ.
+
+R7. At a tick the scheduled Finish, if any, is emitted first, freeing the server. A customer whose finish equals an arrival or internal work boundary completes before any preemption decision.
+
+R8. Then emit all cohort Arrive events in the order above, enqueueing every arrival. No dispatch/preemption is allowed between these Arrive events.
+
+R9. Waiting selection always chooses highest priority first. Within a priority class, paused customers rank ahead of customers that have never started, even if a fresh customer arrived earlier.
+
+R10. Within one class, paused customers are ordered by most recent preemption time ascending, then ID ascending. Fresh customers are ordered by arrival ascending, then ID descending. Repeated preemption replaces that customer's pause time.
+
+R11. After the arrival phase, if a customer is running and switching protection has ended, compare it with the best waiter. If and only if the waiter has strictly superior priority, emit Preempt for the running customer with by = that best waiter's ID; enqueue the paused customer and free the server.
+
+R12. Switching overhead occupies the server and cannot be preempted: the active customer is protected while time < work_at. Arrivals during protection only wait, regardless of priority.
+
+R13. Every work_at is also an internal simulation tick. At time == work_at protection ends and preemption is reconsidered after that tick's arrivals, even if no arrival occurs at this boundary. Emit no event just for the work boundary.
+
+R14. On preemption at time t (which must be >= work_at and < finish), remaining work becomes finish - t. Switching overhead is never part of remaining work; elapsed service is not restarted. Preempt.remaining is this value.
+
+R15. If the server is idle after the preceding phases, select the best waiter and dispatch at the current tick. Its first dispatch emits Start; all subsequent dispatches emit Resume. Both events report the remaining service before dispatch.
+
+R16. The first dispatch of the whole simulation pays no switching cost. Thereafter a dispatch pays switch_cost exactly when its customer ID differs from the most recently DISPATCHED customer ID. Update that remembered ID on every dispatch, including zero-duration ones.
+
+R17. At dispatch t, work_at = t + applicable switch cost; finish = work_at + remaining service. Both use checked u64 addition in that order. The server is occupied on [t, finish), including [t, work_at) switching.
+
+R18. If either addition overflows, return TimeOverflow { customer: the selected ID, time: dispatch tick }. No partial trace is returned. Do not check arithmetic earlier or try a different waiter.
+
+R19. If finish == dispatch time, emit Finish immediately after Start/Resume and repeat best-waiter dispatch at this same tick. Inline finishes occur after the entire arrival cohort and do not revisit the earlier Finish phase. Zero service with positive switching cost is occupied until work_at == finish.
+
+R20. Preemption is allowed repeatedly, preserves priority and ID, and never emits Finish for the paused customer. A Resume can itself be protected by switching overhead and can later be preempted.
+
+R21. The remembered dispatch ID persists across idle gaps; thus a different customer after an idle gap still pays switching cost. No switching cost is charged during idle time.
+
+R22. Advance to the least pending arrival, active finish, or future active work_at. Terminate after all customers finish. Do not append idle events, and do not emit time-zero events unless required by actual arrivals/dispatches/finishes.
+
+R23. Return the exact ordered trace: scheduled Finish, all Arrive events, optional Preempt, then Start/Resume and inline Finish/dispatch repetitions. Timestamps are nondecreasing. Each customer has one Arrive, one Start, one eventual Finish; Resume count equals its Preempt count.
+
+R24. u64::MAX timestamps and exactly-boundary finishes are legal. Adding zero to u64::MAX succeeds. switch_cost = u64::MAX is legal when no dispatch requires a positive addition that overflows.
+
+R25. Repeated calls are independent and the input slice remains unchanged.
+
+R26. Runtime overflow follows chronological dispatch/priority selection order, not input order. Validation never checks arrival + service or switch_cost arithmetic.
+
+R27. The by field of Preempt names the best waiter BEFORE the paused customer is re-enqueued. The entire new arrival cohort can change this choice; it is not necessarily the first ID in input order.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64, priority: u8) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+        priority,
+    }
+}
+fn e(time: u64, customer: u32, kind: Kind) -> Event {
+    Event {
+        time,
+        customer,
+        kind,
+    }
+}
+#[test]
+fn public_priority_preemption() {
+    assert_eq!(
+        simulate(&[c(1, 0, 6, 2), c(2, 2, 1, 0)], 0).unwrap(),
+        vec![
+            e(0, 1, Kind::Arrive),
+            e(
+                0,
+                1,
+                Kind::Start {
+                    remaining: 6,
+                    work_at: 0,
+                    finish: 6
+                }
+            ),
+            e(2, 2, Kind::Arrive),
+            e(
+                2,
+                1,
+                Kind::Preempt {
+                    remaining: 4,
+                    by: 2
+                }
+            ),
+            e(
+                2,
+                2,
+                Kind::Start {
+                    remaining: 1,
+                    work_at: 2,
+                    finish: 3
+                }
+            ),
+            e(3, 2, Kind::Finish),
+            e(
+                3,
+                1,
+                Kind::Resume {
+                    remaining: 4,
+                    work_at: 3,
+                    finish: 7
+                }
+            ),
+            e(7, 1, Kind::Finish)
+        ]
+    );
+}
+#[test]
+fn public_switching_cost() {
+    let v = simulate(&[c(4, 0, 2, 0), c(5, 1, 2, 1)], 3).unwrap();
+    assert_eq!(
+        v[4],
+        e(
+            2,
+            5,
+            Kind::Start {
+                remaining: 2,
+                work_at: 5,
+                finish: 7
+            }
+        )
+    );
+    assert_eq!(v.last(), Some(&e(7, 5, Kind::Finish)));
+}
+#[test]
+fn public_empty_and_bad_priority() {
+    assert_eq!(simulate(&[], 3), Ok(vec![]));
+    assert_eq!(
+        simulate(&[c(8, 0, 1, 4)], 0),
+        Err(Error::BadPriority { index: 0, value: 4 })
+    );
+}
+```
+
+
+CANDIDATES:
+All supplied files pass the public tests.
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Resume {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Preempt {
+        remaining: u64,
+        by: u32,
+    },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Waiting {
+    customer: Customer,
+    remaining: u64,
+    started: bool,
+    pause_time: Option<u64>,
+}
+
+struct Active {
+    customer: Customer,
+    remaining: u64,
+    work_at: u64,
+    finish: u64,
+}
+
+fn waiting_precedes(a: &Waiting, b: &Waiting) -> bool {
+    if a.customer.priority != b.customer.priority {
+        return a.customer.priority < b.customer.priority;
+    }
+
+    match (a.pause_time, b.pause_time) {
+        (Some(a_time), Some(b_time)) => {
+            a_time < b_time
+                || (a_time == b_time && a.customer.id < b.customer.id)
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => {
+            a.customer.arrival < b.customer.arrival
+                || (a.customer.arrival == b.customer.arrival
+                    && a.customer.id > b.customer.id)
+        }
+    }
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    let mut seen = std::collections::HashSet::new();
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<Customer> = customers.to_vec();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<Waiting> = Vec::new();
+    let mut active: Option<Active> = None;
+    let mut next_arrival = 0usize;
+    let mut last_dispatched: Option<u32> = None;
+    let mut finished_count = 0usize;
+    let mut now = arrivals[0].arrival;
+
+    while finished_count < customers.len() {
+        if let Some(running) = active.as_ref() {
+            if running.finish == now {
+                let completed = active.take().unwrap();
+                events.push(Event {
+                    time: now,
+                    customer: completed.customer.id,
+                    kind: Kind::Finish,
+                });
+                finished_count += 1;
+            }
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == now {
+            let customer = arrivals[next_arrival].clone();
+            events.push(Event {
+                time: now,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(Waiting {
+                remaining: customer.service,
+                customer,
+                started: false,
+                pause_time: None,
+            });
+            next_arrival += 1;
+        }
+
+        if let Some(running) = active.as_ref() {
+            if now >= running.work_at {
+                let best = waiting
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        if waiting_precedes(a, b) {
+                            std::cmp::Ordering::Less
+                        } else if waiting_precedes(b, a) {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .map(|(index, _)| index);
+
+                if let Some(index) = best {
+                    if waiting[index].customer.priority < running.customer.priority {
+                        let by = waiting[index].customer.id;
+                        let running = active.take().unwrap();
+                        let remaining = running.finish - now;
+                        events.push(Event {
+                            time: now,
+                            customer: running.customer.id,
+                            kind: Kind::Preempt { remaining, by },
+                        });
+                        waiting.push(Waiting {
+                            customer: running.customer,
+                            remaining,
+                            started: true,
+                            pause_time: Some(now),
+                        });
+                    }
+                }
+            }
+        }
+
+        if active.is_none() {
+            while !waiting.is_empty() {
+                let best_index = (0..waiting.len())
+                    .min_by(|&a, &b| {
+                        if waiting_precedes(&waiting[a], &waiting[b]) {
+                            std::cmp::Ordering::Less
+                        } else if waiting_precedes(&waiting[b], &waiting[a]) {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .unwrap();
+                let chosen = waiting.remove(best_index);
+                let cost = if last_dispatched == Some(chosen.customer.id) {
+                    0
+                } else if last_dispatched.is_none() {
+                    0
+                } else {
+                    switch_cost
+                };
+                let work_at = now.checked_add(cost).ok_or(Error::TimeOverflow {
+                    customer: chosen.customer.id,
+                    time: now,
+                })?;
+                let finish = work_at.checked_add(chosen.remaining).ok_or(
+                    Error::TimeOverflow {
+                        customer: chosen.customer.id,
+                        time: now,
+                    },
+                )?;
+
+                let kind = if chosen.started {
+                    Kind::Resume {
+                        remaining: chosen.remaining,
+                        work_at,
+                        finish,
+                    }
+                } else {
+                    Kind::Start {
+                        remaining: chosen.remaining,
+                        work_at,
+                        finish,
+                    }
+                };
+                events.push(Event {
+                    time: now,
+                    customer: chosen.customer.id,
+                    kind,
+                });
+                last_dispatched = Some(chosen.customer.id);
+                active = Some(Active {
+                    customer: chosen.customer,
+                    remaining: chosen.remaining,
+                    work_at,
+                    finish,
+                });
+
+                if finish == now {
+                    let completed = active.take().unwrap();
+                    events.push(Event {
+                        time: now,
+                        customer: completed.customer.id,
+                        kind: Kind::Finish,
+                    });
+                    finished_count += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+
+        if finished_count == customers.len() {
+            break;
+        }
+
+        let mut next_time: Option<u64> = None;
+        if next_arrival < arrivals.len() {
+            next_time = Some(arrivals[next_arrival].arrival);
+        }
+        if let Some(running) = active.as_ref() {
+            for t in [Some(running.finish), Some(running.work_at)] {
+                if let Some(t) = t {
+                    if t > now && next_time.map_or(true, |current| t < current) {
+                        next_time = Some(t);
+                    }
+                }
+            }
+        }
+
+        if let Some(t) = next_time {
+            now = t;
+        } else if !waiting.is_empty() {
+            // An idle server with waiters is dispatched above; this is only a
+            // defensive guard against an impossible stalled state.
+            now = now.saturating_add(1);
+        } else {
+            break;
+        }
+    }
+
+    Ok(events)
+}
+```

@@ -1,0 +1,360 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    SignOnly,
+    InvalidDigit { index: usize },
+    Separator { index: usize },
+    LeadingZero { index: usize },
+    TooManyDigits { limit: usize, index: usize },
+    DivisionByZero,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Big {
+    negative: bool,
+    // Little-endian decimal digits. Zero is represented as [0] and is never negative.
+    digits: Vec<u8>,
+}
+
+impl Big {
+    pub fn parse(text: &str, max_digits: usize) -> Result<Self, Error> {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return Err(Error::Empty);
+        }
+
+        let (negative, start) = match bytes[0] {
+            b'+' => (false, 1),
+            b'-' => (true, 1),
+            _ => (false, 0),
+        };
+
+        if start == bytes.len() {
+            return Err(Error::SignOnly);
+        }
+
+        let magnitude = &bytes[start..];
+
+        // Invalid bytes take precedence over all separator errors.
+        if let Some(offset) = magnitude
+            .iter()
+            .position(|&byte| byte != b'_' && !byte.is_ascii_digit())
+        {
+            return Err(Error::InvalidDigit {
+                index: start + offset,
+            });
+        }
+
+        // Check each underscore against its immediate neighbors.
+        for (offset, &byte) in magnitude.iter().enumerate() {
+            if byte == b'_'
+                && (offset == 0
+                    || offset + 1 == magnitude.len()
+                    || !magnitude[offset - 1].is_ascii_digit()
+                    || !magnitude[offset + 1].is_ascii_digit())
+            {
+                return Err(Error::Separator {
+                    index: start + offset,
+                });
+            }
+        }
+
+        let digit_count = magnitude.iter().filter(|&&byte| byte != b'_').count();
+        let first_digit_offset = magnitude
+            .iter()
+            .position(|&byte| byte != b'_')
+            .expect("nonempty magnitude has a digit after lexical validation");
+
+        if digit_count > 1 && magnitude[first_digit_offset] == b'0' {
+            return Err(Error::LeadingZero {
+                index: start + first_digit_offset,
+            });
+        }
+
+        if digit_count > max_digits {
+            let excess_number = max_digits + 1;
+            let mut seen = 0usize;
+            for (offset, &byte) in magnitude.iter().enumerate() {
+                if byte != b'_' {
+                    seen += 1;
+                    if seen == excess_number {
+                        return Err(Error::TooManyDigits {
+                            limit: max_digits,
+                            index: start + offset,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut digits = Vec::with_capacity(digit_count);
+        for &byte in magnitude.iter().rev() {
+            if byte != b'_' {
+                digits.push(byte - b'0');
+            }
+        }
+
+        let mut result = Self { negative, digits };
+        result.normalize();
+        Ok(result)
+    }
+
+    pub fn format(&self, min_digits: usize, group: usize) -> String {
+        let natural_len = self.digits.len().max(1);
+        let width = natural_len.max(min_digits);
+        let padding = width - natural_len;
+
+        let mut out = String::with_capacity(width + width / group.max(1) + 1);
+        if self.negative {
+            out.push('-');
+        }
+
+        for position in 0..width {
+            if group > 0 && position > 0 && (width - position) % group == 0 {
+                out.push('_');
+            }
+            if position < padding {
+                out.push('0');
+            } else {
+                let digit_index = width - position - 1 - padding;
+                out.push((b'0' + self.digits[digit_index]) as char);
+            }
+        }
+        out
+    }
+
+    pub fn cmp_value(&self, rhs: &Self) -> Ordering {
+        match (self.negative, rhs.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => cmp_magnitude(&self.digits, &rhs.digits),
+            (true, true) => cmp_magnitude(&rhs.digits, &self.digits),
+        }
+    }
+
+    pub fn add(&self, rhs: &Self) -> Self {
+        if self.negative == rhs.negative {
+            let mut result = Self {
+                negative: self.negative,
+                digits: add_magnitude(&self.digits, &rhs.digits),
+            };
+            result.normalize();
+            result
+        } else {
+            match cmp_magnitude(&self.digits, &rhs.digits) {
+                Ordering::Equal => Self::zero(),
+                Ordering::Greater => {
+                    let mut result = Self {
+                        negative: self.negative,
+                        digits: sub_magnitude(&self.digits, &rhs.digits),
+                    };
+                    result.normalize();
+                    result
+                }
+                Ordering::Less => {
+                    let mut result = Self {
+                        negative: rhs.negative,
+                        digits: sub_magnitude(&rhs.digits, &self.digits),
+                    };
+                    result.normalize();
+                    result
+                }
+            }
+        }
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Self {
+        self.add(&rhs.neg())
+    }
+
+    pub fn neg(&self) -> Self {
+        let mut result = self.clone();
+        if !result.is_zero() {
+            result.negative = !result.negative;
+        }
+        result
+    }
+
+    pub fn signum(&self) -> i8 {
+        if self.is_zero() {
+            0
+        } else if self.negative {
+            -1
+        } else {
+            1
+        }
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Self {
+        if self.is_zero() || rhs.is_zero() {
+            return Self::zero();
+        }
+
+        let mut result = Self {
+            negative: self.negative != rhs.negative,
+            digits: mul_magnitude(&self.digits, &rhs.digits),
+        };
+        result.normalize();
+        result
+    }
+
+    pub fn div_rem(&self, rhs: &Self) -> Result<(Self, Self), Error> {
+        if rhs.is_zero() {
+            return Err(Error::DivisionByZero);
+        }
+
+        let (quotient_digits, remainder_digits) =
+            div_rem_magnitude(&self.digits, &rhs.digits);
+
+        let mut quotient = Self {
+            negative: self.negative != rhs.negative,
+            digits: quotient_digits,
+        };
+        quotient.normalize();
+
+        let mut remainder = Self {
+            negative: self.negative,
+            digits: remainder_digits,
+        };
+        remainder.normalize();
+
+        Ok((quotient, remainder))
+    }
+
+    fn zero() -> Self {
+        Self {
+            negative: false,
+            digits: vec![0],
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.digits.len() == 1 && self.digits[0] == 0
+    }
+
+    fn normalize(&mut self) {
+        while self.digits.len() > 1 && self.digits.last() == Some(&0) {
+            self.digits.pop();
+        }
+        if self.digits.is_empty() {
+            self.digits.push(0);
+        }
+        if self.is_zero() {
+            self.negative = false;
+        }
+    }
+}
+
+fn cmp_magnitude(a: &[u8], b: &[u8]) -> Ordering {
+    match a.len().cmp(&b.len()) {
+        Ordering::Equal => {
+            for (&left, &right) in a.iter().rev().zip(b.iter().rev()) {
+                match left.cmp(&right) {
+                    Ordering::Equal => {}
+                    other => return other,
+                }
+            }
+            Ordering::Equal
+        }
+        other => other,
+    }
+}
+
+fn add_magnitude(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(a.len().max(b.len()) + 1);
+    let mut carry = 0u8;
+    for index in 0..a.len().max(b.len()) {
+        let sum = a.get(index).copied().unwrap_or(0)
+            + b.get(index).copied().unwrap_or(0)
+            + carry;
+        result.push(sum % 10);
+        carry = sum / 10;
+    }
+    if carry != 0 {
+        result.push(carry);
+    }
+    result
+}
+
+// Requires a >= b.
+fn sub_magnitude(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(a.len());
+    let mut borrow = 0i8;
+    for index in 0..a.len() {
+        let mut digit = a[index] as i8 - borrow - b.get(index).copied().unwrap_or(0) as i8;
+        if digit < 0 {
+            digit += 10;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        result.push(digit as u8);
+    }
+    while result.len() > 1 && result.last() == Some(&0) {
+        result.pop();
+    }
+    result
+}
+
+fn mul_magnitude(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut result = vec![0u8; a.len() + b.len() + 1];
+    for (i, &left) in a.iter().enumerate() {
+        let mut carry = 0u16;
+        for (j, &right) in b.iter().enumerate() {
+            let index = i + j;
+            let product = result[index] as u16 + left as u16 * right as u16 + carry;
+            result[index] = (product % 10) as u8;
+            carry = product / 10;
+        }
+        let mut index = i + b.len();
+        while carry != 0 {
+            let sum = result[index] as u16 + carry;
+            result[index] = (sum % 10) as u8;
+            carry = sum / 10;
+            index += 1;
+        }
+    }
+    while result.len() > 1 && result.last() == Some(&0) {
+        result.pop();
+    }
+    result
+}
+
+fn div_rem_magnitude(dividend: &[u8], divisor: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let mut quotient_be = Vec::with_capacity(dividend.len());
+    let mut remainder = vec![0u8];
+
+    for &digit in dividend.iter().rev() {
+        if remainder.len() == 1 && remainder[0] == 0 {
+            remainder[0] = digit;
+        } else {
+            remainder.insert(0, digit);
+        }
+        trim_magnitude(&mut remainder);
+
+        let mut quotient_digit = 0u8;
+        while cmp_magnitude(&remainder, divisor) != Ordering::Less {
+            remainder = sub_magnitude(&remainder, divisor);
+            quotient_digit += 1;
+        }
+        quotient_be.push(quotient_digit);
+    }
+
+    quotient_be.reverse();
+    trim_magnitude(&mut quotient_be);
+    trim_magnitude(&mut remainder);
+    (quotient_be, remainder)
+}
+
+fn trim_magnitude(digits: &mut Vec<u8>) {
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        digits.push(0);
+    }
+}
+```

@@ -1,0 +1,206 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Analysis {
+    pub order: Vec<usize>,
+    pub earliest: Vec<Timing>,
+    pub latest: Vec<Timing>,
+    pub slack: Vec<u64>,
+    pub critical: Vec<usize>,
+    pub path: Vec<usize>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+    TargetTooSmall {
+        minimum: u64,
+    },
+}
+
+pub fn analyze(tasks: &[Task], target: u64) -> Result<Analysis, Error> {
+    let n = tasks.len();
+
+    // Validate every dependency entry in the specified order before proceeding.
+    for (task_id, task) in tasks.iter().enumerate() {
+        let mut seen = vec![false; n];
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if seen[value] {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            seen[value] = true;
+        }
+    }
+
+    // Build successor edges and indegrees from the validated predecessor lists.
+    let mut successors = vec![Vec::new(); n];
+    let mut indegree = vec![0usize; n];
+    for (task_id, task) in tasks.iter().enumerate() {
+        indegree[task_id] = task.deps.len();
+        for &predecessor in &task.deps {
+            successors[predecessor].push(task_id);
+        }
+    }
+
+    // Kahn traversal, always removing the smallest currently available ID.
+    let mut available = std::collections::BTreeSet::new();
+    for (id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.insert(id);
+        }
+    }
+
+    let mut order = Vec::with_capacity(n);
+    let mut remaining_indegree = indegree;
+    while let Some(&id) = available.iter().next() {
+        available.remove(&id);
+        order.push(id);
+        for &child in &successors[id] {
+            remaining_indegree[child] -= 1;
+            if remaining_indegree[child] == 0 {
+                available.insert(child);
+            }
+        }
+    }
+
+    if order.len() != n {
+        let removed = {
+            let mut removed = vec![false; n];
+            for &id in &order {
+                removed[id] = true;
+            }
+            removed
+        };
+        let blocked = (0..n).filter(|&id| !removed[id]).collect();
+        return Err(Error::Cycle { blocked });
+    }
+
+    // Compute earliest timings in Kahn order.
+    let mut earliest = vec![Timing { start: 0, finish: 0 }; n];
+    for &id in &order {
+        let start = tasks[id]
+            .deps
+            .iter()
+            .map(|&predecessor| earliest[predecessor].finish)
+            .max()
+            .unwrap_or(0);
+        let finish = start
+            .checked_add(tasks[id].duration)
+            .ok_or(Error::Overflow { task: id })?;
+        earliest[id] = Timing { start, finish };
+    }
+
+    let makespan = earliest
+        .iter()
+        .map(|timing| timing.finish)
+        .max()
+        .unwrap_or(0);
+
+    if target < makespan {
+        return Err(Error::TargetTooSmall { minimum: makespan });
+    }
+
+    // Compute latest timings in reverse Kahn order.
+    let mut latest = vec![Timing { start: 0, finish: 0 }; n];
+    for &id in order.iter().rev() {
+        let finish = if successors[id].is_empty() {
+            target
+        } else {
+            successors[id]
+                .iter()
+                .map(|&child| latest[child].start)
+                .min()
+                .unwrap()
+        };
+        let start = finish - tasks[id].duration;
+        latest[id] = Timing { start, finish };
+    }
+
+    let slack: Vec<u64> = (0..n)
+        .map(|id| latest[id].start - earliest[id].start)
+        .collect();
+    let baseline = target - makespan;
+    let critical = (0..n).filter(|&id| slack[id] == baseline).collect();
+
+    // Choose the greatest-ID sink ending at makespan, then follow the
+    // greatest-finish predecessor, breaking ties by greatest predecessor ID.
+    let path = if n == 0 {
+        Vec::new()
+    } else {
+        let mut current = (0..n)
+            .filter(|&id| successors[id].is_empty() && earliest[id].finish == makespan)
+            .max()
+            .unwrap();
+
+        let mut reversed_path = vec![current];
+        while !tasks[current].deps.is_empty() {
+            current = *tasks[current]
+                .deps
+                .iter()
+                .max_by_key(|&&predecessor| (earliest[predecessor].finish, predecessor))
+                .unwrap();
+            reversed_path.push(current);
+        }
+        reversed_path.reverse();
+        reversed_path
+    };
+
+    Ok(Analysis {
+        order,
+        earliest,
+        latest,
+        slack,
+        critical,
+        path,
+        makespan,
+    })
+}
+```

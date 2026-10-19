@@ -1,0 +1,758 @@
+SYSTEM:
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. The public API is pub fn normalize(path: &str) -> Result<String, PathError>. Define pub enum PathError with variants Empty, Nul { at: usize }, Backslash { at: usize }, Control { at: usize }, Escape { at: usize }. Derive Debug, Clone, PartialEq, Eq for PathError. Later clauses, if present, add variants and APIs to this same enum.
+
+R3. Paths use POSIX slash separators. All offsets are zero-based UTF-8 byte offsets in the original string supplying the offending component or character, never character indices.
+
+R4. Validate the entire raw path before reducing any component. An empty string returns Empty.
+
+R5. After the empty check, any NUL byte returns Nul at its first occurrence, even if an earlier backslash, control, or root escape exists.
+
+R6. If no NUL exists, any backslash byte returns Backslash at its first occurrence, even if an earlier control or root escape exists.
+
+R7. If neither NUL nor backslash exists, ASCII bytes 1 through 31 and 127 are forbidden: return Control at the first such byte, even if a root escape occurs earlier.
+
+R8. All other bytes in a valid UTF-8 input are allowed literally. Do not trim whitespace, decode percent escapes, fold case, or normalize Unicode. A tilde is literal for normalize.
+
+R9. A path is absolute exactly when its first byte is slash. Collapse every run of slashes, including two or more leading slashes, to ordinary POSIX separators; there is only one root.
+
+R10. Process nonempty components left to right. Discard components equal to dot (.). Dots inside any other name are ordinary characters.
+
+R11. A parent component (..) removes the previous ordinary component, if one exists. It must never cancel a preceding retained parent component.
+
+R12. For an absolute path, a parent with no component to remove returns Escape at the first byte of that parent. The earliest such event in traversal order wins.
+
+R13. For a relative path, a parent with no ordinary component to remove is retained. Leading retained parents may grow without limit.
+
+R14. Join components with single slashes and prefix one slash only for an absolute path. An empty absolute result is /; an empty relative result is dot (.).
+
+R15. Directory intent is true when the raw path ends in slash OR its last nonempty component is dot or parent. Otherwise it is false.
+
+R16. Append a single trailing slash to a nonempty component result exactly when directory intent is true. Never append to root / or the empty-relative result dot. In particular, normalize("..") is "../", normalize("a/..") is ".", and normalize("a/.") is "a/".
+
+R17. normalize is lexical and deterministic, reads no filesystem or environment, and is idempotent on every successful output.
+
+R18. Add PathError variants InvalidCwd, InvalidHome, MissingHome, UnsupportedTilde { at: usize }. Add pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError>. normalize retains exactly its earlier behavior.
+
+R19. For resolve, validate cwd first, even for an absolute requested path: it must start with slash and normalize successfully. Otherwise return InvalidCwd, hiding its underlying error. Use its normalized components as a directory, ignoring its trailing slash.
+
+R20. Next validate home whenever Some, even if the request will not use it: it must start with slash and normalize successfully, or return InvalidHome. None is allowed. Ignore trailing slash in a valid home.
+
+R21. Only after cwd and home validation, validate the entire raw requested path by the earlier empty/NUL/backslash/control precedence. These lexical errors precede tilde errors and traversal errors.
+
+R22. In resolve only, a leading tilde is special. Exactly "~" or a prefix "~/" expands the validated home; None returns MissingHome. A leading tilde followed by any other byte returns UnsupportedTilde { at: 1 }, even when home is None. No other tilde expands.
+
+R23. An absolute requested path starts at root; an ordinary relative request starts at normalized cwd; an expanded tilde request starts at normalized home and consumes the initial tilde and at most the immediately following slash. Repeated slashes in the remainder are ignored.
+
+R24. Reduce the request components against that starting directory using the earlier dot/parent rules, always producing an absolute result. An attempted parent above root returns Escape at that parent in the ORIGINAL requested path, including the tilde prefix in the offset.
+
+R25. Use directory intent from the ORIGINAL requested path only, ignoring cwd/home spelling. Bare tilde has no directory intent; tilde followed by slash does. Dot and parent requests carry directory intent by the earlier rule.
+
+R26. Context validation is purely lexical, does not expand tildes, and rejects root escapes. resolve performs no I/O and does not depend on the process current directory or home.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1-R2, R9-R10
+#[test]
+fn public_normalize_again() {
+    assert_eq!(normalize("//p/./q"), Ok("/p/q".into()));
+}
+
+// R18-R19, R23-R25
+#[test]
+fn public_cwd() {
+    assert_eq!(resolve("../file", "/work/source", None), Ok("/work/file".into()));
+    assert_eq!(resolve("/log/", "/work", None), Ok("/log/".into()));
+}
+
+// R20, R22-R25
+#[test]
+fn public_home() {
+    assert_eq!(resolve("~/notes", "/work", Some("/users/me")), Ok("/users/me/notes".into()));
+    assert_eq!(resolve("~", "/work", Some("/users/me")), Ok("/users/me".into()));
+}
+
+// R19-R21
+#[test]
+fn public_context_error() {
+    assert_eq!(resolve("file", "work", None), Err(PathError::InvalidCwd));
+    assert_eq!(resolve("~", "/", None), Err(PathError::MissingHome));
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.bytes().position(|b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .bytes()
+        .position(|b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a>(
+    components: impl Iterator<Item = (&'a str, usize)>,
+    absolute: bool,
+) -> Result<Vec<String>, PathError> {
+    let mut result: Vec<String> = Vec::new();
+
+    for (component, at) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if result.last().is_some_and(|last| last != "..") {
+                result.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                result.push("..".to_owned());
+            }
+        } else {
+            result.push(component.to_owned());
+        }
+    }
+
+    Ok(result)
+}
+
+fn components_with_offsets(path: &str, start: usize) -> impl Iterator<Item = (&str, usize)> {
+    path[start..]
+        .split('/')
+        .scan(start, |offset, component| {
+            let current = *offset;
+            *offset += component.len() + 1;
+            Some((component, current))
+        })
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let components = reduce_components(components_with_offsets(path, 0), absolute)?;
+
+    let mut result = if absolute {
+        format!("/{}", components.join("/"))
+    } else if components.is_empty() {
+        ".".to_owned()
+    } else {
+        components.join("/")
+    };
+
+    if directory_intent(path) && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let normalized_cwd = if cwd.starts_with('/') {
+        normalize(cwd).map_err(|_| PathError::InvalidCwd)?
+    } else {
+        return Err(PathError::InvalidCwd);
+    };
+
+    let normalized_home = match home {
+        Some(value) => {
+            if !value.starts_with('/') {
+                return Err(PathError::InvalidHome);
+            }
+            Some(normalize(value).map_err(|_| PathError::InvalidHome)?)
+        }
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let tilde_expansion = if path.starts_with('~') {
+        if path.len() == 1 || path.as_bytes().get(1) == Some(&b'/') {
+            let home = normalized_home.ok_or(PathError::MissingHome)?;
+            Some((home, if path.len() > 1 { 2 } else { 1 }))
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+    } else {
+        None
+    };
+
+    let directory_intent = directory_intent(path);
+    let (base, remainder_start) = if let Some((home, start)) = tilde_expansion {
+        (home, start)
+    } else if path.starts_with('/') {
+        ("/".to_owned(), 0)
+    } else {
+        (normalized_cwd, 0)
+    };
+
+    let mut components: Vec<String> = base
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    for (component, at) in components_with_offsets(path, remainder_start) {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components.pop().is_none() {
+                return Err(PathError::Escape { at });
+            }
+        } else {
+            components.push(component.to_owned());
+        }
+    }
+
+    let mut result = format!("/{}", components.join("/"));
+    if directory_intent && result != "/" {
+        result.push('/');
+    }
+    Ok(result)
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .last()
+            .is_some_and(|part| part == "." || part == "..")
+}
+
+fn components(path: &str) -> impl Iterator<Item = &str> {
+    path.split('/').filter(|part| !part.is_empty())
+}
+
+fn reduce(
+    stack: &mut Vec<String>,
+    path: &str,
+    absolute: bool,
+    offset: usize,
+) -> Result<(), PathError> {
+    let mut search_from = 0;
+
+    for part in components(path) {
+        let at = path[search_from..]
+            .find(part)
+            .map(|n| search_from + n)
+            .unwrap_or(search_from);
+        search_from = at + part.len();
+
+        match part {
+            "." => {}
+            ".." => {
+                if stack.last().is_some_and(|last| last != "..") {
+                    stack.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: offset + at });
+                } else {
+                    stack.push("..".to_owned());
+                }
+            }
+            _ => stack.push(part.to_owned()),
+        }
+    }
+
+    Ok(())
+}
+
+fn compose(stack: &[String], absolute: bool, intent: bool) -> String {
+    let mut result = if absolute {
+        format!("/{}", stack.join("/"))
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    };
+
+    if intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+
+    reduce(&mut stack, path, absolute, 0)?;
+    Ok(compose(&stack, absolute, intent))
+}
+
+fn validated_context(path: &str) -> Option<Vec<String>> {
+    if !path.starts_with('/') || validate_raw(path).is_err() {
+        return None;
+    }
+
+    let normalized = normalize(path).ok()?;
+    Some(
+        components(&normalized)
+            .map(str::to_owned)
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components = validated_context(cwd).ok_or(PathError::InvalidCwd)?;
+    let home_components = match home {
+        Some(path) => Some(validated_context(path).ok_or(PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let (absolute, mut stack, remainder, offset) = if path.starts_with('/') {
+        (true, Vec::new(), path, 0)
+    } else if path.starts_with('~') {
+        if path.len() > 1 && !path.as_bytes()[1..].starts_with(b"/") {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+
+        let stack = home_components.ok_or(PathError::MissingHome)?;
+        if path == "~" {
+            let result = compose(&stack, true, false);
+            return Ok(result);
+        }
+
+        (true, stack, &path[2..], 2)
+    } else {
+        (true, cwd_components, path, 0)
+    };
+
+    let intent = directory_intent(path);
+    reduce(&mut stack, remainder, absolute, offset)?;
+    Ok(compose(&stack, true, intent))
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn components(path: &str) -> impl Iterator<Item = (usize, &str)> {
+    path.split('/')
+        .scan(0usize, |offset, component| {
+            let start = *offset;
+            *offset += component.len() + 1;
+            Some((start, component))
+        })
+        .filter(|(_, component)| !component.is_empty())
+}
+
+fn reduce(
+    stack: &mut Vec<String>,
+    path: &str,
+    offset_base: usize,
+    absolute: bool,
+) -> Result<(), PathError> {
+    for (at, component) in components(path) {
+        match component {
+            "." => {}
+            ".." => {
+                if stack.last().is_some_and(|last| last != "..") {
+                    stack.pop();
+                } else if absolute {
+                    return Err(PathError::Escape {
+                        at: offset_base + at,
+                    });
+                } else {
+                    stack.push("..".to_owned());
+                }
+            }
+            name => stack.push(name.to_owned()),
+        }
+    }
+    Ok(())
+}
+
+fn render(stack: &[String], absolute: bool, intent: bool) -> String {
+    let mut result = if absolute {
+        let joined = stack.join("/");
+        if joined.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{joined}")
+        }
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    };
+
+    if intent && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+    reduce(&mut stack, path, 0, absolute)?;
+    Ok(render(&stack, absolute, intent))
+}
+
+fn normalized_context(path: &str) -> Result<Vec<String>, ()> {
+    if !path.starts_with('/') {
+        return Err(());
+    }
+    let normalized = normalize(path).map_err(|_| ())?;
+    Ok(normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components = normalized_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_components = match home {
+        Some(home) => Some(normalized_context(home).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let bytes = path.as_bytes();
+    let tilde_request = bytes.first() == Some(&b'~');
+    let expanded = if tilde_request {
+        if bytes.len() > 1 && bytes[1] != b'/' {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+        true
+    } else {
+        false
+    };
+
+    let absolute = !expanded && bytes.first() == Some(&b'/');
+    let intent = directory_intent(path);
+    let (mut stack, remainder, offset_base) = if expanded {
+        let home = home_components.ok_or(PathError::MissingHome)?;
+        let skip = if bytes.len() > 1 { 2 } else { 1 };
+        (home, &path[skip..], skip)
+    } else if absolute {
+        (Vec::new(), path, 0)
+    } else {
+        (cwd_components, path, 0)
+    };
+
+    reduce(&mut stack, remainder, offset_base, true)?;
+    Ok(render(&stack, true, intent))
+}
+```
+
+### D.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+    Ok(())
+}
+
+fn components(path: &str) -> Vec<(usize, &str)> {
+    path.split('/')
+        .scan(0usize, |offset, part| {
+            let start = *offset;
+            *offset += part.len() + 1;
+            Some((start, part))
+        })
+        .filter(|(_, part)| !part.is_empty())
+        .collect()
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || components(path)
+            .last()
+            .is_some_and(|(_, part)| *part == "." || *part == "..")
+}
+
+fn reduce(
+    stack: &mut Vec<String>,
+    parts: impl IntoIterator<Item = (usize, String)>,
+    absolute: bool,
+) -> Result<(), PathError> {
+    for (at, part) in parts {
+        match part.as_str() {
+            "." => {}
+            ".." => {
+                if stack.last().is_some_and(|last| last != "..") {
+                    stack.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at });
+                } else {
+                    stack.push(part);
+                }
+            }
+            _ => stack.push(part),
+        }
+    }
+    Ok(())
+}
+
+fn render(stack: &[String], absolute: bool, dir_intent: bool) -> String {
+    let mut result = if absolute {
+        format!("/{}", stack.join("/"))
+    } else if stack.is_empty() {
+        ".".to_string()
+    } else {
+        stack.join("/")
+    };
+
+    if dir_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+fn normalized_absolute(path: &str) -> Result<Vec<String>, PathError> {
+    validate_raw(path)?;
+    if !path.starts_with('/') {
+        return Err(PathError::Escape { at: 0 });
+    }
+    let mut stack = Vec::new();
+    reduce(
+        &mut stack,
+        components(path).into_iter().map(|(at, part)| (at, part.to_string())),
+        true,
+    )?;
+    Ok(stack)
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+    reduce(
+        &mut stack,
+        components(path).into_iter().map(|(at, part)| (at, part.to_string())),
+        absolute,
+    )?;
+
+    Ok(render(&stack, absolute, intent))
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let mut cwd_stack = normalized_absolute(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_stack = match home {
+        Some(home) => Some(normalized_absolute(home).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let intent = directory_intent(path);
+    let (mut stack, remainder, base_offset) = if path.starts_with('/') {
+        (Vec::new(), path, 0)
+    } else if path.starts_with('~') {
+        if path.len() > 1 && !path.as_bytes()[1..].starts_with(b"/") {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+        let Some(home_stack) = home_stack else {
+            return Err(PathError::MissingHome);
+        };
+        let remainder = if path == "~" { "" } else { &path[2..] };
+        (home_stack, remainder, if path == "~" { path.len() } else { 2 })
+    } else {
+        (std::mem::take(&mut cwd_stack), path, 0)
+    };
+
+    reduce(
+        &mut stack,
+        components(remainder)
+            .into_iter()
+            .map(|(at, part)| (at + base_offset, part.to_string())),
+        true,
+    )?;
+
+    Ok(render(&stack, true, intent))
+}
+```

@@ -1,0 +1,484 @@
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+    InvalidLink { index: usize },
+    DuplicateLink { first: usize, second: usize },
+    Loop { index: usize },
+    Limit { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.ends_with('/') {
+        return true;
+    }
+    path.rsplit('/').find(|part| !part.is_empty()) == Some(".")
+        || path.rsplit('/').find(|part| !part.is_empty()) == Some("..")
+}
+
+fn split_components(path: &str) -> Vec<&str> {
+    path.split('/').filter(|part| !part.is_empty()).collect()
+}
+
+fn reduce_component(
+    stack: &mut Vec<String>,
+    component: &str,
+    absolute: bool,
+    offset: usize,
+) -> Result<(), PathError> {
+    match component {
+        "." => {}
+        ".." => {
+            if stack.last().is_some_and(|part| part != "..") {
+                stack.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at: offset });
+            } else {
+                stack.push("..".to_string());
+            }
+        }
+        _ => stack.push(component.to_string()),
+    }
+    Ok(())
+}
+
+fn render(stack: &[String], absolute: bool, intent: bool) -> String {
+    let mut result = stack.join("/");
+    if absolute {
+        result.insert(0, '/');
+    }
+    if result.is_empty() {
+        result = if absolute { "/".into() } else { ".".into() };
+    }
+    if intent && result != "/" && result != "." && !result.ends_with('/') {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+    let absolute = path.as_bytes()[0] == b'/';
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+    let mut search = 0usize;
+    for part in path.split('/') {
+        if part.is_empty() {
+            search += 1;
+            continue;
+        }
+        let at = search;
+        reduce_component(&mut stack, part, absolute, at)?;
+        search += part.len() + 1;
+    }
+    Ok(render(&stack, absolute, intent))
+}
+
+fn validate_context(value: &str) -> Result<Vec<String>, PathError> {
+    if !value.starts_with('/') {
+        return Err(PathError::InvalidCwd);
+    }
+    match normalize(value) {
+        Ok(normalized) => Ok(split_components(&normalized)
+            .into_iter()
+            .map(str::to_string)
+            .collect()),
+        Err(_) => Err(PathError::InvalidCwd),
+    }
+}
+
+fn validate_home(value: &str) -> Result<Vec<String>, PathError> {
+    if !value.starts_with('/') {
+        return Err(PathError::InvalidHome);
+    }
+    match normalize(value) {
+        Ok(normalized) => Ok(split_components(&normalized)
+            .into_iter()
+            .map(str::to_string)
+            .collect()),
+        Err(_) => Err(PathError::InvalidHome),
+    }
+}
+
+fn requested_parts<'a>(
+    path: &'a str,
+    home: Option<&[String]>,
+) -> Result<(bool, Vec<(String, usize)>), PathError> {
+    validate_raw(path)?;
+    let bytes = path.as_bytes();
+    if bytes[0] == b'~' {
+        if bytes.len() == 1 || bytes.get(1) == Some(&b'/') {
+            let h = home.ok_or(PathError::MissingHome)?;
+            let start = if bytes.len() > 1 { 2 } else { 1 };
+            let mut parts = Vec::new();
+            let mut pos = start;
+            for part in path[start..].split('/') {
+                if !part.is_empty() {
+                    parts.push((part.to_string(), pos));
+                }
+                pos += part.len() + 1;
+            }
+            return Ok((false, parts));
+        }
+        return Err(PathError::UnsupportedTilde { at: 1 });
+    }
+    let absolute = bytes[0] == b'/';
+    let mut parts = Vec::new();
+    let mut pos = 0usize;
+    for part in path.split('/') {
+        if !part.is_empty() {
+            parts.push((part.to_string(), pos));
+        }
+        pos += part.len() + 1;
+    }
+    Ok((absolute, parts))
+}
+
+fn render_absolute(stack: &[String], intent: bool) -> String {
+    render(stack, true, intent)
+}
+
+fn resolve_core(
+    path: &str,
+    cwd: &[String],
+    home: Option<&[String]>,
+) -> Result<String, PathError> {
+    let intent = directory_intent(path);
+    let (absolute, parts) = requested_parts(path, home)?;
+    let mut stack = if absolute {
+        Vec::new()
+    } else if path.starts_with('~') {
+        home.unwrap_or(&[]).to_vec()
+    } else {
+        cwd.to_vec()
+    };
+    for (part, at) in parts {
+        reduce_component(&mut stack, &part, true, at)?;
+    }
+    Ok(render_absolute(&stack, intent))
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd = validate_context(cwd)?;
+    let home = match home {
+        Some(value) => Some(validate_home(value)?),
+        None => None,
+    };
+    resolve_core(path, &cwd, home.as_deref())
+}
+
+fn validate_links(links: &[Link]) -> Result<HashMap<String, (usize, String)>, PathError> {
+    let mut table = HashMap::new();
+    for (index, link) in links.iter().enumerate() {
+        let valid_path = link.path.starts_with('/')
+            && !link.path.ends_with('/')
+            && link.path != "/"
+            && normalize(&link.path)
+                .is_ok_and(|normalized| normalized == link.path);
+        let valid_target = validate_raw(&link.target).is_ok();
+        if !valid_path || !valid_target {
+            return Err(PathError::InvalidLink { index });
+        }
+        if let Some((first, _)) = table.get(&link.path) {
+            return Err(PathError::DuplicateLink {
+                first: *first,
+                second: index,
+            });
+        }
+        table.insert(link.path.clone(), (index, link.target.clone()));
+    }
+    Ok(table)
+}
+
+fn absolute_key(stack: &[String]) -> String {
+    if stack.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", stack.join("/"))
+    }
+}
+
+#[derive(Clone)]
+struct WorkItem {
+    component: String,
+    offset: usize,
+    source: String,
+}
+
+fn traversal_with_links(
+    initial: Vec<String>,
+    queue: Vec<WorkItem>,
+    table: &HashMap<String, (usize, String)>,
+    max_expansions: usize,
+) -> Result<Vec<String>, PathError> {
+    let mut stack = initial;
+    let mut pending: Vec<WorkItem> = queue.into_iter().rev().collect();
+    let mut active: Vec<usize> = Vec::new();
+    let mut expansion_count = 0usize;
+
+    while let Some(item) = pending.pop() {
+        match item.component.as_str() {
+            "." => continue,
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(PathError::Escape { at: item.offset });
+                }
+            }
+            _ => {
+                stack.push(item.component.clone());
+                if let Some((index, target)) = table.get(&absolute_key(&stack)) {
+                    if active.contains(index) {
+                        return Err(PathError::Loop { index: *index });
+                    }
+                    if expansion_count >= max_expansions {
+                        return Err(PathError::Limit { index: *index });
+                    }
+                    expansion_count += 1;
+                    stack.pop();
+                    active.push(*index);
+
+                    let mut target_parts = Vec::new();
+                    for (component, offset) in target_components(target) {
+                        target_parts.push(WorkItem {
+                            component,
+                            offset,
+                            source: target.clone(),
+                        });
+                    }
+                    pending.push(WorkItem {
+                        component: String::new(),
+                        offset: 0,
+                        source: format!("\0finish:{index}"),
+                    });
+                    for target_part in target_parts.into_iter().rev() {
+                        pending.push(target_part);
+                    }
+                }
+            }
+        }
+
+        while pending.last().is_some_and(|next| next.source.starts_with("\0finish:")) {
+            let finish = pending.pop().unwrap();
+            let index = finish.source["\0finish:".len()..]
+                .parse::<usize>()
+                .unwrap();
+            active.retain(|value| *value != index);
+        }
+    }
+
+    Ok(stack)
+}
+
+fn target_components(target: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    for part in target.split('/') {
+        if !part.is_empty() {
+            out.push((part.to_string(), pos));
+        }
+        pos += part.len() + 1;
+    }
+    out
+}
+
+fn make_queue(parts: Vec<(String, usize)>, source: &str) -> Vec<WorkItem> {
+    parts
+        .into_iter()
+        .map(|(component, offset)| WorkItem {
+            component,
+            offset,
+            source: source.to_string(),
+        })
+        .collect()
+}
+
+fn resolve_links_with_context(
+    path: &str,
+    cwd: &[String],
+    home: Option<&[String]>,
+    table: &HashMap<String, (usize, String)>,
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let intent = directory_intent(path);
+    let (absolute, parts) = requested_parts(path, home)?;
+    let initial = if absolute {
+        Vec::new()
+    } else if path.starts_with('~') {
+        home.unwrap_or(&[]).to_vec()
+    } else {
+        cwd.to_vec()
+    };
+    let result = traversal_with_links(
+        initial,
+        make_queue(parts, path),
+        table,
+        max_expansions,
+    )?;
+    Ok(render_absolute(&result, intent))
+}
+
+pub fn resolve_links(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let cwd = validate_context(cwd)?;
+    let home = match home {
+        Some(value) => Some(validate_home(value)?),
+        None => None,
+    };
+    let table = validate_links(links)?;
+    resolve_links_with_context(path, &cwd, home.as_deref(), &table, max_expansions)
+}
+
+fn components_of_absolute(path: &str) -> Vec<String> {
+    split_components(path)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn route(base: &[String], target: &[String]) -> String {
+    let common = base
+        .iter()
+        .zip(target.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut parts = Vec::new();
+    for _ in common..base.len() {
+        parts.push("..".to_string());
+    }
+    parts.extend(target[common..].iter().cloned());
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
+fn prefix_matches(prefix: &[String], full: &[String]) -> bool {
+    prefix.len() <= full.len() && prefix.iter().zip(full.iter()).all(|(a, b)| a == b)
+}
+
+fn protect_tilde(candidate: String) -> String {
+    if candidate.starts_with('~') {
+        format!("./{candidate}")
+    } else {
+        candidate
+    }
+}
+
+pub fn relative_to(
+    base: &str,
+    target: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let resolved_base = resolve_links(base, cwd, home, links, max_expansions)?;
+    let resolved_target = resolve_links(target, cwd, home, links, max_expansions)?;
+    let base_components = components_of_absolute(&resolved_base);
+    let target_components = components_of_absolute(&resolved_target);
+    let target_dir = resolved_target.ends_with('/');
+    let table = validate_links(links)?;
+
+    let mut candidates = vec![route(&base_components, &target_components)];
+
+    for link in links {
+        let probe = resolve_links(
+            &link.path,
+            "/",
+            None,
+            links,
+            max_expansions,
+        );
+        let Ok(probe) = probe else {
+            continue;
+        };
+        let alias_components = components_of_absolute(&probe);
+        if prefix_matches(&alias_components, &target_components) {
+            let suffix = &target_components[alias_components.len()..];
+            let mut candidate = route(
+                &base_components,
+                &components_of_absolute(&link.path),
+            );
+            if !suffix.is_empty() {
+                if candidate == "." {
+                    candidate = suffix.join("/");
+                } else {
+                    candidate.push('/');
+                    candidate.push_str(&suffix.join("/"));
+                }
+            }
+            candidates.push(candidate);
+        }
+    }
+
+    let mut valid = Vec::new();
+    for candidate in candidates {
+        let mut candidate = protect_tilde(candidate);
+        if target_dir && candidate != "." && !candidate.ends_with('/') {
+            candidate.push('/');
+        }
+        let Ok(resolved) = resolve_links(
+            &candidate,
+            &resolved_base,
+            home,
+            links,
+            max_expansions,
+        ) else {
+            continue;
+        };
+        if components_of_absolute(&resolved) == target_components {
+            valid.push(candidate);
+        }
+    }
+
+    let _ = table;
+    valid.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.as_bytes().cmp(b.as_bytes())));
+    valid.into_iter().next().ok_or(PathError::Empty)
+}
+```

@@ -1,0 +1,777 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-7590-1792296712961383000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a14d35-e46b-7831-91f2-370a410566a2
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. 
+
+Exact public API:
+```rust
+pub struct Job {
+ pub id: String, pub priority: u8, pub dependencies: Vec<String>, pub max_attempts: u8,
+ pub release_at: u64, pub duration: u64, pub tag: Option<String>, pub failures: u8
+}
+pub enum State {
+ Waiting { ready_at: u64, attempt: u8 }, Running { attempt: u8, finish_at: u64 },
+ Succeeded, Failed, Blocked
+}
+pub enum Error {
+ Config, BadId(usize), BadPriority(usize), BadAttempts(usize), BadTime(usize), BadTag(usize),
+ Duplicate(usize), DuplicateDependency(usize, usize), MissingDependency(usize, usize),
+ Cycle, TimeReversed, TimeRange, Unknown
+}
+pub struct Pool { /* private fields */ }
+impl Pool {
+ pub fn new(jobs: Vec<Job>, capacity: usize, aging_ms: u64, retry_base: u64, retry_cap: u64) -> Result<Self, Error>;
+ pub fn run(&mut self, until: u64) -> Result<Vec<String>, Error>;
+ pub fn status(&self, id: &str) -> Result<State, Error>;
+}
+```
+
+R1. Time is explicit u64 milliseconds. This pool executes one dependency cycle beginning at time 0. There is no wall clock, and new emits no events or starts.
+R2. new validates configuration before jobs: capacity must be 1..=16 and 1<=retry_base<=retry_cap<=1000000000, else Config. aging_ms can be any u64 including zero.
+R3. Validate jobs in input order. Per-job error precedence is BadId(index), BadPriority(index), BadAttempts(index), BadTime(index), BadTag(index), Duplicate(index). Indices are zero-based and duplicate points to the later job.
+R4. IDs are 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9 and max_attempts is 1..=32 (initial attempt included).
+R5. release_at must be <=1000000000 and duration must be 1..=1000000000, else BadTime. failures may be any u8.
+R6. A tag is either None or 1..=8 ASCII lowercase-letter/digit/hyphen bytes; Some("") is invalid. Jobs with identical Some tags cannot run together. None uses no exclusive resource.
+R7. After local validation, validate dependencies in job order and list order: for each spelling check DuplicateDependency(job index, list index) before MissingDependency(job index, list index). Forward references are allowed; dependency spelling has no separate syntax validation.
+R8. Then reject dependency cycles, including self-edges, with Cycle. Empty input is valid.
+R9. Initially every job is Waiting { ready_at: release_at, attempt: 0 }. status returns an owned snapshot; exact unknown IDs return Unknown and do not affect time.
+R10. run accepts until<=1000000000. Its error precedence is TimeReversed if until is below the previous successful run horizon, then TimeRange. The initial horizon is 0.
+R11. Every error is atomic. A successful run records its horizon even if it emits no lines. Returned lines contain only events newly processed by this call.
+R12. The first run processes time 0 through until inclusive. Later runs continue previous state through until inclusive, without replaying events at the previous horizon. Repeated run with the same horizon returns an empty vector.
+R13. At a timestamp process completions first, then failure propagation, then scheduling. A completion exactly at until is processed, and new work may start exactly at until.
+R14. Simultaneous completions are processed in ascending ASCII ID order, independent of input order. All completions and their immediate retry lines precede all skip and start/preempt lines at this timestamp.
+R15. A running segment completion emits "T finish ID A ok" if its attempt number A is greater than failures; otherwise it emits "T finish ID A fail". No randomness is used.
+R16. An ok completion marks Succeeded. A fail completion at max_attempts marks Failed.
+R17. A fail completion below max_attempts schedules a fresh full-duration attempt at T+delay and immediately emits "T retry ID A READY", where A is the failed attempt number and READY is the computed retry time.
+R18. Delay is min(retry_cap, retry_base*2^(A-1)), mathematically and without overflow. Internal future times may exceed the public horizon limit; they remain in state and are not processed until reached (run cannot exceed its limit).
+R19. After all simultaneous completions, propagate terminal failure transitively: every Waiting job depending on Failed or Blocked becomes Blocked. Running or Succeeded jobs are never changed by propagation.
+R20. Emit one "T skip ID dependency" line for each newly Blocked job, sorted by ascending ASCII ID across the entire transitive closure. No skip is emitted for a retryable failure or for the Failed job itself.
+R21. A Waiting job is eligible only when ready_at<=T and every dependency Succeeded in this cycle. Failed attempts and preemptions never satisfy dependencies.
+R22. For candidate ordering, effective priority is base priority when aging_ms=0, else min(9, base priority+floor((T-ready_at)/aging_ms)), computed without overflow.
+R23. Waiting for dependencies ages from release_at. A retry ages from its retry ready time; a suspended job ages from its latest preemption time.
+R24. At each scheduling phase order eligible candidates by descending effective priority, then original input order. Examine in that order until finding a candidate that can start, with or without one preemption. A blocked higher candidate does not stop lower candidates.
+R25. If both a worker slot and candidate tag are free, start without preempting. At most capacity jobs may be Running.
+R26. Otherwise a candidate can preempt exactly ONE running job if removing that victim would leave both a worker slot and the candidate tag free.
+R27. The candidate base priority must be at least victim base priority+2. This threshold uses base priorities, not aging-adjusted priorities, and is inclusive at a difference of 2.
+R28. Among eligible victims choose lowest base priority, then most recently started/resumed running segment, then lexicographically greatest ASCII ID.
+R29. Preemption emits "T preempt VICTIM by CANDIDATE" before the candidate start line. The victim becomes Waiting with ready_at=T and its unconsumed segment duration saved.
+R30. Preemption preserves the victim attempt count and preserves all remaining duration: remaining=old finish_at-T. It consumes no failure and schedules no retry.
+R31. A newly started or retried job increments its attempt count and runs for its full configured duration. A resumed job keeps its existing attempt count and runs only for saved remaining duration.
+R32. Every start/resume emits "T start ID A REMAINING" and sets Running { attempt: A, finish_at: T+REMAINING }. The tag and slot are acquired for the new segment.
+R33. After any start/preemption, restart candidate selection at this same timestamp until no candidate can start. An immediately preempted start is allowed if these rules select it.
+R34. Completions release tags and slots before any starts at their timestamp. A job finishing now is never a preemption victim.
+R35. Time advances only to future Waiting ready times (including releases/retries) or running completions. Aging alone never creates an event or triggers a scheduling phase; it only affects ordering at such events.
+R36. The initial time 0 is always a scheduling event. Merely reaching a run horizon between events creates no scheduling phase. This makes concatenated traces of split runs identical to one run through the same final horizon.
+R37. Terminal states Succeeded, Failed and Blocked persist forever. Jobs are never removed and there is no implicit reset.
+R38. Format every number as unsigned decimal with no leading zeros. Each Vec element is exactly one event line, using single ASCII spaces, with no trailing whitespace or newline.
+R39. No idle, capacity, resource-wait, run-boundary, or other lines are emitted. Empty work produces an empty trace.
+R40. Original job input order is permanent across retries and resumptions; ID ordering applies only where explicitly specified for completions, victims, and skip lines.
+R41. Only eligible Waiting jobs compete; a higher-priority future release or dependency-blocked job cannot preempt.
+R42. An unavailable tag can require preemption even when capacity has a free slot. When capacity is full, evicting a job with a different tag cannot resolve an occupied candidate tag.
+R43. Every completed attempt consumes one duration (across all its resumed segments). A job with failures>=max_attempts eventually fails if allowed to finish those attempts.
+R44. Snapshots report Waiting.attempt as attempts already started (zero initially; last failed attempt while retrying; preserved attempt while suspended). Running.finish_at is the current segment completion time.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1 R9 R13 R15 R32 R38
+#[test]
+fn public_basic() {
+    let mut p = Pool::new(
+        vec![Job {
+            id: "pub-a".into(),
+            priority: 1,
+            dependencies: vec![],
+            max_attempts: 2,
+            release_at: 0,
+            duration: 5,
+            tag: None,
+            failures: 0,
+        }],
+        1,
+        0,
+        3,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        p.status("pub-a"),
+        Ok(State::Waiting {
+            ready_at: 0,
+            attempt: 0
+        })
+    );
+    assert_eq!(
+        p.run(5).unwrap(),
+        vec!["0 start pub-a 1 5", "5 finish pub-a 1 ok"]
+    );
+    assert_eq!(p.status("pub-a"), Ok(State::Succeeded));
+}
+
+// R6 R25
+#[test]
+fn public_tags() {
+    let mut p = Pool::new(
+        vec![
+            Job {
+                id: "pub-a".into(),
+                priority: 2,
+                dependencies: vec![],
+                max_attempts: 2,
+                release_at: 0,
+                duration: 5,
+                tag: Some("db".into()),
+                failures: 0,
+            },
+            Job {
+                id: "pub-b".into(),
+                priority: 1,
+                dependencies: vec![],
+                max_attempts: 2,
+                release_at: 0,
+                duration: 5,
+                tag: Some("db".into()),
+                failures: 0,
+            },
+        ],
+        2,
+        0,
+        3,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        p.run(10).unwrap(),
+        vec![
+            "0 start pub-a 1 5",
+            "5 finish pub-a 1 ok",
+            "5 start pub-b 1 5",
+            "10 finish pub-b 1 ok"
+        ]
+    );
+}
+
+// R17 R18 R43
+#[test]
+fn public_retry() {
+    let mut p = Pool::new(
+        vec![Job {
+            id: "pub-a".into(),
+            priority: 1,
+            dependencies: vec![],
+            max_attempts: 2,
+            release_at: 0,
+            duration: 2,
+            tag: None,
+            failures: 1,
+        }],
+        1,
+        0,
+        3,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        p.run(7).unwrap(),
+        vec![
+            "0 start pub-a 1 2",
+            "2 finish pub-a 1 fail",
+            "2 retry pub-a 1 5",
+            "5 start pub-a 2 2",
+            "7 finish pub-a 2 ok"
+        ]
+    );
+}
+
+// R27 R29 R30 R31
+#[test]
+fn public_preempt() {
+    let mut p = Pool::new(
+        vec![
+            Job {
+                id: "pub-low".into(),
+                priority: 1,
+                dependencies: vec![],
+                max_attempts: 2,
+                release_at: 0,
+                duration: 10,
+                tag: None,
+                failures: 0,
+            },
+            Job {
+                id: "pub-high".into(),
+                priority: 8,
+                dependencies: vec![],
+                max_attempts: 2,
+                release_at: 3,
+                duration: 2,
+                tag: None,
+                failures: 0,
+            },
+        ],
+        1,
+        0,
+        3,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        p.run(12).unwrap(),
+        vec![
+            "0 start pub-low 1 10",
+            "3 preempt pub-low by pub-high",
+            "3 start pub-high 1 2",
+            "5 finish pub-high 1 ok",
+            "5 start pub-low 1 7",
+            "12 finish pub-low 1 ok"
+        ]
+    );
+}
+```
+
+2026-10-18T04:12:52.613823Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+codex
+I’ll implement the scheduler as a single self-contained Rust source file and keep all state changes local to each `run` call until its horizon has been validated.
+codex
+```rust
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub priority: u8,
+    pub dependencies: Vec<String>,
+    pub max_attempts: u8,
+    pub release_at: u64,
+    pub duration: u64,
+    pub tag: Option<String>,
+    pub failures: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    Waiting { ready_at: u64, attempt: u8 },
+    Running { attempt: u8, finish_at: u64 },
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Config,
+    BadId(usize),
+    BadPriority(usize),
+    BadAttempts(usize),
+    BadTime(usize),
+    BadTag(usize),
+    Duplicate(usize),
+    DuplicateDependency(usize, usize),
+    MissingDependency(usize, usize),
+    Cycle,
+    TimeReversed,
+    TimeRange,
+    Unknown,
+}
+
+#[derive(Clone)]
+struct RuntimeJob {
+    job: Job,
+    dependencies: Vec<usize>,
+    state: State,
+    remaining: Option<u64>,
+    segment_started: u64,
+}
+
+pub struct Pool {
+    jobs: Vec<RuntimeJob>,
+    by_id: HashMap<String, usize>,
+    capacity: usize,
+    aging_ms: u64,
+    retry_base: u64,
+    retry_cap: u64,
+    horizon: u64,
+    has_run: bool,
+}
+
+impl Pool {
+    pub fn new(
+        jobs: Vec<Job>,
+        capacity: usize,
+        aging_ms: u64,
+        retry_base: u64,
+        retry_cap: u64,
+    ) -> Result<Self, Error> {
+        if !(1..=16).contains(&capacity)
+            || retry_base < 1
+            || retry_base > retry_cap
+            || retry_cap > 1_000_000_000
+        {
+            return Err(Error::Config);
+        }
+
+        let mut by_id = HashMap::new();
+        for (i, job) in jobs.iter().enumerate() {
+            if !valid_id(&job.id) {
+                return Err(Error::BadId(i));
+            }
+            if job.priority > 9 {
+                return Err(Error::BadPriority(i));
+            }
+            if !(1..=32).contains(&job.max_attempts) {
+                return Err(Error::BadAttempts(i));
+            }
+            if job.release_at > 1_000_000_000
+                || job.duration == 0
+                || job.duration > 1_000_000_000
+            {
+                return Err(Error::BadTime(i));
+            }
+            if job.tag.as_ref().is_some_and(|tag| !valid_tag(tag)) {
+                return Err(Error::BadTag(i));
+            }
+            if by_id.insert(job.id.clone(), i).is_some() {
+                return Err(Error::Duplicate(i));
+            }
+        }
+
+        let mut resolved_dependencies = vec![Vec::new(); jobs.len()];
+        for (i, job) in jobs.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for (j, dependency) in job.dependencies.iter().enumerate() {
+                if !seen.insert(dependency.as_str()) {
+                    return Err(Error::DuplicateDependency(i, j));
+                }
+                match by_id.get(dependency) {
+                    Some(&index) => resolved_dependencies[i].push(index),
+                    None => return Err(Error::MissingDependency(i, j)),
+                }
+            }
+        }
+
+        if has_cycle(&resolved_dependencies) {
+            return Err(Error::Cycle);
+        }
+
+        let runtime_jobs = jobs
+            .into_iter()
+            .enumerate()
+            .map(|(i, job)| RuntimeJob {
+                state: State::Waiting {
+                    ready_at: job.release_at,
+                    attempt: 0,
+                },
+                job,
+                dependencies: std::mem::take(&mut resolved_dependencies[i]),
+                remaining: None,
+                segment_started: 0,
+            })
+            .collect();
+
+        Ok(Self {
+            jobs: runtime_jobs,
+            by_id,
+            capacity,
+            aging_ms,
+            retry_base,
+            retry_cap,
+            horizon: 0,
+            has_run: false,
+        })
+    }
+
+    pub fn status(&self, id: &str) -> Result<State, Error> {
+        let &index = self.by_id.get(id).ok_or(Error::Unknown)?;
+        Ok(self.jobs[index].state.clone())
+    }
+
+    pub fn run(&mut self, until: u64) -> Result<Vec<String>, Error> {
+        if until < self.horizon {
+            return Err(Error::TimeReversed);
+        }
+        if until > 1_000_000_000 {
+            return Err(Error::TimeRange);
+        }
+
+        let mut jobs = self.jobs.clone();
+        let mut lines = Vec::new();
+        let mut current_time = if self.has_run { self.horizon } else { 0 };
+        let mut first_timestamp = !self.has_run;
+
+        loop {
+            if first_timestamp || current_time > self.horizon {
+                process_timestamp(
+                    &mut jobs,
+                    self.capacity,
+                    self.aging_ms,
+                    self.retry_base,
+                    self.retry_cap,
+                    current_time,
+                    &mut lines,
+                );
+            } else if !self.has_run {
+                process_timestamp(
+                    &mut jobs,
+                    self.capacity,
+                    self.aging_ms,
+                    self.retry_base,
+                    self.retry_cap,
+                    current_time,
+                    &mut lines,
+                );
+            }
+
+            first_timestamp = false;
+
+            let Some(next_time) = next_event_time(&jobs, current_time) else {
+                break;
+            };
+            if next_time > until {
+                break;
+            }
+            current_time = next_time;
+        }
+
+        self.jobs = jobs;
+        self.horizon = until;
+        self.has_run = true;
+        Ok(lines)
+    }
+}
+
+fn valid_id(value: &str) -> bool {
+    (1..=16).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn valid_tag(value: &str) -> bool {
+    (1..=8).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn has_cycle(dependencies: &[Vec<usize>]) -> bool {
+    fn visit(node: usize, deps: &[Vec<usize>], marks: &mut [u8]) -> bool {
+        if marks[node] == 1 {
+            return true;
+        }
+        if marks[node] == 2 {
+            return false;
+        }
+        marks[node] = 1;
+        for &dep in &deps[node] {
+            if visit(dep, deps, marks) {
+                return true;
+            }
+        }
+        marks[node] = 2;
+        false
+    }
+
+    let mut marks = vec![0; dependencies.len()];
+    (0..dependencies.len()).any(|i| visit(i, dependencies, &mut marks))
+}
+
+fn process_timestamp(
+    jobs: &mut [RuntimeJob],
+    capacity: usize,
+    aging_ms: u64,
+    retry_base: u64,
+    retry_cap: u64,
+    time: u64,
+    lines: &mut Vec<String>,
+) {
+    let mut completions: Vec<usize> = jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, runtime)| match runtime.state {
+            State::Running { finish_at, .. } if finish_at == time => Some(i),
+            _ => None,
+        })
+        .collect();
+    completions.sort_by(|&a, &b| jobs[a].job.id.cmp(&jobs[b].job.id));
+
+    for index in completions {
+        let attempt = match jobs[index].state {
+            State::Running { attempt, .. } => attempt,
+            _ => continue,
+        };
+        if attempt > jobs[index].job.failures {
+            lines.push(format!(
+                "{} finish {} {} ok",
+                time, jobs[index].job.id, attempt
+            ));
+            jobs[index].state = State::Succeeded;
+            jobs[index].remaining = None;
+        } else {
+            lines.push(format!(
+                "{} finish {} {} fail",
+                time, jobs[index].job.id, attempt
+            ));
+            jobs[index].remaining = None;
+            if attempt >= jobs[index].job.max_attempts {
+                jobs[index].state = State::Failed;
+            } else {
+                let shift = u32::from(attempt.saturating_sub(1));
+                let delay = retry_base
+                    .checked_shl(shift)
+                    .unwrap_or(u64::MAX)
+                    .min(retry_cap);
+                let ready_at = time.saturating_add(delay);
+                jobs[index].state = State::Waiting { ready_at, attempt };
+                lines.push(format!(
+                    "{} retry {} {} {}",
+                    time, jobs[index].job.id, attempt, ready_at
+                ));
+            }
+        }
+    }
+
+    propagate_blocked(jobs, time, lines);
+
+    loop {
+        let mut candidates: Vec<usize> = jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, runtime)| match runtime.state {
+                State::Waiting { ready_at, .. }
+                    if ready_at <= time
+                        && runtime
+                            .dependencies
+                            .iter()
+                            .all(|&dep| matches!(jobs[dep].state, State::Succeeded)) =>
+                {
+                    Some(i)
+                }
+                _ => None,
+            })
+            .collect();
+
+        candidates.sort_by(|&a, &b| {
+            let pa = effective_priority(&jobs[a], time, aging_ms);
+            let pb = effective_priority(&jobs[b], time, aging_ms);
+            pb.cmp(&pa).then_with(|| a.cmp(&b))
+        });
+
+        let mut selected = None;
+        for candidate in candidates {
+            if can_start_without_preemption(jobs, candidate, capacity) {
+                selected = Some((candidate, None));
+                break;
+            }
+            if let Some(victim) = choose_victim(jobs, candidate, capacity) {
+                selected = Some((candidate, Some(victim)));
+                break;
+            }
+        }
+
+        let Some((candidate, victim)) = selected else {
+            break;
+        };
+
+        if let Some(victim) = victim {
+            let finish_at = match jobs[victim].state {
+                State::Running { finish_at, .. } => finish_at,
+                _ => continue,
+            };
+            let remaining = finish_at.saturating_sub(time);
+            let attempt = match jobs[victim].state {
+                State::Running { attempt, .. } => attempt,
+                _ => continue,
+            };
+            let victim_id = jobs[victim].job.id.clone();
+            let candidate_id = jobs[candidate].job.id.clone();
+            lines.push(format!(
+                "{} preempt {} by {}",
+                time, victim_id, candidate_id
+            ));
+            jobs[victim].state = State::Waiting {
+                ready_at: time,
+                attempt,
+            };
+            jobs[victim].remaining = Some(remaining);
+        }
+
+        start_job(jobs, candidate, time, lines);
+    }
+}
+
+fn effective_priority(runtime: &RuntimeJob, time: u64, aging_ms: u64) -> u8 {
+    let base = runtime.job.priority;
+    if aging_ms == 0 {
+        return base;
+    }
+    let ready_at = match runtime.state {
+        State::Waiting { ready_at, .. } => ready_at,
+        _ => time,
+    };
+    let age = time.saturating_sub(ready_at) / aging_ms;
+    (u64::from(base) + age).min(9) as u8
+}
+
+fn can_start_without_preemption(
+    jobs: &[RuntimeJob],
+    candidate: usize,
+    capacity: usize,
+) -> bool {
+    let running = jobs
+        .iter()
+        .filter(|j| matches!(j.state, State::Running { .. }))
+        .count();
+    if running >= capacity {
+        return false;
+    }
+    let tag = jobs[candidate].job.tag.as_deref();
+    tag.is_none()
+        || !jobs.iter().any(|j| {
+            matches!(j.state, State::Running { .. }) && j.job.tag.as_deref() == tag
+        })
+}
+
+fn choose_victim(
+    jobs: &[RuntimeJob],
+    candidate: usize,
+    capacity: usize,
+) -> Option<usize> {
+    let running = jobs
+        .iter()
+        .filter(|j| matches!(j.state, State::Running { .. }))
+        .count();
+    let candidate_tag = jobs[candidate].job.tag.as_deref();
+
+    let mut victims: Vec<usize> = jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, victim)| {
+            if !matches!(victim.state, State::Running { .. }) {
+                return None;
+            }
+            if jobs[candidate].job.priority < victim.job.priority.saturating_add(2) {
+                return None;
+            }
+
+            let after_count = running - 1;
+            if after_count >= capacity {
+                return None;
+            }
+
+            if let Some(tag) = candidate_tag {
+                let occupied_by_other = jobs.iter().enumerate().any(|(j, other)| {
+                    j != i
+                        && matches!(other.state, State::Running { .. })
+                        && other.job.tag.as_deref() == Some(tag)
+                });
+                if occupied_by_other {
+                    return None;
+                }
+            }
+
+            Some(i)
+        })
+        .collect();
+
+    victims.sort_by(|&a, &b| {
+        jobs[a]
+            .job
+            .priority
+            .cmp(&jobs[b].job.priority)
+            .then_with(|| jobs[b].segment_started.cmp(&jobs[a].segment_started))
+            .then_with(|| jobs[b].job.id.cmp(&jobs[a].job.id))
+    });
+    victims.into_iter().next()
+}
+
+fn start_job(jobs: &mut [RuntimeJob], index: usize, time: u64, lines: &mut Vec<String>) {
+    let (mut attempt, remaining) = match jobs[index].state {
+        State::Waiting { attempt, .. } => match jobs[index].remaining {
+            Some(remaining) => (attempt, remaining),
+            None => {
+                attempt = attempt.saturating_add(1);
+                (attempt, jobs[index].job.duration)
+            }
+        },
+        _ => return,
+    };
+
+    let finish_at = time.saturating_add(remaining);
+    lines.push(format!(
+        "{} start {} {} {}",
+        time, jobs[index].job.id, attempt, remaining
+    ));
+    jobs[index].state = State::Running { attempt, finish_at };
+    jobs[index].remaining = None;
+    jobs[index].segment_started = time;
+}
+
+fn propagate_blocked(jobs: &mut [RuntimeJob], time: u64, lines: &mut Vec<String>) {
+    let mut newly_blocked = Vec::new();
+    loop {
+        let additions: Vec<usize> = jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, runtime)| {
+                if !matches!(runtime.state, State::Waiting { .. }) {
+                    return None;
+                }
+                runtime
+                    .dependencies
+                    .iter()
+                    .find(|&&dep| matches!(jobs[dep].state, State::Failed | State::Blocked))
+                    .map(|&dep| {
+                        jobs[i].state = State::Blocked;
+                        newly_blocked.push((i, dep));
+                        i
+                    })
+            })
+            .collect();
+        if additions.is_empty() {
+            break;
+        }
+    }
+
+    newly_blocked.sort_by(|(a, _), (b, _)| jobs[*a].job.id.cmp(&jobs[*b].job.id));
+    for (index, dependency) in newly_blocked {
+        lines.push(format!(
+            "{} skip {} {}",
+            time, jobs[index].job.id, jobs[dependency].job.id
+        ));
+    }
+}
+
+fn next_event_time(jobs: &[RuntimeJob], current_time: u64) -> Option<u64> {
+    let mut times = BTreeSet::new();
+    for runtime in jobs {
+        match runtime.state {
+            State::Waiting { ready_at, .. } if ready_at > current_time => {
+                times.insert(ready_at);
+            }
+            State::Running { finish_at, .. } if finish_at > current_time => {
+                times.insert(finish_at);
+            }
+            _ => {}
+        }
+    }
+    times.into_iter().next()
+}
+```
+tokens used
+7,933

@@ -1,0 +1,156 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn prepare(points: &[Point]) -> Result<&[Point], GeomError> {
+    let raw_len = points.len();
+
+    if raw_len > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: raw_len });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective = if raw_len >= 2 && points[raw_len - 1] == points[0] {
+        &points[..raw_len - 1]
+    } else {
+        points
+    };
+
+    if effective.len() < 3 {
+        return Err(GeomError::TooFewVertices {
+            len: effective.len(),
+        });
+    }
+
+    Ok(effective)
+}
+
+fn rounded_edge_milli(a: Point, b: Point) -> u64 {
+    let dx = (i128::from(b.x) - i128::from(a.x)) as u128;
+    let dy = (i128::from(b.y) - i128::from(a.y)) as u128;
+
+    // Coordinates are validated before this function is called, so the
+    // scaled squared distance is at most 8 * 10^18.
+    let squared_scaled = (dx * dx + dy * dy) * 1_000_000;
+
+    // Find floor(sqrt(squared_scaled)). The upper bound is 3 * 10^12.
+    let mut low = 0u64;
+    let mut high = 3_000_000_000_000u64;
+    while low < high {
+        let mid = low + (high - low + 1) / 2;
+        let mid_squared = u128::from(mid) * u128::from(mid);
+        if mid_squared <= squared_scaled {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    // Round to nearest integer. The exact midpoint between low and low+1
+    // is low^2 + low + 1/4, so integer squared_scaled values round up when
+    // their remainder from low^2 is at least low+1.
+    let remainder = squared_scaled - u128::from(low) * u128::from(low);
+    if remainder >= u128::from(low) + 1 {
+        low + 1
+    } else {
+        low
+    }
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    let polygon = prepare(points)?;
+    let n = polygon.len();
+
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(n);
+    let mut perimeter_milli = 0u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+
+        let length = rounded_edge_milli(a, b);
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let replace = match longest_edge {
+            None => true,
+            Some(best) if length > edge_milli[best] => true,
+            Some(best) if length < edge_milli[best] => false,
+            Some(best) => {
+                let candidate_pair = if a <= b { (a, b) } else { (b, a) };
+                let best_a = polygon[best];
+                let best_b = polygon[(best + 1) % n];
+                let best_pair = if best_a <= best_b {
+                    (best_a, best_b)
+                } else {
+                    (best_b, best_a)
+                };
+                (candidate_pair, i) < (best_pair, best)
+            }
+        };
+
+        if replace {
+            longest_edge = Some(i);
+        }
+    }
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+```

@@ -1,0 +1,175 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+    Ok(())
+}
+
+fn components(path: &str) -> Vec<(usize, &str)> {
+    let mut result = Vec::new();
+    let mut start = None;
+
+    for (i, b) in path.bytes().enumerate() {
+        if b == b'/' {
+            if let Some(s) = start.take() {
+                result.push((s, &path[s..i]));
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+
+    if let Some(s) = start {
+        result.push((s, &path[s..]));
+    }
+    result
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.as_bytes().last() == Some(&b'/') {
+        return true;
+    }
+    components(path)
+        .last()
+        .is_some_and(|(_, c)| *c == "." || *c == "..")
+}
+
+fn reduce(
+    path: &str,
+    absolute: bool,
+    initial: Vec<String>,
+    skip_initial_bytes: usize,
+) -> Result<Vec<String>, PathError> {
+    let mut stack = initial;
+
+    for (at, component) in components(path) {
+        if at < skip_initial_bytes {
+            continue;
+        }
+        match component {
+            "." => {}
+            ".." => {
+                if stack.last().is_some_and(|last| last != "..") {
+                    stack.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at });
+                } else {
+                    stack.push("..".to_string());
+                }
+            }
+            ordinary => stack.push(ordinary.to_string()),
+        }
+    }
+
+    Ok(stack)
+}
+
+fn join_result(absolute: bool, parts: Vec<String>, directory: bool) -> String {
+    let joined = parts.join("/");
+    let mut result = if absolute {
+        if joined.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_string()
+    } else {
+        joined
+    };
+
+    if directory && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let directory = directory_intent(path);
+    let parts = reduce(path, absolute, Vec::new(), 0)?;
+    Ok(join_result(absolute, parts, directory))
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, ()> {
+    if path.as_bytes().first() != Some(&b'/') {
+        return Err(());
+    }
+    let normalized = normalize(path).map_err(|_| ())?;
+    let trimmed = normalized.trim_end_matches('/');
+    if trimmed.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Ok(trimmed
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd_parts = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_parts = match home {
+        Some(value) => Some(validate_context(value).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let bytes = path.as_bytes();
+    let tilde = bytes.first() == Some(&b'~');
+    let expanded_tilde = if tilde {
+        match bytes.get(1) {
+            None => true,
+            Some(b'/') => true,
+            Some(_) => return Err(PathError::UnsupportedTilde { at: 1 }),
+        }
+    } else {
+        false
+    };
+
+    let (absolute, initial, skip) = if expanded_tilde {
+        let initial = home_parts.ok_or(PathError::MissingHome)?;
+        (true, initial, if bytes.len() > 1 { 2 } else { 1 })
+    } else if bytes.first() == Some(&b'/') {
+        (true, Vec::new(), 0)
+    } else {
+        (true, cwd_parts, 0)
+    };
+
+    let directory = directory_intent(path);
+    let parts = reduce(path, absolute, initial, skip)?;
+    Ok(join_result(true, parts, directory))
+}
+```

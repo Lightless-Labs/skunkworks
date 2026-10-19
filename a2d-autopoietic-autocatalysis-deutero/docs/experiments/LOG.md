@@ -1391,3 +1391,338 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - The proposals already know E002's design from the incumbent source, so convergence on "review then repair" is expected from both arms.
 - **First smoke** (`runs/c2-pc-smoke`, before the fix): both proposals voided, which is the C2-WEB finding. It is kept as evidence.
 - **Spend:** about 120 Luna and 8 Sol across both smokes. Luna today: 2,775 of 3k (UTC).
+- **C2-WEB addendum (same day): the provider fix is prepared but not merged** (branch `c2-web-provider`, 4b80fe67).
+  - `-c web_search="disabled"` replaces the ignored flag, and `codex_tool_calls` counts `web search:` lines (tests: providers 20/20, a2d-lift 66/66).
+  - Live 1-task smoke with that binary, outside `runs/`, 1 Luna call: completed and passed, with no deprecation notice.
+  - It is merged after `decision.json`. The confirmation-2 replicates run on the registered source (32e72a53 crates).
+
+### Review of the unattended queue automation (Codex Sol + fresh Claude, copies only)  [cycle 2, 2026-10-17 ~07:10 UTC; before any batch confirmation]
+- **Scope:** queue.txt, queue-runner.sh, confirm_best.py and its tests, the eval.py excerpt (cap, `log_result`, stages, web audit), and the pre-registration texts.
+- **Fixed** (d364129c, 54e5b358, and the queue rewrite):
+  - `confirm_best` enforced no maximum, while the queue offered three chances. It now enforces **at most 2 confirmations** (test).
+  - After a promotion, an earlier experiment's manifest mismatch could mask a later keep. Keeps are now found first (test).
+  - A crashing `confirm_best` printed nothing, and `eval` of empty output is a silent no-op. It now prints `confirm-best: error: …` (test). It uses `printf`, not `echo`.
+  - **Failures were invisible:** the runner's filter drops `sys.exit` messages and the audit JSON, and prints no exit status. Every line from 6 on now runs through `qrun.sh`: full per-line logs, plus a visible `rc=` line.
+  - **No slack after 10-21:** a 10-22 block was added (resumes, plus `confirm_best` twice, still capped at 2).
+  - `log_result` crashed on a short row; it now tolerates one (test).
+  - **Provider-merge timing:** merging `c2-web-provider` right after `decision.json` would change the instrument between an experiment's stages. It is now merged after the batch's confirmation step and before phase B.
+- **Checked, no change:**
+  - `head -20` cannot cut a run: the controller writes to log files, and Python prints at most about 5 matching lines per stage record.
+  - zsh quoting via `shlex.quote` is sound.
+  - The tie-break order matches the pre-registration.
+  - Replicate 2 cannot run on replicate 1's UTC day: the wait line is ≥ 10-19, and `cmd_confirm` checks it again.
+  - E005 already has its full-stage decision, so it needs no resume lines.
+- **Declined (proportionality):**
+  - transactional promotion: `log_result` and the copy are adjacent;
+  - an atomic cross-process budget: one sequential writer;
+  - auto-relaunch of a failed confirmation replicate: the registered policy is a by-hand relaunch after moving dirs. Instead, watchers wake the session on milestones and failures.
+
+### Queue runner stopped by the Claude Code memory reaper; restart queue moved to `~/.a2d-queue`  [cycle 2, 2026-10-17 15:23 UTC; before any confirmation call]
+- **What happened:** at 15:23 UTC, with the machine low on memory, Claude Code stopped the session's idle background shells: the queue runner, its `caffeinate` and the milestone watcher.
+  - The runner was sleeping in line 5's wait for 00:05 UTC 10-18. Lines 1–4 had finished (look 1, the oracle wait, E005 full, E007 screen).
+  - **Nothing was half-run:** no `attempt-r1.json` and no replicate-1 directory exist, so confirmation-2 is untouched.
+- **The hazard:** the same stop during replicate generation would leave an attempt record. The registered policy allows one relaunch, and a second failure makes confirmation-2 "not run" with the set spent.
+  - So the runner must no longer live as a Claude Code background shell.
+- **Restart, prepared but not started** (Claude Code's note says a stopped job restarts only when the owner asks). Everything lives under `~/.a2d-queue/`; the session scratchpad is under `/private/tmp`, which macOS may clean.
+  - `start.sh` launches `queue-runner.sh` with `nohup caffeinate -i`, detached and disowned, and refuses to start a second copy (`runner.pid`).
+  - `queue-2026-10-18.txt` holds the old lines 5–37, all through `qrun.sh`. Line 5 was unwrapped before; it is now wrapped.
+  - **Date-robust confirmation lines:** `L05-confirm-r1` and `L09-confirm-r2` keep their ≥ 10-18 and ≥ 10-19 lower bounds. On any "deferred" answer (the cap, or replicate 2 on replicate 1's UTC day) they retry at the next 00:05 UTC, at most 5 days. Before, a late restart would have walked past a deferred replicate 2 and never run it.
+  - Stub-tested: both exit paths propagate their rc, and the deferral path retries 5 times then exits 1. Syntax-checked; no scratchpad paths remain.
+- **No registered setting changes:** same commands, seeds, `--registered-at` and arms; only the scheduling wrapper changed. A one-day slip costs nothing against the budget or the 2026-11-30 deadline.
+- **C2-WEB record completed (same day, count only):** the six 10-14 dev runs (e01–e06) have **0 web-search events in 775 transcripts**. Every holdout run directory on disk was already in the first scan (E07, E07b, E12, S4, c2-look1). Total on record: 0 searches in about 15.8k calls.
+
+### Queue runner restarted on the owner's request; confirmation-2 replicate 1 started  [cycle 2, 2026-10-18 01:35 UTC]
+- The owner asked for the restart at 01:35 UTC 10-18. `zsh ~/.a2d-queue/start.sh` launched the runner detached (pid 7116, `nohup caffeinate -i`, not a Claude Code background shell).
+- Line 1 of `queue-2026-10-18.txt`, `L05-confirm-r1`, started at 01:35:43 UTC. Its ≥ 00:05 UTC 10-18 lower bound had passed, so replicate 1 began at once. This is the first confirmation-2 call: nothing was run on 10-17.
+- No registered setting changed. Replicate 2 (`L09`) keeps its ≥ 10-19 lower bound and its deferral retry, so the two replicates still fall on distinct UTC days.
+- The 10 hours between the reaper stop and the restart cost no Luna. The only cost is about 1.5 h of the 10-18 UTC day for the daily cap.
+
+### C2-CONFIRM2 replicate 1: generated; web audit finds 2 searches in arm B, so the outcome is IntegrityReview  [cycle 2, 2026-10-18 03:59 UTC; counts only]
+- **Replicate 1** (`L05-confirm-r1`): 01:35:43–03:46:18 UTC, rc=0, decision "generated (scoring deferred)".
+  - Spend, from the replicate's ledger (invocation records only): **1,486 Luna, 132 Sol**. Luna today: 1,486 of 3k.
+  - Attempt record: `runs/c2-confirm2/attempt-r1.json` (commit 26e02426).
+- **Web audit** (`L06-audit-r1`, `confirm-web-audit --rep 1`, `runs/c2-confirm2/web-audit-r1.json`), verbatim counts:
+
+  | arm | web-search events | transcripts | invocations without transcript | not codex 0.162.0 |
+  |---|---|---|---|---|
+  | B | **2** | 720 | 0 | 0 |
+  | D | 0 | 185 | 0 | 0 |
+  | X:frozen | 0 | 713 | 0 | 0 |
+
+  `"integrity_review": true`.
+- **Outcome, fixed by the registered C2-WEB amendment (10-17, before any confirmation call): IntegrityReview.**
+  - Any event in any arm, in either replicate, decides it, whatever `decision.json` says. The rule is not narrowed: "only B searched" and "2 of 720" are post-hoc readings that the amendment's review did not cover.
+  - **Confirmation-2 is spent with no claim.**
+- **What is not done:** no transcript, task id, timestamp or file order in the replicate directory is examined to find what was searched or why B and not X. That would reveal set membership, so the cause stays unknown by design.
+- **Replicate 2 runs as registered** (`L09`, ≥ 00:05 UTC 10-19, then its audit). `confirm-score` then writes `decision.json`, whose numbers are reported as **descriptive** only.
+  - **The freeze still holds until then:** crates, Cargo files and `eval.py`'s CONFIRM2 section stay untouched, and `c2-web-provider` (4b80fe67) waits.
+  - The queue and the dev batch (E007 resume, E006 to E010, `confirm_best`) are unaffected and keep running.
+- **The amendment's premise failed:** it rested on "at low or medium effort the models never used it" (0 in about 15.8k). The next 720 B transcripts held 2 searches.
+  - **Learning** (to compound): don't spend a once-only set on an instrument with a known open channel. Close the channel and re-register first, even if that costs a re-review. An audit run after the spend can only show that the set is gone.
+- **Consequence for the goal:** a SUPPORTED claim in this cycle now needs a new blind confirmation set (confirmation sets are spent once). This is planned in the plan addendum of 10-18, not decided here.
+
+### Confirmation-3 pre-commitment  [cycle 2, 2026-10-18 ~05:30 UTC; before confirmation-2's replicate 2, before any E006–E010 decision, before `confirm_best`]
+- **Plan:** `docs/plans/2026-10-18-confirmation-3.md`, §0 (commits fb8b55c9 and 1958ba0a). The registration will copy it.
+- **Reviews:** Codex Sol (high; no tools; web disabled, 0 search events) and a fresh Claude (copies only) reviewed the draft. Sol then reviewed §0 again. All dispositions are in §7 and §0.10, and none were rejected.
+- **Fixed now:**
+  - **Candidate:** the batch winner iff `confirm_best` promotes it and it passes exactly one dev-holdout look by 2026-10-23 23:59 UTC. Otherwise E002.
+  - **Spend:** at or after 10-24, after the registration is committed and the instrument re-frozen.
+  - **Set:** 36 new families × 4, r = 2, k = 5. Arms D, B and X:frozen. Claim rule unchanged.
+  - **Integrity:**
+    - an allowlist over `--json` events, with positive controls and a pinned codex;
+    - tuple voids with worst-case imputation;
+    - IntegrityReview on a hidden-name hit, a per-replicate tool-event rate > 0.5%, or pooled voids > 5%.
+  - **Budget:** confirmation-3 is ring-fenced before phase B (3.0k plus a 1.5k reserve). Phase B gets the rest, with R = 6 fitting rounds-only and an R = 4 floor.
+  - **Authoring:** Sol picks the families, with opaque ids, `CODEX_HOME` in the holdout dir, prompts by pointer file, canary checks, and launch-isolation and drain checks.
+  - **Confirmation-2's scored data** stays sealed in the holdout dir until confirmation-3's decision.
+- **Ex-ante:** at E002's honest estimates (+7.1 to +8.9 pp), INCONCLUSIVE is the likely outcome, and the +10 pp bar is not lowered.
+- **Owner request:** please quiesce the A² session during confirmation generation windows.
+
+### C2-MCP — codex loads a curated Cloudflare plugin (MCP server) and local skills despite `--ignore-user-config`; 7 dev and 3 look-1 no-op MCP calls  [cycle 2, instrument finding, 2026-10-18 ~06:30 UTC; counts only for holdouts]
+- **How it was found:** a scan of every cycle-2 dev transcript (5,658) for lines that are neither headers nor role markers. Neither `exec` nor `web search:` appeared, but **`mcp:` lines did**: `mcp: codex/list_mcp_resources started/(completed)`, sometimes also `list_mcp_resource_templates`.
+- **Source:**
+  - codex-cli 0.162.0 loads plugins by default (`plugins` and `remote_plugin` are stable and on), and `--ignore-user-config` does not drop them.
+  - A cached plugin from `openai-curated-remote` declares one MCP server, `cloudflare` (`https://mcp.cloudflare.com/mcp`, streamable HTTP). It is the only plugin MCP server.
+  - That server needs OAuth and was never authorised. Every transcript logs `rmcp … AuthRequired … mcp.cloudflare.com` at startup, so the server never connects and exposes no tools or resources.
+  - The coder's `list_mcp_resources` and `list_mcp_resource_templates` are codex built-ins that list connected servers' resources, and there were none.
+  - The controller's `codex_tool_calls` counts `exec` lines only, so these calls were invisible to `integrity_ok`.
+- **Counts** (transcripts with ≥ 1 MCP tool call / transcripts; holdout dirs counted, never opened):
+
+  | run | MCP calls / transcripts |
+  |---|---|
+  | E002 | 2 / 421 |
+  | E002b | 1 / 1,317 |
+  | E003 | 1 / 366 |
+  | E005 | 2 / 1,386 |
+  | E007 (so far) | 1 / 839 |
+  | E003b, E004, C2-AA, phase-B smokes | 0 |
+  | look 1 (holdout) | 3 / 1,240, all in X:inc (E002) |
+  | confirmation-2 replicate 1 (holdout) | 0 / 1,618 |
+  | cycle-1 holdout runs | E07 3 / 1,825; E07b 0; E12 2 / 652; S4 0 |
+
+- **Effect on results:**
+  - No information could flow: the only MCP server never connected, so the listing calls returned nothing. Hidden tests and holdouts are not reachable through this channel.
+  - The calls are rare (≈ 0.1%) and spread over both incumbent and candidate arms.
+  - **Look 1's gate,** checked count-only with one bit released: with the 3 X:inc MCP tuples imputed worst-case (pass → fail), lift and CI low shifted by 3/n, the gate is still **PASS**. This is approximate: the bootstrap was not re-run.
+  - **Confirmation-2's outcome is unchanged:** 0 MCP calls, and IntegrityReview rests on the 2 web searches.
+  - **No recorded result is affected.**
+- **Also found, symmetric across arms** (rendered with `codex debug prompt-input`):
+  - codex injects about 9.9k chars of `<skills_instructions>` and about 2.7k chars of multi-agent role and mode messages ahead of our prompt. The skill list comes from local skill dirs and plugins (e.g. `refinery`, `foundry-*`, `openai-docs`, `claude-code`).
+  - Whether `--ignore-user-config` drops the skills could not be checked: `prompt-input` has no such flag. To be probed live.
+  - Every arm of every run gets the same context, so the paired comparisons stand, but our "prompt" is not the whole input.
+- **The dev batch continues.** The channel carries no information, and the arms are symmetric. No E006–E010 decision rule depends on it.
+- **Fixes (after the freeze, with the C2-WEB provider fix; confirmation-3 §0.4 and §0.6 step 3):**
+  - an empty, dedicated `CODEX_HOME` holding only auth (no plugins, skills, memories, `AGENTS.md` or hooks);
+  - an explicit feature allowlist: disable every stable default-on tool feature (`plugins`, `remote_plugin`, `multi_agent`, `skill_search`, `skill_mcp_dependency_install`, `tool_suggest`, `view_image`, `image_generation`, `in_app_browser`, `browser_use_external`, …);
+  - the `--json` allowlist detector, which counts `mcp_tool_call` items;
+  - a live `prompt-input` check that the injected context is gone.
+
+### E007 — Sol-directed repair: full stage PROVISIONAL KEEP (+7.1 pp all-pass vs E002)  [cycle 2, proposer: sol, screen 10-17, rest and full 10-18 03:59–07:58 UTC]
+- **Design** (registered in proposer round r1, 10-16; prompts read in its smoke test): 3 Luna drafts → one Sol call that picks among the distinct greens and lists concrete defects, no code → one Luna repair of the pick.
+- **Results vs the incumbent E002** (paired, same tasks, X:cand vs X:inc):
+  - **Screen** (68 tasks): 65/68 vs 62/68, discordant 3 vs 0. It passed the screen gate.
+  - **Rest** (72 tasks): 65/72 vs 58/72, discordant 10 vs 3.
+  - **Full** (140 tasks, 35 families): **Δall-pass +7.14 pp (SE 3.15)**, i.e. +10 net (130 vs 120); Δfrac +0.0108 (SE 0.0231).
+  - Δ clears the threshold (0.0357) and 1.645·SE (0.052), and Δfrac is not significantly negative, so the registered decision is **provisional keep (confirmation deferred)**.
+- **Integrity:** integrity_ok and 0 void tuples in both stages. C2-MCP counted 1 no-op MCP call in the screen, in the X:inc arm.
+- **Spend:** 1,291 invocations, made up of X:cand (Luna 470, Sol 140) and X:inc (Luna 571, Sol 110), plus 10.2M tokens.
+  - That is fewer Luna calls than E002: about 3.4 per task against 4.1.
+- **What happens next is mechanical:** `confirm_best` (≥ 10-20) confirms the largest full-stage provisional keep first. E007's +7.1 pp is now the largest, ahead of E005's +5.0. A promotion makes it the confirmation-3 candidate only if it also passes one dev-holdout look by 10-23 23:59 UTC (plan §0.1).
+- **Caveat:** the winner's curse applies, as it did to E005. The fresh confirmation replicate decides.
+
+### Confirmation-3 pipeline built and reviewed; provider and controller hardened on `c2-web-provider`  [cycle 2, 2026-10-18 06:30–10:40 UTC; no confirmation-3 call yet]
+- **Blind power (plan §0.6 step 1):** `docs/experiments/analysis/c3_power.py`, dev summaries only.
+  - Pooled dev discordance is 0.173, which calibrates the task deviation SE to 1.5.
+  - At 36 × 4 and r = 2: P(RULED OUT | 0) = 0.91, P(SUPPORTED) = 0.14 / 0.33 / 0.47 / 0.96 at +7.1 / +8.9 / +10 / +15 pp.
+- **Authoring pipeline (step 2):** `tools/holdout/`, rebuilt in the repo; the 10-14 scripts were lost with a scratchpad.
+  - **Code review 1** (Codex Sol plus a fresh Claude, copies only) found 6 blockers. Among them:
+    - an allow-default sandbox;
+    - writable credentials;
+    - a shared codex home;
+    - symlink-following host I/O;
+    - an output token that could print names;
+    - no process-group kill.
+  - **The live probe proved a real gap:** a job could connect to the ssh-agent socket. All of these are fixed.
+  - **Sol re-check 2** found 8 new majors: a lock race, unlink-then-write, a resumable failed selection, admission of failed-job files, an idempotency bug, a FIFO, the assembly crash window and copied brokers. These are fixed too.
+  - **Live probe with real codex under the final profile:** reads of the canary, the holdout dir and `/Users`; writes to `/opt/homebrew`; signals to the driver; ssh-agent connects; `launchctl`; `open`; `/dev/tty`. **All denied.**
+  - Tests: 11/11 on fixtures with a fake codex under the real seatbelt profile.
+  - Commits: 9f4d36cf, ef6b58fb, 59d210ac, d50bee58.
+  - **Frozen pre-authoring rules:** plan §0.11, covering caps, the shortfall rule, the similarity state machine, the repair and exclusion rules, adjudication criteria and the disclosed limits.
+- **Instrument (step 3), on branch `c2-web-provider`** (not merged: freeze until `decision.json`, then the batch confirmation step):
+  - **be96d21b, provider:**
+    - per-call isolated `CODEX_HOME` (auth link only);
+    - every tool feature disabled;
+    - `--json` with `--output-last-message`;
+    - allowlist tool counting over event items, failing closed;
+    - usage read from `turn.completed`.
+    - Tests 24/24, plus one live Luna call (PONG, 0 tool events).
+  - **27757c6b, controller:** a tool event voids its tuple. IntegrityReview applies above 0.5% tool events per replicate or on any hidden-name hit. Tests 67/67.
+- **Still to do before step 5:**
+  - the adjudication tooling;
+  - merging the branch;
+  - positive controls per tool per lane;
+  - re-freezing;
+  - confirmation-3 scoring with worst-case imputation in `eval.py` (a new `CONFIRM3` section).
+- **Authoring (step 4) starts only after confirmation-2 replicate 2's web audit is committed**, which `prereqs_ok` checks.
+
+### Confirmation-3 pipeline: Sol re-check 3 blockers closed; a copied `open` escaped the sandbox  [cycle 2, 2026-10-18 10:20–12:30 UTC; no confirmation-3 call yet]
+- **Sol's re-check of d50bee58 said "No"** and listed 5 startup blockers: broker confinement, job quiescence, selection provenance, STOP enforcement and inventory completeness. It also found 2 partial fixes in the similarity state.
+- **Live escape (correcting the 10-18 entry's "`open` denied"):**
+  - The path deny on `/usr/bin/open` held. A **copy** of `open` in the workdir did not: it launched TextEdit outside the sandbox through LaunchServices. With `open -a Terminal x.command` that would have been unsandboxed code execution.
+  - No job ever ran under that profile. Selection had not started, and `prereqs_ok` was still closed.
+- **Fix: Mach lookups are an allowlist** (`c3lib.MACH_ALLOW`, 9 services). It was harvested with `(allow mach-lookup (with report))` from a sandboxed compile and a live codex call.
+  - Codex needs SecurityServer for TLS roots. This was bisected live: without it, codex's connection fails while `curl` works.
+  - TCP to localhost (v4 and v6) is also denied.
+  - Copied `open` (by name and by path), `launchctl`, `pbpaste` and `mdfind` now fail, and so does a localhost listener. These checks now run before every job; a weakened profile fails them (negative control).
+  - Disclosed: a copied `security` lists the system keychain's metadata, which is world-readable anyway.
+- **Quiescence by sandbox membership:**
+  - Each profile alone may read its own tag file. The host finds a job's processes with `sandbox_check` on every pid, whatever their session, group, environment or cwd.
+  - After every job and probe, the driver stops all members to a fixpoint, kills them, and verifies that none remain before reading any artifact.
+  - Verified live: a setsid'd, double-forked, env-scrubbed daemon was found only under its own tag and reaped in 0.35 s.
+  - `DriverLock` reaps leftovers from a dead driver first.
+- **Also fixed:**
+  - one launch lock for STOP and every job launch;
+  - selection generation in `select.json`, retired by `--reset`;
+  - traversal errors raise during inventory;
+  - descriptor-relative host reads;
+  - re-authored families are decided only on a re-assembled suite;
+  - exhausted families are replaced. This fills a gap in the frozen rules, recorded in plan §0.12.
+- **Host incident:** from about 10:50 UTC a `cargo-sweep` from another session flooded `fseventsd` (2.4 GB, stuck). File-creating processes sit in uninterruptible wait, and an unsandboxed hello-world compile takes 3.5 min. Two environment-sensitive tests (the sandboxed toolchain and the broker probes, both timeout-bound) are re-run after it clears.
+- **E006 screen** (Sol spec notes before 3 Luna samples): all-pass 61/68 vs 59/68 (+2.9 pp); hidden fraction 0.973 vs 0.989; 332 vs 329 invocations. The rest stage is deferred by the cap (Luna today 2,520).
+  - First prompts were read (url-parse-l1, X:cand). Sol gets the requirements and public tests with a no-code reviewer brief. Luna's prompt is the controller prompt plus "## Reviewer notes on the requirements". No hidden content.
+- **Sol re-check 3** (of 6ea429f6, copies only, web disabled, 0 search events) marked all 5 blockers and both partial items FIXED, except quiescence, which was PARTLY.
+  - The gap: a launcher between `Popen` and sandbox entry is unsandboxed, so a recovery after driver death would miss it.
+  - **Fix: a launch handshake.** The launcher reads "go" from a driver pipe and execs `sandbox-exec` with stdin from /dev/null. The driver writes "go" only after fsync'ing the launcher's pid and libproc start time, so on driver death the launcher gets EOF and exits.
+  - `DriverLock` then kills every recorded live launcher group, verifying start times so a reused id is never signalled, before reaping the tagged members.
+  - Tests: an unregistered launcher never runs; recovery kills an orphaned group member and spares a reused id.
+  - A first version passed the pipe as fd 3 through `pass_fds`, which keeps the fd's own number. In the broker probe a listening socket already held fd 3, so every probe failed closed. Hence the stdin handshake.
+- **Sol re-check 4** (of 85bf32e1) found that probes were still launched without registration, so the same driver-death race survived for them. Probes now launch exactly like jobs.
+  - **Authoring-shaped smoke under the real profile:** one Sol job in the probe holdout wrote a small Rust library and tests, ran `check.sh` and wrote `REPORT.md`. Result: exit 0, 0 non-allowlisted events, `test result: ok`, 551 s (during the fseventsd stall). So the Mach allowlist holds for a real tool loop, not just a "reply OK" call.
+  - The command scan flagged 1 of its 12 commands: `"$HOME/.rustup/…/rustc" --version`. That false positive would have failed an authoring attempt, so the toolchain's `$HOME`/`~` spellings are now stripped too (test added).
+  - The long drivers now launch only through `tools/holdout/detached.sh` (own session, `caffeinate`, gateway output in `~/.a2d-c3-drivers/`), because a reaped Claude Code shell would spend in-flight attempts at the next recovery.
+- **Sol re-check 5** (of 134393a2): the probe race is FIXED and no blocker remains. **Verdict: Yes.** Selection and authoring may start once replicate 2's web audit is committed and the pipeline is committed clean (`prereqs_ok` checks both).
+- **Step-5 tooling built:** `c3_audit.py`, `c3_adjudicate.py` and the frozen `authoring/ADJUDICATE.md`, tested end to end with a fake `a2d` and a fake codex (plan §0.12).
+  - The flow test caught a real ordering bug. A repair changes the author files, not the assembled suite, so the suite digest still matched, and the re-audit would have run on the unrepaired task. The audit now also requires every suite family to match its current verified author files (`assembled-hashes.json`).
+- **Host degradation, root cause** (15:30 UTC): the data volume is **98% full (8.9 GB free) with 6.8 GB of swap** in use. That, not the sweep alone, is why `fseventsd` is stuck and file-creating processes sit in `U`.
+  - The `cargo-sweep` ended at 15:09, yet an unsandboxed hello-world compile took 7 min 38 s at 15:30. A fresh-workdir `check.sh` under the profile took 552 s (179 s on the second run).
+  - So the profile's healthy-host compile time is still **unmeasured**. The acceptance bar (first ≤ ~90 s, second ≤ 5 s) is checked before selection starts, on a host with free disk.
+  - Selection and authoring do not start on a degraded host.
+  - L09 (replicate 2, ≥ 00:05 UTC 10-19) writes into `~/.a2d-holdout/runs`. Free space is checked against replicate 1's run size before it fires, and an abort from a full disk or a stall would be attributable to the host (this note precedes the line).
+- **Pre-L09 host check** (23:55 UTC 10-18): the sweep is gone, but `fseventsd` is still at 90% CPU and 5.9 GB RSS. Swap is 6.5 GB of 8 GB, and git, rg and Python processes sit in `U`.
+  - Free space is 9.9 GB against replicate 1's 80 MB run dir, so a full disk is not a risk.
+  - L09 fires as registered. It is descriptive only (confirmation-2 is spent as IntegrityReview), so slow sandbox compiles cost wall clock but no claim.
+  - Any oracle timeouts or voids in replicate 2 are attributed to this host state.
+- **Confirmation-2 replicate 2** (L09): generated 00:06–05:53 UTC 10-19. That is 5 h 47 m, against replicate 1's 2 h 11 m, and the slowdown is the host stall.
+  - 1,617 invocations (D 191, B 720, X:frozen 706), against replicate 1's 1,618. No submission is void in either replicate.
+  - **L10 web audit:** 0 web-search events in every arm. However, 11 invocations have no transcript (B 2, D 1, X-frozen 8; replicate 1 had 0), so they are unaudited. Descriptive only: the set is already IntegrityReview from replicate 1.
+  - The attempt record and the audit are committed (9b5ca3c9), and so are the content-free manifests of both replicates (c6c61814).
+  - `confirm-score` runs detached and sealed from 05:58 UTC. Its stdout goes to the holdout runs dir. A wrapper moves `decision.json` and `pooled-summary.json` unread to `c2-confirm2-decision/` and keeps only their sha256 and the exit code.
+- **Confirmation-2 scored and sealed** (06:11 UTC 10-19, rc 0, 14 min): `decision.json` and `pooled-summary.json` are unread in the holdout dir. Their sha256s are pinned in `runs/c2-confirm2/sealed-sha256.txt` (7e4735fd), and they are read only after confirmation-3's decision.
+  - `confirm-score` now refuses once that file exists (70b5c85c). Without the guard, a re-run would re-pool and write the decision back into the repo.
+  - **The freeze window is over** (`crates/`, Cargo files, eval.py's CONFIRM2 section). `c2-web-provider` is still merged only after the batch's confirmation step (≥ 10-22), so the provider doesn't change between an experiment's stages.
+- **Profile compile timing, measured** (06:20 UTC 10-19): paired and interleaved (S U U S S U), using fresh workdirs under `~/.a2d-holdout-c3probe` and the fixture's `check.sh reference.rs hidden_tests.rs`. Sandboxed runs took 43.1 / 1.1 / 1.1 s and unsandboxed runs 24.1 / 0.9 / 0.7 s.
+  - In `/private/tmp` the times were 10.9 / 0.6 / 0.6 s sandboxed and 3.4 / 0.4 / 1.0 s unsandboxed.
+  - **The acceptance bar is met:** the first run took ≤ 90 s and warm runs ≤ 5 s. The profile adds about 20 s to a cold start and nothing measurable when warm.
+  - Yesterday's 552 s / 179 s were the host stall, not the profile. `fseventsd` is still hot (about 80% CPU), but file creation has recovered.
+  - The confirmation-3 suite passes 21/21 (987 s), including `test_check_sh_compiles_under_sandbox` (24 s).
+- **Confirmation-3 selection started** (06:45 UTC, `detached.sh c3_select.py`). The prerequisites hold: replicate 2's web audit is at HEAD and the pipeline is clean. Authoring follows in idle queue windows.
+- **Confirmation-3 selection done** (07:04 UTC 10-19). The inventory saw 868 holdout tasks and 167 repo tasks (120 families). Sol wrote all **40** briefs (namecheck is valid only if every one of the 40 ids gets a verdict). The namecheck found 2 conflicts, so 38 were OK: **36 selected** (the first 36 OK ids) and 2 spares, per §0.11. *Corrected 09:40 UTC: this line first read "Sol proposed 38", misreading the gateway's `count` (= OK verdicts); Sol's early review flagged the discrepancy.* 0 non-allowlisted events and 0 skipped commands.
+- **Authoring started** (07:05 UTC, `detached.sh c3_author.py --parallel 2`). This **deviates from the HANDOFF's "idle queue windows"**, which was my own caution, not a plan rule. The plan's rule (§7: drain before any registered window) covers confirmation generations, and none runs before 10-24.
+  - Authoring uses Sol only, and the host compile is healthy again.
+  - Waiting for idle windows would push the audit, which can only run after the provider merge (≥ 10-22), past the registration date.
+  - Parallelism is 2, not 3, as a hedge on shared-account load. The queue's provider timeout rate is watched: dev baseline 0.47% of calls.
+- **Failed-call transcripts (plan §0.13), fixed on `c2-web-provider`** (2ffb2e01, f765c67d; pushed, not merged).
+  - **Problem:** a failed Codex call returned only an error, and the meter wrote no transcript for it. All 34 failed calls in the dev ledgers (0.47% of 7,177) are timeouts. Under §0.4, each would void its tuple and, by worst-case imputation, cost X.
+  - **Fix:**
+    - Codex runs in its own process group. A timeout kills the group, then joins the pipes within 5 s (fail closed).
+    - The partial transcript passes to the meter through a thread-local slot.
+    - The meter writes it and counts tool events with the same allowlist, minus the missing-`turn.completed` penalty and a cut-off last line. *(Superseded by 88462f81: a cut-off last line now counts, fail closed.)*
+  - **Verification:**
+    - A unit test showed that a plain kill leaves a grandchild holding the pipes, which is why the group kill is needed.
+    - A live Luna call forced to time out (12 s) left a transcript with 0 tool events in 3 of 3 runs. One was killed before its first event.
+    - `a2d-lift` 68/68 and `a2d-providers` 27/27.
+  - Also fixed: the nano-vs-native prompt parity test flaked on libtest durations (0.30 s vs 0.00 s under load).
+  - At merge (≥ 10-22), bump `c3lib.PROVIDER_COMMIT` to f765c67d.
+- **Version pin under `--json`:** codex 0.162 prints no version banner in `--json` mode (1-call probe). `nano/confirm3.py` therefore accepts `--json` transcripts without one, and the confirmation-3 runner will bracket each replicate with the codex binary's realpath and sha256 (§0.13).
+- **Authoring progress** (07:46 UTC): 4 of the first 5 families verified. c3-f01's first attempt was rejected by the command scan (2 flagged commands). Possible false-positive classes are heredoc lines that start with a listed word, or toolchain exploration, but sealed content cannot be inspected. The rate is watched, and families have 2 attempts plus replacement.
+- **Two mid-authoring pipeline fixes** (disclosed in plan §0.13):
+  1. **Command scan false positive** (ecfb1c65). A category-only diagnostic (pattern class, never text) showed that both rejected first attempts (c3-f01, c3-f06) were flagged for the word `at` starting a prose line in a multi-line command or heredoc.
+     - Heredoc bodies fed to `cat`/`tee` are now data, and `at`/`batch` are off the tool list (`atrun` is not loaded on macOS).
+     - Authoring was stopped by STOP, which drained the in-flight jobs, then restarted at 08:15.
+  2. **Retry isolation** (17da7217). Codex 0.162 writes `skills/` into its `CODEX_HOME` on every run, and the isolation check ran before the home was recreated.
+     - Both retries were refused (fail closed, no attempt spent), and every `c3_fix` repair would have been too.
+     - The home is now reset before the check. The fake codex reproduces it.
+  - The pipeline suite passes 21/21 after each fix. The running driver keeps the earlier code for its first attempts, and the next run picks up the retries.
+- **Authoring, 08:40 UTC:** 8 families verified (f02–f05, f07–f09, f11). c3-f10's first attempt failed verification (exit 0, 0 events, 0 flags) and has 1 attempt left. 25 families are pending.
+- **Step-3 injected-context check** (09:00 UTC, `codex debug prompt-input`, no model call). Under the provider branch's isolation, the injected context drops from 18.4k to 12.3k chars, and the plugins and user skills are gone.
+  - Codex 0.162 still injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k), with no switch to disable them (5 variants tried). Both are the same in every arm and carry no task information, so they are disclosed.
+  - 10 more default-on features are now disabled on the branch (d7f04741). Two live PONG calls showed that disabling `code_mode_host` emits an `error` item on every call, so it stays on. With the rest off, the event stream is clean.
+  - Provider tests pass 27/27, and so does the live zero-tool-events test. 3 Luna calls were spent on probes.
+- **Step-3 positive and negative controls, live** (09:00 UTC, provider branch, now `#[ignore]` tests).
+  - With one tool switched back on, a call asked to use it shows ≥ 1 tool event in the provider's detector: Luna shell 2, Luna web search 2, Sol shell 2, Sol web search 2.
+  - The provider as configured shows 0 tool events on a PONG call on both lanes.
+  - So the detector works on both lanes, and a run with 0 events is informative. 6 live calls (3 Luna, 3 Sol); branch head f06dc9fb.
+
+### C2-LOOK2 — conditional dev-holdout look of the promoted batch keep  [registered 2026-10-19 ~09:30 UTC, before any batch confirmation]
+- **Why:** plan 2026-10-18-confirmation-3 §0.1. The confirmation-3 candidate is the batch winner iff `confirm_best` promotes a keep and that keep passes **exactly one** dev-holdout look by T = 2026-10-23 23:59 UTC; otherwise it is E002. No queue line ran that look, so a promotion would have silently defaulted to E002.
+- **Trigger:** `nano/look_if_promoted.py E005 E006 E007 E008 E009 E010`, queued at the end (after L37 on 10-22, then again after 00:05 UTC 10-23). It runs the look only if all of these hold:
+  - a batch keep was promoted (a confirm-stage keep in `results.tsv`);
+  - `nano/harness.py` is that keep's candidate snapshot;
+  - look 2 was never attempted (no `~/.a2d-holdout/runs/c2-look2`);
+  - the time is before T.
+  Otherwise it prints why.
+- **Command:** `python3 -I nano/eval.py look --n 2 --registered-at <this commit> --seed 6262 --jobs 8`. That is look 1's protocol unchanged: D vs X:inc on the dev-holdout split, k = 5, r = 2, max 3,000 invocations; out `~/.a2d-holdout/runs/c2-look2`.
+- **Read discipline and gate:** exactly look 1's.
+  - Only `gate.json` (valid, PASS/FAIL, n, spend) reaches the repo.
+  - PASS ⇔ valid and X:inc − D all-pass ≥ +10 pp with family-bootstrap CI low > 0.
+  - **PASS:** the promoted keep is the confirmation-3 candidate, frozen by file hash. **FAIL, failed run or past T:** E002.
+- **Instrument:** the look runs under this registration's controller, so the provider merge (`c2-web-provider`) waits until look 2 is done or T has passed. The controller refuses a run whose crates changed since `--registered-at`.
+- **Budget:** about 1.25k Luna + 0.2k Sol (look 1: 1,240 invocations). The worst-case cap check is 2,000, and a cap deferral is not an attempt.
+- **E006 (Sol spec notes), full stage: DISCARD** (L11, 05:54–09:00 UTC 10-19). Δall-pass +2.86 pp (SE 2.35), below the 3.57 pp threshold. The screen had been +2.9 pp on all-pass and −1.6 pp on hidden fraction. Discards stay logged in `results.tsv`.
+- **E008 first prompts read** (screen, X:cand, rr-scheduler-l1, 09:05 UTC):
+  - inv00–inv02 are the plain coder prompt (5.3k chars each).
+  - inv03 is the synthesis call (13.8k chars): the task, the public tests, then "Earlier candidate drafts", which holds the three drafts with their public results only. It asks for one solution that uses the drafts as material and keeps the exact API.
+  - inv04 is E002's unchanged Sol judge over the candidate files.
+  - No hidden content: "hidden" appears only in the standard boilerplate and judge wording. The design matches the hypothesis.
+- **Early review of the confirmation-3 runner** (09:20 UTC 10-19, before any registration).
+  - `docs/experiments/analysis/c3_review.py` builds a copies-only packet: the plan, the runner and its tests, the generator, the pipeline README, the provider diff and the LOG's confirmation-3 entries.
+  - Codex Sol (high, web disabled) reviews it from the packet dir. A fresh Claude subagent reviews a separate copy, so the two are independent.
+  - Purpose: find runner and scoring defects early. The registration itself gets its own full review once `registration.json` exists (§0.6 step 6).
+- **Early runner reviews, round 1** (09:20–09:45 UTC). Codex Sol (high, 0 searches) answered **No** with 10 blockers; a fresh Claude answered **Yes after 4 blockers**. Every blocker was fixed or answered, with dispositions in plan §0.13.
+  - Runner (7044ff12): registration binding; controller verdicts dominate; worst- and best-case **imputed CI** guards (the bootstrap port matches the controller exactly); `--json`-only transcripts; invocation-count voids; lock and atomic attempts; 00:05 start; day-long deferrals; probes counted in the cap; isolation.
+  - Generator: the candidate is derived by §0.1, with prerequisite checks.
+  - Provider branch (88462f81): the detector fails closed on noise and cut-off lines. Live controls on Luna low and Sol medium cover shell, web and file change (each item present), and the negative control shows 0 on both.
+  - Sol's "38 briefs" blocker was my LOG error, now corrected.
+  - **Round 2:** Sol re-check launched at 10:13 on a packet that includes the pipeline code.
+- **Authoring, 10:13 UTC:** 21 families verified. c3-f27's first attempt failed for the same notes-file reason, which the fixed check accepts. Retries pending for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27.
+- **Sol re-check (round 2): No, 9 blockers. All fixed** (10:40–11:50 UTC; dispositions in plan §0.13).
+  - Candidate provenance per §0.1, unresolved before T; the suite must equal the final active families.
+  - Audit rounds bound to task content; repairs change only UNDERDETERMINED tests.
+  - The generation child inherits the runner lock.
+  - The preflight is a canary `a2d lift run` through the real provider on every lane, with holdout-local codex homes (`A2D_CODEX_HOME_ROOT`). Probe groups are recorded before launch. Live: 15.9 s, no leak.
+  - Live controls for every inventoried exec item type on configurable lanes (shell, web, file, MCP via a stdio echo server, sub-agent, error): complete on Luna low and Sol medium. `todo_list` cannot be triggered in exec mode and is covered by the allowlist.
+  - The generator requires the committed controls record.
+  - Provider branch 70be19ac.
+  - **Round 3** (combined Sol and fresh-Claude re-review) launched at 11:50.
+- **Authoring:** pass 2 finished at 11:43 with **31 of 36 families verified**. The retry pass for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27 started at 11:44 on HEAD, which carries the codex-home and mutants-check fixes.
+- **E006** is discarded (above). E008's screen is at 55 of 68 tasks per arm.
+- **Early runner reviews, round 3** (11:50–12:20 UTC). Sol: **No**, 7 blockers. Fresh Claude: **Yes** once 5 blockers are fixed. **All fixed** (5c160e, 7f519b; provider branch bc6922f7, pinned as `PROVIDER_COMMIT`; dispositions in plan §0.13):
+  - repairs are requirements-only;
+  - the audit is bound to the instrument, isolated and reserved (canary preflight, holdout-local homes, per-tuple voids, codex bracket, durable reservations, lock inheritance);
+  - controller classes must agree with the claim;
+  - `a2d` is built from the bound source;
+  - a missing bracket voids its replicate;
+  - every lane needs canary evidence;
+  - the drain check verifies the relocated sessions.
+  - Pipeline suite 23/23.
+- **Confirmation-3 authoring complete** (12:34 UTC): **36 of 36 families verified**. The 5 retries all passed on their second attempt.
+- **Assembly** (12:48): 36 families, 144 tasks, 0 missing.
+- **Similarity** (12:51): 144 tasks against 1,035 prior tasks; max similarity 0.04, max containment 0.17, **0 conflicts**.
+- **Validation** running from 12:54.
+- **E008 (Sol: the 4th sample becomes a synthesis of 3 drafts), screen: DISCARD** (L12, 09:00–13:05 UTC 10-19). Δall-pass +0.0 pp (SE 2.9). The first prompts were read before the result and are as designed (above).
+  - **E009** was deferred by the daily cap (Luna today 2,562), and so will E010 be. The queue resumes at 00:05 UTC 10-20 (L15 onward).
+- **Validation** (12:54–13:39 UTC): **143 of 144 tasks accepted**, 1 rejected (c3-f13-l4). The repair round (`c3_fix.py`, one Sol job) started at 14:06. Re-assembly, similarity and validation follow.
+  - *Process note:* my watchers waited on `pgrep -f "c3_validate.py"`, and that string was in their own command lines. They matched themselves and never ended, hiding a finished validation for 25 min. Watch the driver's recorded pid with `kill -0` instead.
+- **Repair and re-validation** (14:06–14:22 UTC): c3-f13 was repaired in round 1 (exit 0, 0 events, 0 flags, ok). After re-assembly, 36 families and 144 tasks; similarity clean again (max 0.04, 0 conflicts). **Re-validation: 144 of 144 accepted.**
+  - **Confirmation-3's suite is built.** What remains of step 5 is the independent-solve audit and adjudication. Both wait for the provider merge (after L37 on 10-22, and after look 2 is done or T has passed).
+  - STOP is set only after adjudication: the drain check that precedes the replicates requires it, but STOP would also refuse the adjudication jobs.

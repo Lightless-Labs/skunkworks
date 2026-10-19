@@ -1,0 +1,315 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub canonical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamError {
+    InvalidByte { offset: usize, byte: u8 },
+    NonCanonical { offset: usize, expected: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    Closed,
+}
+
+pub struct Encoder {
+    config: Config,
+    pending: Vec<u8>,
+    closed: bool,
+}
+
+impl Encoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            pending: Vec::new(),
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut combined = self.pending.clone();
+        combined.extend_from_slice(input);
+
+        let full_len = (combined.len() / 5) * 5;
+        let mut output = String::new();
+        for chunk in combined[..full_len].chunks_exact(5) {
+            encode_symbols(chunk, &mut output, self.config.alphabet);
+        }
+
+        self.pending = combined[full_len..].to_vec();
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut output = String::new();
+        if !self.pending.is_empty() {
+            let symbols = encode_symbols(&self.pending, &mut output, self.config.alphabet);
+            if self.config.padding == Padding::Required {
+                let pad_count = (8 - symbols % 8) % 8;
+                output.extend(std::iter::repeat_n('=', pad_count));
+            }
+        }
+
+        self.pending.clear();
+        self.closed = true;
+        Ok(output)
+    }
+}
+
+fn alphabet_bytes(alphabet: Alphabet) -> &'static [u8; 32] {
+    match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    }
+}
+
+fn encode_symbols(input: &[u8], output: &mut String, alphabet: Alphabet) -> usize {
+    let table = alphabet_bytes(alphabet);
+    let bit_len = input.len() * 8;
+    let symbol_count = (bit_len + 4) / 5;
+
+    for symbol_index in 0..symbol_count {
+        let mut value = 0u8;
+        for bit_index in 0..5 {
+            value <<= 1;
+            let position = symbol_index * 5 + bit_index;
+            if position < bit_len {
+                let byte = input[position / 8];
+                value |= (byte >> (7 - position % 8)) & 1;
+            }
+        }
+        output.push(table[value as usize] as char);
+    }
+    symbol_count
+}
+
+pub struct Decoder {
+    config: Config,
+    position: usize,
+    data_count: usize,
+    pending_bits: u32,
+    pending_bit_count: u8,
+    last_symbol_offset: Option<usize>,
+    last_symbol_value: u8,
+    pad_count: usize,
+    first_pad_offset: Option<usize>,
+    expected_pad_count: Option<usize>,
+    closed: bool,
+}
+
+impl Decoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            position: 0,
+            data_count: 0,
+            pending_bits: 0,
+            pending_bit_count: 0,
+            last_symbol_offset: None,
+            last_symbol_value: 0,
+            pad_count: 0,
+            first_pad_offset: None,
+            expected_pad_count: None,
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut next = self.clone_state();
+        let mut output = Vec::new();
+
+        for &byte in input.as_bytes() {
+            let offset = next.position;
+            if byte == b'=' {
+                if next.config.padding == Padding::Omitted {
+                    return Err(StreamError::Padding { offset });
+                }
+                if next.pad_count == 0 {
+                    let (expected, legal) = expected_padding(next.data_count % 8);
+                    if !legal || expected == 0 {
+                        return Err(StreamError::Padding { offset });
+                    }
+                    next.expected_pad_count = Some(expected);
+                    next.first_pad_offset = Some(offset);
+                } else if next.pad_count >= next.expected_pad_count.unwrap_or(0) {
+                    return Err(StreamError::Padding { offset });
+                }
+                next.pad_count += 1;
+            } else {
+                let (value, canonical) = match classify_data(byte, next.config.alphabet) {
+                    Some(found) => found,
+                    None => return Err(StreamError::InvalidByte { offset, byte }),
+                };
+
+                if canonical && byte.is_ascii_lowercase() && next.config.canonical {
+                    return Err(StreamError::NonCanonical {
+                        offset,
+                        expected: canonical,
+                    });
+                }
+
+                if next.pad_count > 0 {
+                    return Err(StreamError::Padding { offset });
+                }
+
+                next.data_count = next.data_count.checked_add(1).unwrap_or(usize::MAX);
+                next.last_symbol_offset = Some(offset);
+                next.last_symbol_value = value;
+                next.pending_bits = (next.pending_bits << 5) | value as u32;
+                next.pending_bit_count += 5;
+
+                while next.pending_bit_count >= 8 {
+                    next.pending_bit_count -= 8;
+                    output.push((next.pending_bits >> next.pending_bit_count) as u8);
+                    if next.pending_bit_count == 0 {
+                        next.pending_bits = 0;
+                    } else {
+                        next.pending_bits &= (1u32 << next.pending_bit_count) - 1;
+                    }
+                }
+            }
+            next.position = next.position.checked_add(1).unwrap_or(usize::MAX);
+        }
+
+        *self = next.into_decoder();
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let residue = self.data_count % 8;
+        let (expected, legal) = expected_padding(residue);
+        if !legal {
+            return Err(StreamError::InvalidLength {
+                offset: self.position,
+            });
+        }
+
+        if self.config.padding == Padding::Required && self.pad_count != expected {
+            return Err(StreamError::Padding {
+                offset: self.first_pad_offset.unwrap_or(self.position),
+            });
+        }
+
+        let unused_bits = match residue {
+            0 => 0,
+            2 => 2,
+            4 => 4,
+            5 => 1,
+            7 => 3,
+            _ => 0,
+        };
+        if unused_bits > 0 && (self.last_symbol_value & ((1 << unused_bits) - 1)) != 0 {
+            return Err(StreamError::TrailingBits {
+                offset: self.last_symbol_offset.unwrap_or(self.position),
+            });
+        }
+
+        self.closed = true;
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Clone)]
+struct DecoderState {
+    config: Config,
+    position: usize,
+    data_count: usize,
+    pending_bits: u32,
+    pending_bit_count: u8,
+    last_symbol_offset: Option<usize>,
+    last_symbol_value: u8,
+    pad_count: usize,
+    first_pad_offset: Option<usize>,
+    expected_pad_count: Option<usize>,
+    closed: bool,
+}
+
+impl Decoder {
+    fn clone_state(&self) -> DecoderState {
+        DecoderState {
+            config: self.config,
+            position: self.position,
+            data_count: self.data_count,
+            pending_bits: self.pending_bits,
+            pending_bit_count: self.pending_bit_count,
+            last_symbol_offset: self.last_symbol_offset,
+            last_symbol_value: self.last_symbol_value,
+            pad_count: self.pad_count,
+            first_pad_offset: self.first_pad_offset,
+            expected_pad_count: self.expected_pad_count,
+            closed: self.closed,
+        }
+    }
+}
+
+impl DecoderState {
+    fn into_decoder(self) -> Decoder {
+        Decoder {
+            config: self.config,
+            position: self.position,
+            data_count: self.data_count,
+            pending_bits: self.pending_bits,
+            pending_bit_count: self.pending_bit_count,
+            last_symbol_offset: self.last_symbol_offset,
+            last_symbol_value: self.last_symbol_value,
+            pad_count: self.pad_count,
+            first_pad_offset: self.first_pad_offset,
+            expected_pad_count: self.expected_pad_count,
+            closed: self.closed,
+        }
+    }
+}
+
+fn expected_padding(residue: usize) -> (usize, bool) {
+    match residue {
+        0 => (0, true),
+        2 => (6, true),
+        4 => (4, true),
+        5 => (3, true),
+        7 => (1, true),
+        _ => (0, false),
+    }
+}
+
+fn classify_data(byte: u8, alphabet: Alphabet) -> Option<(u8, u8)> {
+    let upper = byte.to_ascii_uppercase();
+    let table = alphabet_bytes(alphabet);
+    table
+        .iter()
+        .position(|&candidate| candidate == upper)
+        .map(|value| (value as u8, upper))
+}
+```

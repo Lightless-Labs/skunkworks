@@ -1,0 +1,963 @@
+Reading additional input from stdin...
+2026-10-19T06:47:08.659708Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-78872-1792392387422916000
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a152e9-f67b-7911-935c-d0385580408f
+--------
+user
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+TASK:
+Build an event-sourced account system. Every numbered rule below is normative. Error precedence is part of the contract.
+
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (`#![...]`) or inner doc comments (`//!`).
+
+R2. Provide this exact public API (the semicolon method/function declarations below describe signatures, not literal Rust bodies). All shown data types implement Debug, Clone, PartialEq, Eq; public fields are as shown; Store/Projection internals are private.
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status { New, Open, Closed }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account { pub status: Status, pub balance: i64, pub limit: i64, pub version: u64 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 }, Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 }, Close { expected_version: u64 }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow, InvalidLimit, AlreadyOpened, NotOpened, Closed,
+    InvalidAmount, LimitExceeded, InvalidFloor, InsufficientFunds,
+    FloorViolation, CloseVersion { expected: u64, actual: u64 }, NonZeroBalance
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError { pub index: usize, pub kind: ApplyError }
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected { Any, Missing, Exact(u64) }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict { expected: Expected, actual: Option<u64> },
+    Rejected(ReplayError)
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store { /* private implementation fields */ }
+impl Store {
+    pub fn new(snapshot_every: u64) -> Result<Self, SnapshotError>;
+    pub fn append(&mut self, id: &str, expected: Expected, events: &[Event]) -> Result<Account, StoreError>;
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError>;
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError>;
+    pub fn snapshot(&self, id: &str) -> Result<Option<Snapshot>, StoreError>;
+    pub fn tail(&self, id: &str) -> Result<Option<Vec<Event>>, StoreError>;
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot { pub account: Account, pub tag: u64 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotError { ZeroInterval, InvalidVersion, InvalidState, TagMismatch }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError { Snapshot(SnapshotError), Tail(ReplayError) }
+pub fn snapshot_tag(account: &Account) -> u64;
+pub fn rebuild(snapshot: Option<&Snapshot>, tail: &[Event]) -> Result<Account, RestoreError>;
+```
+
+R3. The initial account is Account { status: New, balance: 0, limit: 0, version: 0 }. An empty replay returns exactly this account.
+
+R4. Process events in slice order. Each successful event increments version by exactly one, including Open and Close. Compare event fields to the pre-event state. There are no implicit events, fees, resets, or reopening.
+
+R5. replay returns the final account on success, or the first failing event as ReplayError with its zero-based slice index. Later events are not examined. No partial account is returned.
+
+R6. Events are not deduplicated during replay: identical repeated valid events each apply and count toward version. Returning to balance zero does not reset version. Input event counts are representable as u64; VersionOverflow is reserved for continuation from externally supplied snapshots in levels providing rebuild.
+
+R7. Open first checks limit: it must be in 1..=1_000_000_000, otherwise InvalidLimit, even on an already opened or closed account.
+
+R8. After the limit check, Open requires status New; either Open or Closed instead yields AlreadyOpened. Success sets status Open and limit to the given value, leaving balance zero.
+
+R9. Deposit checks lifecycle before amount: New yields NotOpened, Closed yields Closed. Only Open proceeds to field checks.
+
+R10. Deposit amount must be strictly positive, otherwise InvalidAmount. This check precedes checking available capacity.
+
+R11. Deposit then requires amount <= limit - balance, otherwise LimitExceeded. Equality succeeds. Test without overflowing i64, including amount i64::MAX; success adds amount to balance.
+
+R12. Withdraw checks lifecycle exactly as Deposit, then requires amount > 0 or yields InvalidAmount. These checks precede all floor and balance checks.
+
+R13. Withdraw next requires floor in 0..=limit, otherwise InvalidFloor. Floor validity is checked even when funds are insufficient.
+
+R14. Withdraw next requires amount <= balance, otherwise InsufficientFunds. This precedes FloorViolation and must handle i64::MAX safely.
+
+R15. Withdraw finally requires balance - amount >= floor, otherwise FloorViolation. Equality succeeds. Success subtracts amount; floor is an event-local constraint and is never stored.
+
+R16. Close first checks lifecycle exactly as Deposit. Closing New is NotOpened; closing Closed is Closed, regardless of expected_version.
+
+R17. Close next compares expected_version with current version. Mismatch yields CloseVersion { expected: the event value, actual: current version }, even when balance is nonzero.
+
+R18. After a matching close version, nonzero balance yields NonZeroBalance. Zero balance closes successfully.
+
+R19. Closed accounts retain limit and zero balance, and remain Closed forever. Events never implicitly create accounts except Open; depositing/withdrawing after close fails as specified above.
+
+R20. All functions are deterministic and leave supplied event slices and borrowed accounts/snapshots unchanged. Every enum, public field, function and method shown in R2 is required; no other API is needed.
+
+R21. All Store methods taking an id validate it first, before any lookup, concurrency check, event validation, or mutation. Valid IDs have 1..=24 BYTES: first byte ASCII a-z; later bytes ASCII a-z, 0-9 or hyphen. InvalidId.byte is the first offending byte index: empty is 0; a length violation is index 24, unless an invalid byte occurs earlier. Scan UTF-8 bytes, not characters; non-ASCII bytes are invalid. Read methods also return this error for invalid IDs.
+
+R22. append checks Expected after validating id and before examining events, including empty slices: Any always matches; Missing matches only an absent stream; Exact(v) matches only a present stream at version v. Absent actual is None (not Some(0)). A mismatch returns Conflict with the unchanged supplied Expected value and actual Option version.
+
+R23. append validates the entire batch against the existing account (initial if absent). The entire Store is unchanged on ANY error. Successful nonempty batches commit all events together; rejected prefixes never persist.
+
+R24. An event failure in append is StoreError::Rejected(ReplayError). The index is zero-based WITHIN THIS BATCH, not the full stream, and error kind/precedence are the replay rules with the existing pre-batch version.
+
+R25. An empty append still validates ID and Expected. On success return the existing account or the initial account for an absent stream. It never creates an absent stream and does not change any store state.
+
+R26. state returns Ok(None) for an absent stream, otherwise a cloned final Account. history returns Ok(None) for absent; for present it returns Some of cloned events whose ONE-based stream version is strictly greater than after, in append order. after at or beyond the final version (including u64::MAX) returns Some(empty). No special error for an out-of-range after.
+
+R27. Store::new starts with no streams. Streams are independent and events are retained in full, including after closing. Returned accounts and histories are owned copies: changing them cannot affect the Store. Store equality compares its full observable history and configuration; cloning is independent.
+
+R28. In this level Store::new(snapshot_every) returns Err(ZeroInterval) iff snapshot_every == 0. Any other u64 is accepted. The interval counts ALL successful events, including Open and Close, separately in each stream.
+
+R29. After a successful append, the latest snapshot per stream is the account immediately after the greatest positive version divisible by snapshot_every. Capture that intermediate state even if a batch crosses multiple boundaries and ends beyond the last boundary. Snapshots are never taken at version zero or simply at the end of every append.
+
+R30. snapshot returns None if absent or no boundary has been reached; otherwise it returns the latest owned Snapshot. tail returns None for an absent stream; for a present stream it returns Some of all events strictly after its latest snapshot version, or its full history if there is no snapshot. A boundary at the current version means Some(empty). history always retains the full event history.
+
+R31. A supplied Snapshot is validated in this order: account.version == 0 yields InvalidVersion; then InvalidState if status is New, limit outside 1..=1_000_000_000, balance outside 0..=limit, or status Closed with balance != 0 or version < 2; finally check the tag. All other structurally valid states are allowed, without proving reachable history or interval alignment (e.g. Open with version 1 and positive balance is allowed).
+
+R32. snapshot_tag is a TOTAL function on any Account, with no validation: version.rotate_left(7) XOR (limit as u64).wrapping_mul(31) XOR (balance as u64).rotate_left(17) XOR status_code, where codes are New=0, Open=0xA5, Closed=0x5A. Rust i64-to-u64 cast semantics apply. A structurally valid snapshot whose tag differs yields TagMismatch. Stored snapshots use exactly this tag.
+
+R33. rebuild(None, tail) is replay(tail) with errors wrapped as RestoreError::Tail. rebuild(Some(snapshot), tail) validates the snapshot FIRST, wrapping errors as RestoreError::Snapshot, even with invalid tail events. With valid snapshot, start at its account and apply the tail using all replay rules, without changing the snapshot.
+
+R34. Rebuild tail errors use zero-based indices within tail, never shifted by snapshot version. Rebuild with an empty tail returns the supplied valid snapshot account exactly, including very large versions; a snapshot need not be aligned to any Store interval.
+
+R35. VersionOverflow applies to rebuild before any other event check. A tail may advance a version u64::MAX-1 to u64::MAX once; the next event fails. Use checked logic rather than wrapping versions.
+
+R36. All snapshot and tail accessors validate IDs by R21 and return independent owned copies. A rejected or empty append must leave snapshots and tails unchanged. state must agree exactly with both full replay(history) and rebuild(snapshot, tail).
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn o(limit: i64) -> Event { Event::Open { limit } }
+fn d(amount: i64) -> Event { Event::Deposit { amount } }
+fn w(amount: i64, floor: i64) -> Event { Event::Withdraw { amount, floor } }
+fn c(expected_version: u64) -> Event { Event::Close { expected_version } }
+fn failure(events: &[Event], index: usize, kind: ApplyError) {
+    assert_eq!(replay(events), Err(ReplayError { index, kind }));
+}
+fn fresh() -> Store { Store::new(3).unwrap() }
+fn sealed(account: Account) -> Snapshot { Snapshot { tag: snapshot_tag(&account), account } }
+// R2, R4
+#[test]
+fn public_replay() {
+assert_eq!(replay(&[o(90),d(20)]).unwrap().balance,20);
+}
+
+// R22, R24, R26
+#[test]
+fn public_append_and_read() {
+let mut s=fresh();s.append("main",Expected::Missing,&[o(90),d(30)]).unwrap();
+assert_eq!(s.append("main",Expected::Exact(2),&[w(10,0)]).unwrap().balance,20);
+assert_eq!(s.state("main").unwrap().unwrap().version,3);assert_eq!(s.history("main",2).unwrap(),Some(vec![w(10,0)]));
+}
+
+// R28, R29, R30, R36
+#[test]
+fn public_checkpoint_and_tail() {
+let mut s=Store::new(2).unwrap();let es=vec![o(90),d(30),w(10,0)];s.append("main",Expected::Missing,&es).unwrap();
+let snap=s.snapshot("main").unwrap().unwrap();assert_eq!(snap.account,replay(&es[..2]).unwrap());
+assert_eq!(s.tail("main").unwrap(),Some(vec![w(10,0)]));assert_eq!(s.state("main").unwrap().unwrap(),replay(&es).unwrap());
+}
+
+// R32, R33, R34
+#[test]
+fn public_restore() {
+let a=replay(&[o(70),d(20)]).unwrap();let snap=sealed(a);let tail=[w(5,0)];
+assert_eq!(rebuild(Some(&snap),&tail).unwrap().balance,15);assert_eq!(rebuild(None,&[o(12)]).unwrap().version,1);
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+fn initial_account() -> Account {
+    Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    }
+}
+
+fn apply_event(account: &mut Account, event: &Event, rebuild_mode: bool) -> Result<(), ApplyError> {
+    if rebuild_mode && account.version == u64::MAX {
+        return Err(ApplyError::VersionOverflow);
+    }
+
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version = account
+        .version
+        .checked_add(1)
+        .ok_or(ApplyError::VersionOverflow)?;
+    Ok(())
+}
+
+fn replay_from(account: &Account, events: &[Event], rebuild_mode: bool) -> Result<Account, ReplayError> {
+    let mut current = account.clone();
+    for (index, event) in events.iter().enumerate() {
+        if rebuild_mode && current.version == u64::MAX {
+            return Err(ReplayError {
+                index,
+                kind: ApplyError::VersionOverflow,
+            });
+        }
+        if let Err(kind) = apply_event(&mut current, event, rebuild_mode) {
+            return Err(ReplayError { index, kind });
+        }
+    }
+    Ok(current)
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    replay_from(&initial_account(), events, false)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict {
+        expected: Expected,
+        actual: Option<u64>,
+    },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub account: Account,
+    pub tag: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotError {
+    ZeroInterval,
+    InvalidVersion,
+    InvalidState,
+    TagMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError {
+    Snapshot(SnapshotError),
+    Tail(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    events: Vec<Event>,
+    account: Account,
+    snapshot: Option<Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    snapshot_every: u64,
+    streams: std::collections::BTreeMap<String, Stream>,
+}
+
+fn validate_id(id: &str) -> Result<(), StoreError> {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() {
+        return Err(StoreError::InvalidId { byte: 0 });
+    }
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let valid = if index == 0 {
+            byte.is_ascii_lowercase()
+        } else {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(StoreError::InvalidId { byte: index });
+        }
+    }
+    if bytes.len() > 24 {
+        return Err(StoreError::InvalidId { byte: 24 });
+    }
+    Ok(())
+}
+
+impl Store {
+    pub fn new(snapshot_every: u64) -> Result<Self, SnapshotError> {
+        if snapshot_every == 0 {
+            return Err(SnapshotError::ZeroInterval);
+        }
+        Ok(Self {
+            snapshot_every,
+            streams: std::collections::BTreeMap::new(),
+        })
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        validate_id(id)?;
+
+        let existing = self.streams.get(id);
+        let actual = existing.map(|stream| stream.account.version);
+        let matches = match expected {
+            Expected::Any => true,
+            Expected::Missing => existing.is_none(),
+            Expected::Exact(version) => actual == Some(version),
+        };
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let starting = existing
+            .map(|stream| stream.account.clone())
+            .unwrap_or_else(initial_account);
+
+        if events.is_empty() {
+            return Ok(starting);
+        }
+
+        let result = replay_from(&starting, events, false).map_err(StoreError::Rejected)?;
+        let mut full_events = existing
+            .map(|stream| stream.events.clone())
+            .unwrap_or_default();
+        let mut snapshot = existing.and_then(|stream| stream.snapshot.clone());
+        let mut intermediate = starting.clone();
+
+        for event in events {
+            apply_event(&mut intermediate, event, false).expect("validated batch");
+            if intermediate.version > 0 && intermediate.version % self.snapshot_every == 0 {
+                snapshot = Some(Snapshot {
+                    tag: snapshot_tag(&intermediate),
+                    account: intermediate.clone(),
+                });
+            }
+        }
+
+        full_events.extend_from_slice(events);
+        self.streams.insert(
+            id.to_owned(),
+            Stream {
+                events: full_events,
+                account: result.clone(),
+                snapshot,
+            },
+        );
+        Ok(result)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| stream.account.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| {
+            stream
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index as u64).saturating_add(1) > after)
+                .map(|(_, event)| event.clone())
+                .collect()
+        }))
+    }
+
+    pub fn snapshot(&self, id: &str) -> Result<Option<Snapshot>, StoreError> {
+        validate_id(id)?;
+        Ok(self
+            .streams
+            .get(id)
+            .and_then(|stream| stream.snapshot.clone()))
+    }
+
+    pub fn tail(&self, id: &str) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| {
+            let version = stream
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.account.version)
+                .unwrap_or(0);
+            stream
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index as u64).saturating_add(1) > version)
+                .map(|(_, event)| event.clone())
+                .collect()
+        }))
+    }
+}
+
+pub fn snapshot_tag(account: &Account) -> u64 {
+    let status_code = match account.status {
+        Status::New => 0,
+        Status::Open => 0xA5,
+        Status::Closed => 0x5A,
+    };
+    account.version.rotate_left(7)
+        ^ (account.limit as u64).wrapping_mul(31)
+        ^ (account.balance as u64).rotate_left(17)
+        ^ status_code
+}
+
+fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotError> {
+    let account = &snapshot.account;
+    if account.version == 0 {
+        return Err(SnapshotError::InvalidVersion);
+    }
+    if account.status == Status::New
+        || !(1..=1_000_000_000).contains(&account.limit)
+        || account.balance < 0
+        || account.balance > account.limit
+        || (account.status == Status::Closed && (account.balance != 0 || account.version < 2))
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+    if snapshot.tag != snapshot_tag(account) {
+        return Err(SnapshotError::TagMismatch);
+    }
+    Ok(())
+}
+
+pub fn rebuild(snapshot: Option<&Snapshot>, tail: &[Event]) -> Result<Account, RestoreError> {
+    match snapshot {
+        None => replay(tail).map_err(RestoreError::Tail),
+        Some(snapshot) => {
+            validate_snapshot(snapshot).map_err(RestoreError::Snapshot)?;
+            replay_from(&snapshot.account, tail, true).map_err(RestoreError::Tail)
+        }
+    }
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict {
+        expected: Expected,
+        actual: Option<u64>,
+    },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub account: Account,
+    pub tag: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotError {
+    ZeroInterval,
+    InvalidVersion,
+    InvalidState,
+    TagMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError {
+    Snapshot(SnapshotError),
+    Tail(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    account: Account,
+    events: Vec<Event>,
+    snapshot: Option<Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    snapshot_every: u64,
+    streams: std::collections::BTreeMap<String, Stream>,
+}
+
+fn initial_account() -> Account {
+    Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    }
+}
+
+fn next_version(account: &Account) -> Result<u64, ApplyError> {
+    account
+        .version
+        .checked_add(1)
+        .ok_or(ApplyError::VersionOverflow)
+}
+
+fn apply_event(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    // Overflow takes precedence over every event-specific check.
+    let version = next_version(account)?;
+
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+
+            // For an open account, 0 <= balance <= limit. Subtraction is safe.
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version = version;
+    Ok(())
+}
+
+fn replay_from(mut account: Account, events: &[Event]) -> Result<Account, ReplayError> {
+    for (index, event) in events.iter().enumerate() {
+        if let Err(kind) = apply_event(&mut account, event) {
+            return Err(ReplayError { index, kind });
+        }
+    }
+    Ok(account)
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    replay_from(initial_account(), events)
+}
+
+fn validate_id(id: &str) -> Result<(), StoreError> {
+    let bytes = id.as_bytes();
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if index == 0 {
+            if !byte.is_ascii_lowercase() {
+                return Err(StoreError::InvalidId { byte: index });
+            }
+        } else if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-') {
+            return Err(StoreError::InvalidId { byte: index });
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err(StoreError::InvalidId { byte: 0 });
+    }
+    if bytes.len() > 24 {
+        return Err(StoreError::InvalidId { byte: 24 });
+    }
+    Ok(())
+}
+
+fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotError> {
+    let account = &snapshot.account;
+
+    if account.version == 0 {
+        return Err(SnapshotError::InvalidVersion);
+    }
+
+    if account.status == Status::New
+        || !(1..=1_000_000_000).contains(&account.limit)
+        || account.balance < 0
+        || account.balance > account.limit
+        || (account.status == Status::Closed
+            && (account.balance != 0 || account.version < 2))
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+
+    if snapshot.tag != snapshot_tag(account) {
+        return Err(SnapshotError::TagMismatch);
+    }
+
+    Ok(())
+}
+
+pub fn snapshot_tag(account: &Account) -> u64 {
+    let status_code = match account.status {
+        Status::New => 0,
+        Status::Open => 0xA5,
+        Status::Closed => 0x5A,
+    };
+
+    account.version.rotate_left(7)
+        ^ (account.limit as u64).wrapping_mul(31)
+        ^ (account.balance as u64).rotate_left(17)
+        ^ status_code
+}
+
+pub fn rebuild(snapshot: Option<&Snapshot>, tail: &[Event]) -> Result<Account, RestoreError> {
+    let account = match snapshot {
+        None => return replay(tail).map_err(RestoreError::Tail),
+        Some(snapshot) => {
+            validate_snapshot(snapshot).map_err(RestoreError::Snapshot)?;
+            snapshot.account.clone()
+        }
+    };
+
+    replay_from(account, tail).map_err(RestoreError::Tail)
+}
+
+impl Store {
+    pub fn new(snapshot_every: u64) -> Result<Self, SnapshotError> {
+        if snapshot_every == 0 {
+            return Err(SnapshotError::ZeroInterval);
+        }
+
+        Ok(Self {
+            snapshot_every,
+            streams: std::collections::BTreeMap::new(),
+        })
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        validate_id(id)?;
+
+        let existing = self.streams.get(id);
+        let actual = existing.map(|stream| stream.account.version);
+
+        let matches = match &expected {
+            Expected::Any => true,
+            Expected::Missing => actual.is_none(),
+            Expected::Exact(version) => actual == Some(*version),
+        };
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let base = existing
+            .map(|stream| stream.account.clone())
+            .unwrap_or_else(initial_account);
+
+        if events.is_empty() {
+            return Ok(base);
+        }
+
+        let mut account = base;
+        let mut new_snapshots = Vec::new();
+
+        for (index, event) in events.iter().enumerate() {
+            if let Err(kind) = apply_event(&mut account, event) {
+                return Err(StoreError::Rejected(ReplayError { index, kind }));
+            }
+
+            if account.version % self.snapshot_every == 0 {
+                let snapshot = Snapshot {
+                    tag: snapshot_tag(&account),
+                    account: account.clone(),
+                };
+                new_snapshots.push(snapshot);
+            }
+        }
+
+        let stream = self
+            .streams
+            .entry(id.to_owned())
+            .or_insert_with(|| Stream {
+                account: initial_account(),
+                events: Vec::new(),
+                snapshot: None,
+            });
+
+        stream.events.extend_from_slice(events);
+        stream.account = account.clone();
+        if let Some(snapshot) = new_snapshots.pop() {
+            stream.snapshot = Some(snapshot);
+        }
+
+        Ok(account)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| stream.account.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+
+        Ok(self.streams.get(id).map(|stream| {
+            stream
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index as u64) + 1 > after)
+                .map(|(_, event)| event.clone())
+                .collect()
+        }))
+    }
+
+    pub fn snapshot(&self, id: &str) -> Result<Option<Snapshot>, StoreError> {
+        validate_id(id)?;
+        Ok(self
+            .streams
+            .get(id)
+            .and_then(|stream| stream.snapshot.clone()))
+    }
+
+    pub fn tail(&self, id: &str) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+
+        Ok(self.streams.get(id).map(|stream| {
+            let start = stream
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.account.version as usize)
+                .unwrap_or(0)
+                .min(stream.events.len());
+            stream.events[start..].to_vec()
+        }))
+    }
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+codex
+{"pick":"B","reason":"B correctly handles atomic batches, intermediate snapshots, and overflow precedence, although both candidates incorrectly report invalid ID bytes beyond index 24 instead of the earlier length violation."}
+tokens used
+9,323

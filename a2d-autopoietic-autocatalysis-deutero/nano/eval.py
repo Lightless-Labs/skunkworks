@@ -331,7 +331,8 @@ def log_result(fields):
         path.write_text("\t".join(FIELDS) + "\n")
     # A resumed experiment re-reaches the same decision; log each (id, stage, decision) once.
     key = (str(fields.get("id")), str(fields.get("stage")), str(fields.get("decision")))
-    if any(tuple(r.split("\t")[i] for i in (0, 3, 12)) == key for r in path.read_text().splitlines()[1:]):
+    rows = [r.split("\t") for r in path.read_text().splitlines()[1:]]
+    if any(len(r) > 12 and (r[0], r[3], r[12]) == key for r in rows):
         return
     with open(path, "a") as f:
         f.write("\t".join(str(fields.get(k, "")).replace("\t", " ") for k in FIELDS) + "\n")
@@ -725,6 +726,9 @@ def cmd_confirm_score(args):
     """Score each replicate once against its committed anchor, then pool.
     The controller refuses to score a ledger that already has scores, so an
     interrupted scoring is reported as failed rather than repeated."""
+    sealed = CONFIRM2_DIR / "sealed-sha256.txt"
+    if sealed.exists():  # scored 10-19; decision sealed in the holdout dir until confirmation-3's decision
+        sys.exit(f"{sealed} exists; the set is scored and its decision is sealed")
     pooled = CONFIRM2_DIR / "pooled-summary.json"
     if pooled.exists():
         sys.exit(f"{pooled} exists; the set is scored and pooled once")

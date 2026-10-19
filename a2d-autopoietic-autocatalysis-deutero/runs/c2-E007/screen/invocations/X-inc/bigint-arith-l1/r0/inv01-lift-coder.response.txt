@@ -1,0 +1,202 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Big {
+    // Big-endian base-10 digits, with no leading zero unless the value is zero.
+    digits: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    SignOnly,
+    InvalidDigit { index: usize },
+    Separator { index: usize },
+    LeadingZero { index: usize },
+    TooManyDigits { limit: usize, index: usize },
+    Underflow,
+}
+
+impl Big {
+    pub fn parse(text: &str, max_digits: usize) -> Result<Self, Error> {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return Err(Error::Empty);
+        }
+
+        let start = if bytes[0] == b'+' { 1 } else { 0 };
+        if start == bytes.len() {
+            return Err(Error::SignOnly);
+        }
+
+        // Invalid bytes take precedence over malformed separators.
+        if let Some(index) = (start..bytes.len())
+            .find(|&i| bytes[i] != b'_' && !bytes[i].is_ascii_digit())
+        {
+            return Err(Error::InvalidDigit { index });
+        }
+
+        // Separators must be between digits in the magnitude.
+        for i in start..bytes.len() {
+            if bytes[i] == b'_'
+                && (i == start
+                    || i + 1 == bytes.len()
+                    || !bytes[i - 1].is_ascii_digit()
+                    || !bytes[i + 1].is_ascii_digit())
+            {
+                return Err(Error::Separator { index: i });
+            }
+        }
+
+        let digit_count = bytes[start..].iter().filter(|&&b| b != b'_').count();
+        let first_digit_index = (start..bytes.len())
+            .find(|&i| bytes[i] != b'_')
+            .expect("nonempty magnitude contains a digit");
+
+        if digit_count > 1 && bytes[first_digit_index] == b'0' {
+            return Err(Error::LeadingZero {
+                index: first_digit_index,
+            });
+        }
+
+        if digit_count > max_digits {
+            let excess = max_digits + 1;
+            let index = bytes[start..]
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b != b'_')
+                .nth(excess - 1)
+                .map(|(offset, _)| start + offset)
+                .expect("excess digit exists");
+            return Err(Error::TooManyDigits {
+                limit: max_digits,
+                index,
+            });
+        }
+
+        let digits: Vec<u8> = bytes[start..]
+            .iter()
+            .filter(|&&b| b != b'_')
+            .map(|&b| b - b'0')
+            .collect();
+
+        Ok(Self { digits })
+    }
+
+    pub fn format(&self, min_digits: usize, group: usize) -> String {
+        let width = min_digits.max(self.digits.len()).max(1);
+        let padding = width - self.digits.len();
+        let mut out = String::with_capacity(width + if group > 0 { width / group } else { 0 });
+
+        for i in 0..width {
+            if group > 0 && i > 0 && (width - i) % group == 0 {
+                out.push('_');
+            }
+            if i < padding {
+                out.push('0');
+            } else {
+                out.push((b'0' + self.digits[i - padding]) as char);
+            }
+        }
+        out
+    }
+
+    pub fn cmp_value(&self, rhs: &Self) -> Ordering {
+        self.digits
+            .len()
+            .cmp(&rhs.digits.len())
+            .then_with(|| self.digits.cmp(&rhs.digits))
+    }
+
+    pub fn add(&self, rhs: &Self) -> Self {
+        let mut result = Vec::with_capacity(self.digits.len().max(rhs.digits.len()) + 1);
+        let mut carry = 0u8;
+        let mut left = self.digits.iter().rev();
+        let mut right = rhs.digits.iter().rev();
+
+        loop {
+            let a = left.next().copied();
+            let b = right.next().copied();
+            if a.is_none() && b.is_none() && carry == 0 {
+                break;
+            }
+            let sum = a.unwrap_or(0) + b.unwrap_or(0) + carry;
+            result.push(sum % 10);
+            carry = sum / 10;
+        }
+
+        result.reverse();
+        Self { digits: result }
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, Error> {
+        if self.cmp_value(rhs) == Ordering::Less {
+            return Err(Error::Underflow);
+        }
+
+        let mut result = Vec::with_capacity(self.digits.len());
+        let mut borrow = 0i16;
+        let mut right = rhs.digits.iter().rev();
+
+        for &a in self.digits.iter().rev() {
+            let b = right.next().copied().unwrap_or(0) as i16;
+            let mut digit = a as i16 - b - borrow;
+            if digit < 0 {
+                digit += 10;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            result.push(digit as u8);
+        }
+
+        result.reverse();
+        let first_nonzero = result.iter().position(|&d| d != 0).unwrap_or(result.len() - 1);
+        Ok(Self {
+            digits: result[first_nonzero..].to_vec(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value(text: &str) -> Big {
+        Big::parse(text, 10000).unwrap()
+    }
+
+    fn text(value: &Big, width: usize, group: usize) -> String {
+        value.format(width, group)
+    }
+
+    fn parse_limited(text: &str, limit: usize) -> Result<Big, Error> {
+        Big::parse(text, limit)
+    }
+
+    #[test]
+    fn public_parse_format() {
+        let n = value("+12_345");
+        assert_eq!(text(&n, 0, 0), "12345");
+        assert_eq!(text(&n, 0, 3), "12_345");
+        assert_eq!(n, n.clone());
+    }
+
+    #[test]
+    fn public_arithmetic_compare() {
+        let a = value("999");
+        let b = value("2");
+        assert_eq!(text(&a.add(&b), 0, 0), "1001");
+        assert_eq!(text(&a.sub(&b).unwrap(), 0, 0), "997");
+        assert_eq!(a.cmp_value(&b), Ordering::Greater);
+        assert_eq!(text(&a, 0, 0), "999");
+    }
+
+    #[test]
+    fn public_limit_and_borrow() {
+        let a = parse_limited("6_802", 4).unwrap();
+        assert_eq!(a.sub(&value("13")).unwrap(), value("6789"));
+    }
+}
+```

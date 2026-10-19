@@ -1,0 +1,417 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+    pub patience: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub switch_cost: u64,
+    pub waiting_capacity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Balk,
+    Renege { waited: u64 },
+    Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverflowStage {
+    WorkAt,
+    Finish,
+    Patience,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    CapacityTooLarge { capacity: usize },
+    TooManyCustomers { count: usize },
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    DeadlineOverflow { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64, stage: OverflowStage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stats {
+    pub accepted: usize,
+    pub balked: usize,
+    pub reneged: usize,
+    pub completed: usize,
+    pub started: usize,
+    pub preemptions: usize,
+    pub elapsed: u64,
+    pub busy_ticks: u128,
+    pub wait_ticks: u128,
+    pub turnaround_ticks: u128,
+    pub mean_wait_milli: u128,
+    pub mean_turnaround_milli: u128,
+    pub utilization_bps: u32,
+    pub completion_order: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    pub events: Vec<Event>,
+    pub stats: Stats,
+}
+
+pub fn rounded_ratio(numerator: u128, denominator: u128) -> Option<u128> {
+    if denominator == 0 {
+        return None;
+    }
+    let q = numerator / denominator;
+    let r = numerator % denominator;
+    let half = denominator / 2;
+    let round_up = if denominator % 2 == 0 {
+        r > half || (r == half && q % 2 == 1)
+    } else {
+        r > half
+    };
+    Some(if round_up { q + 1 } else { q })
+}
+
+#[derive(Clone)]
+struct CustomerState {
+    customer: Customer,
+    initial_deadline: Option<u64>,
+    accepted: bool,
+    terminal: bool,
+    ever_started: bool,
+    remaining: u64,
+    waited: u64,
+    budget: Option<u64>,
+    deadline: Option<u64>,
+    queue_entry: u64,
+    paused: bool,
+    pause_time: u64,
+}
+
+#[derive(Clone)]
+struct Active {
+    idx: usize,
+    work_at: u64,
+    finish: u64,
+    dispatch: u64,
+}
+
+fn better(a: usize, b: usize, states: &[CustomerState]) -> bool {
+    let x = &states[a];
+    let y = &states[b];
+    let cx = &x.customer;
+    let cy = &y.customer;
+    if cx.priority != cy.priority {
+        return cx.priority < cy.priority;
+    }
+    if x.paused != y.paused {
+        return x.paused;
+    }
+    if x.paused {
+        if x.pause_time != y.pause_time {
+            return x.pause_time < y.pause_time;
+        }
+        cx.id < cy.id
+    } else if cx.arrival != cy.arrival {
+        cx.arrival < cy.arrival
+    } else {
+        cx.id > cy.id
+    }
+}
+
+fn best_waiter(queue: &[usize], states: &[CustomerState]) -> Option<usize> {
+    queue.iter().copied().reduce(|best, x| {
+        if better(x, best, states) { x } else { best }
+    })
+}
+
+fn time_error(id: u32, time: u64, stage: OverflowStage) -> Error {
+    Error::TimeOverflow { customer: id, time, stage }
+}
+
+pub fn simulate(customers: &[Customer], config: &Config) -> Result<Report, Error> {
+    if config.waiting_capacity > 4096 {
+        return Err(Error::CapacityTooLarge { capacity: config.waiting_capacity });
+    }
+    if customers.len() > 4096 {
+        return Err(Error::TooManyCustomers { count: customers.len() });
+    }
+
+    let mut ids = Vec::with_capacity(customers.len());
+    let mut initial_deadlines = Vec::with_capacity(customers.len());
+    for (index, c) in customers.iter().enumerate() {
+        if c.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if ids.contains(&c.id) {
+            return Err(Error::DuplicateId { index, id: c.id });
+        }
+        ids.push(c.id);
+        if c.priority > 3 {
+            return Err(Error::BadPriority { index, value: c.priority });
+        }
+        let deadline = match c.patience {
+            Some(p) => Some(c.arrival.checked_add(p).ok_or(Error::DeadlineOverflow {
+                index,
+                id: c.id,
+            })?),
+            None => None,
+        };
+        initial_deadlines.push(deadline);
+    }
+
+    let mut states: Vec<CustomerState> = customers
+        .iter()
+        .cloned()
+        .zip(initial_deadlines)
+        .map(|(customer, initial_deadline)| CustomerState {
+            remaining: customer.service,
+            budget: customer.patience,
+            customer,
+            initial_deadline,
+            accepted: false,
+            terminal: false,
+            ever_started: false,
+            waited: 0,
+            deadline: None,
+            queue_entry: 0,
+            paused: false,
+            pause_time: 0,
+        })
+        .collect();
+
+    let mut arrival_order: Vec<usize> = (0..states.len()).collect();
+    arrival_order.sort_by(|&a, &b| {
+        let x = &states[a].customer;
+        let y = &states[b].customer;
+        x.arrival.cmp(&y.arrival)
+            .then_with(|| x.priority.cmp(&y.priority))
+            .then_with(|| y.id.cmp(&x.id))
+    });
+
+    let mut events = Vec::new();
+    let mut queue: Vec<usize> = Vec::new();
+    let mut active: Option<Active> = None;
+    let mut last_dispatch: Option<u32> = None;
+    let mut arrival_pos = 0usize;
+    let mut now = 0u64;
+    let mut stats = Stats {
+        accepted: 0, balked: 0, reneged: 0, completed: 0, started: 0,
+        preemptions: 0, elapsed: 0, busy_ticks: 0, wait_ticks: 0,
+        turnaround_ticks: 0, mean_wait_milli: 0, mean_turnaround_milli: 0,
+        utilization_bps: 0, completion_order: Vec::new(),
+    };
+
+    while stats.completed + stats.reneged + stats.balked < states.len() {
+        let mut candidates = Vec::new();
+        if let Some(a) = &active {
+            if a.finish > now { candidates.push(a.finish); }
+            if a.work_at > now { candidates.push(a.work_at); }
+        }
+        if arrival_pos < arrival_order.len() {
+            candidates.push(states[arrival_order[arrival_pos]].customer.arrival);
+        }
+        for &i in &queue {
+            if let Some(d) = states[i].deadline {
+                if d > now { candidates.push(d); }
+            }
+        }
+        if candidates.is_empty() {
+            // At the current tick only inline zero-length work can remain; phases below
+            // either resolve it or the simulation is complete.
+            if active.is_none() && queue.is_empty() && arrival_pos == arrival_order.len() {
+                break;
+            }
+        } else {
+            let next = *candidates.iter().min().unwrap();
+            if next > now {
+                now = next;
+            }
+        }
+
+        if active.as_ref().is_some_and(|a| a.finish == now) {
+            let a = active.take().unwrap();
+            let id = states[a.idx].customer.id;
+            events.push(Event { time: now, customer: id, kind: Kind::Finish });
+            stats.completed += 1;
+            stats.turnaround_ticks += (now - states[a.idx].customer.arrival) as u128;
+            stats.completion_order.push(id);
+            states[a.idx].terminal = true;
+        }
+
+        expire_waiters(now, &mut queue, &mut states, &mut events, &mut stats);
+
+        while arrival_pos < arrival_order.len()
+            && states[arrival_order[arrival_pos]].customer.arrival == now
+        {
+            let i = arrival_order[arrival_pos];
+            arrival_pos += 1;
+            let id = states[i].customer.id;
+            events.push(Event { time: now, customer: id, kind: Kind::Arrive });
+            let limit = config.waiting_capacity + usize::from(active.is_none());
+            if queue.len() < limit {
+                states[i].accepted = true;
+                states[i].budget = states[i].customer.patience;
+                states[i].deadline = states[i].initial_deadline;
+                states[i].queue_entry = now;
+                queue.push(i);
+                stats.accepted += 1;
+            } else {
+                events.push(Event { time: now, customer: id, kind: Kind::Balk });
+                stats.balked += 1;
+                states[i].terminal = true;
+            }
+        }
+
+        if let Some(a) = active.as_ref() {
+            if now >= a.work_at {
+                if let Some(w) = best_waiter(&queue, &states) {
+                    if states[w].customer.priority < states[a.idx].customer.priority {
+                        let a = active.take().unwrap();
+                        let remaining = a.finish - now;
+                        let id = states[a.idx].customer.id;
+                        let by = states[w].customer.id;
+                        events.push(Event { time: now, customer: id, kind: Kind::Preempt { remaining, by } });
+                        stats.preemptions += 1;
+                        stats.busy_ticks += (now - a.dispatch) as u128;
+                        states[a.idx].remaining = remaining;
+                        states[a.idx].queue_entry = now;
+                        states[a.idx].paused = true;
+                        states[a.idx].pause_time = now;
+                        if let Some(budget) = states[a.idx].budget {
+                            let d = now.checked_add(budget)
+                                .ok_or_else(|| time_error(id, now, OverflowStage::Patience))?;
+                            states[a.idx].deadline = Some(d);
+                        }
+                        queue.push(a.idx);
+                    }
+                }
+            }
+        }
+
+        loop {
+            if active.is_some() {
+                break;
+            }
+            let Some(i) = best_waiter(&queue, &states) else { break };
+            queue.retain(|&x| x != i);
+            let elapsed_wait = now - states[i].queue_entry;
+            states[i].waited = states[i].waited.checked_add(elapsed_wait).unwrap();
+            stats.wait_ticks += elapsed_wait as u128;
+            if let Some(b) = states[i].budget {
+                states[i].budget = Some(b - elapsed_wait);
+            }
+            states[i].deadline = None;
+
+            let id = states[i].customer.id;
+            let switch = if last_dispatch.is_some_and(|last| last != id) {
+                config.switch_cost
+            } else {
+                0
+            };
+            let work_at = now.checked_add(switch)
+                .ok_or_else(|| time_error(id, now, OverflowStage::WorkAt))?;
+            let finish = work_at.checked_add(states[i].remaining)
+                .ok_or_else(|| time_error(id, now, OverflowStage::Finish))?;
+            let kind = if states[i].ever_started {
+                Kind::Resume { remaining: states[i].remaining, work_at, finish }
+            } else {
+                states[i].ever_started = true;
+                stats.started += 1;
+                Kind::Start { remaining: states[i].remaining, work_at, finish }
+            };
+            events.push(Event { time: now, customer: id, kind });
+            last_dispatch = Some(id);
+            active = Some(Active { idx: i, work_at, finish, dispatch: now });
+
+            if finish == now {
+                let a = active.take().unwrap();
+                events.push(Event { time: now, customer: id, kind: Kind::Finish });
+                stats.completed += 1;
+                stats.turnaround_ticks += (now - states[i].customer.arrival) as u128;
+                stats.completion_order.push(id);
+                stats.busy_ticks += (now - a.dispatch) as u128;
+                states[i].terminal = true;
+                continue;
+            }
+            break;
+        }
+
+        expire_waiters(now, &mut queue, &mut states, &mut events, &mut stats);
+
+        if stats.completed + stats.reneged + stats.balked == states.len() {
+            break;
+        }
+
+        // Guard against a zero-time state with no remaining work.
+        if active.is_none() && queue.is_empty() && arrival_pos == arrival_order.len() {
+            break;
+        }
+    }
+
+    stats.elapsed = events.last().map(|e| e.time).unwrap_or(0);
+    stats.mean_wait_milli = if stats.accepted == 0 {
+        0
+    } else {
+        rounded_ratio(stats.wait_ticks * 1000, stats.accepted as u128).unwrap()
+    };
+    stats.mean_turnaround_milli = if stats.completed == 0 {
+        0
+    } else {
+        rounded_ratio(stats.turnaround_ticks * 1000, stats.completed as u128).unwrap()
+    };
+    stats.utilization_bps = if stats.elapsed == 0 {
+        0
+    } else {
+        rounded_ratio(stats.busy_ticks * 10000, stats.elapsed as u128).unwrap() as u32
+    };
+
+    Ok(Report { events, stats })
+}
+
+fn expire_waiters(
+    now: u64,
+    queue: &mut Vec<usize>,
+    states: &mut [CustomerState],
+    events: &mut Vec<Event>,
+    stats: &mut Stats,
+) {
+    let mut expired: Vec<usize> = queue
+        .iter()
+        .copied()
+        .filter(|&i| states[i].deadline.is_some_and(|d| d <= now))
+        .collect();
+    expired.sort_by(|&a, &b| {
+        states[a].deadline.cmp(&states[b].deadline)
+            .then_with(|| states[a].customer.id.cmp(&states[b].customer.id))
+    });
+    for i in expired {
+        queue.retain(|&x| x != i);
+        let segment = now - states[i].queue_entry;
+        states[i].waited = states[i].waited.checked_add(segment).unwrap();
+        stats.wait_ticks += segment as u128;
+        let waited = states[i].waited;
+        let id = states[i].customer.id;
+        states[i].terminal = true;
+        stats.reneged += 1;
+        events.push(Event { time: now, customer: id, kind: Kind::Renege { waited } });
+    }
+}
+```

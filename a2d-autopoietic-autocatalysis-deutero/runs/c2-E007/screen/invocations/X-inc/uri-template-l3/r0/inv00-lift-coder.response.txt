@@ -1,0 +1,226 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Expression<'a> {
+    start: usize,
+    end: usize,
+    operator: Option<u8>,
+    content_start: usize,
+    content_end: usize,
+    names: Vec<(&'a str, usize)>,
+}
+
+fn is_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_name_continue(byte: u8) -> bool {
+    is_name_start(byte) || byte.is_ascii_digit()
+}
+
+fn parse_expression<'a>(
+    template: &'a str,
+    start: usize,
+    close: usize,
+) -> Result<Expression<'a>, Error> {
+    let bytes = template.as_bytes();
+
+    if let Some(inner) = (start + 1..close).find(|&i| bytes[i] == b'{') {
+        return Err(Error::NestedOpen { pos: inner });
+    }
+
+    let mut content_start = start + 1;
+    let operator = if content_start < close
+        && matches!(
+            bytes[content_start],
+            b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&' | b'!' | b'@' | b'|'
+        )
+    {
+        let op = bytes[content_start];
+        if !matches!(op, b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&') {
+            return Err(Error::UnsupportedOperator { pos: content_start });
+        }
+        content_start += 1;
+        Some(op)
+    } else {
+        None
+    };
+
+    if content_start == close {
+        return Err(Error::EmptyExpression { pos: close });
+    }
+
+    let mut names = Vec::new();
+    let mut spec_start = content_start;
+    let mut seen = Vec::<&str>::new();
+
+    loop {
+        let spec_end = (spec_start..close)
+            .find(|&i| bytes[i] == b',')
+            .unwrap_or(close);
+
+        if spec_start == spec_end {
+            return Err(Error::EmptyVariable { pos: spec_start });
+        }
+
+        let mut i = spec_start;
+        if !is_name_start(bytes[i]) {
+            return Err(Error::InvalidName { pos: i });
+        }
+        i += 1;
+        while i < spec_end && is_name_continue(bytes[i]) {
+            i += 1;
+        }
+        if i < spec_end {
+            return Err(Error::InvalidName { pos: i });
+        }
+
+        let name = &template[spec_start..spec_end];
+        if seen.contains(&name) {
+            return Err(Error::DuplicateVariable { pos: spec_start });
+        }
+        seen.push(name);
+        names.push((name, spec_start));
+
+        if spec_end == close {
+            break;
+        }
+        spec_start = spec_end + 1;
+    }
+
+    Ok(Expression {
+        start,
+        end: close + 1,
+        operator,
+        content_start,
+        content_end: close,
+        names,
+    })
+}
+
+fn encode(value: &str, reserved: bool) -> String {
+    let bytes = value.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if b == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push('%');
+            out.push((bytes[i + 1] as char).to_ascii_uppercase());
+            out.push((bytes[i + 2] as char).to_ascii_uppercase());
+            i += 3;
+            continue;
+        }
+
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
+        let reserved_byte = matches!(
+            b,
+            b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&'
+                | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+        );
+
+        if unreserved || (reserved && reserved_byte) {
+            out.push(b as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        i += 1;
+    }
+
+    out
+}
+
+fn last_binding<'a>(vars: &'a [(&str, &str)], name: &str) -> Option<&'a str> {
+    vars.iter()
+        .rev()
+        .find_map(|&(binding_name, value)| (binding_name == name).then_some(value))
+}
+
+fn expand_expression(expression: &Expression<'_>, vars: &[(&str, &str)]) -> String {
+    let op = expression.operator;
+    let reserved = matches!(op, Some(b'+') | Some(b'#'));
+    let mut fields = Vec::<String>::new();
+
+    for &(name, _) in &expression.names {
+        let Some(value) = last_binding(vars, name) else {
+            continue;
+        };
+        let encoded = encode(value, reserved);
+
+        match op {
+            Some(b';') if encoded.is_empty() => fields.push(name.to_owned()),
+            Some(b';' | b'?' | b'&') => fields.push(format!("{name}={encoded}")),
+            _ => fields.push(encoded),
+        }
+    }
+
+    if fields.is_empty() {
+        return String::new();
+    }
+
+    let (prefix, separator) = match op {
+        Some(b'#') => ("#", ","),
+        Some(b'.') => (".", "."),
+        Some(b'/') => ("/", "/"),
+        Some(b';') => (";", ";"),
+        Some(b'?') => ("?", "&"),
+        Some(b'&') => ("&", "&"),
+        _ => ("", ","),
+    };
+
+    let mut out = String::from(prefix);
+    out.push_str(&fields.join(separator));
+    out
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'}' => return Err(Error::UnexpectedClose { pos: i }),
+            b'{' => {
+                let Some(relative_close) = bytes[i + 1..].iter().position(|&b| b == b'}') else {
+                    return Err(Error::Unclosed { pos: i });
+                };
+                let close = i + 1 + relative_close;
+                expressions.push(parse_expression(template, i, close)?);
+                i = close + 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let mut out = String::new();
+    let mut cursor = 0;
+    for expression in expressions {
+        out.push_str(&template[cursor..expression.start]);
+        out.push_str(&expand_expression(&expression, vars));
+        cursor = expression.end;
+    }
+    out.push_str(&template[cursor..]);
+    Ok(out)
+}
+```

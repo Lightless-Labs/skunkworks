@@ -32,5 +32,22 @@ class StatsTests(unittest.TestCase):
         self.assertGreater(power, false_keep)
 
 
+
+class MissingTaskTests(unittest.TestCase):
+    def test_tasks_without_champion_runs_are_skipped_not_crashed(self):
+        rates = {"a": (1, 2), "b": (0, 2)}
+        samples = stats.null_delta_samples(rates, ["a", "b", "ghost"], runs=1, draws=200, seed=1)
+        self.assertEqual(len(samples), 200)
+        rows = [{"opaque_id": "a", "rep": 0, "grade": {"resolved": True}},
+                {"opaque_id": "ghost", "rep": 0, "grade": {"resolved": True}}]
+        self.assertAlmostEqual(stats.delta(rows, rates, ["a", "b", "ghost"]), 0.5)  # a: 1-0.5; b missing: neutral
+
+    def test_infra_candidate_rows_are_neutral_not_failures(self):
+        rates = {"a": (2, 2), "b": (2, 2)}
+        rows = [{"opaque_id": "a", "rep": 0, "grade": {"resolved": True}},
+                {"opaque_id": "b", "rep": 0, "infra_failure": "provider_error", "grade": None}]
+        self.assertAlmostEqual(stats.delta(rows, rates, ["a", "b"]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

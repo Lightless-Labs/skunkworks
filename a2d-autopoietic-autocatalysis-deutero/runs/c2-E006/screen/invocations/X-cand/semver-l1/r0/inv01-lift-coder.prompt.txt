@@ -1,0 +1,103 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement the semver level 1 library.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments. All specified API items and fields must be pub.
+
+R2. API: #[derive(Clone, Debug, PartialEq, Eq)] pub struct Version { pub major: u64, pub minor: u64, pub patch: u64, pub pre: Vec<String>, pub build: Vec<String> }. #[derive(Clone, Debug, PartialEq, Eq)] pub enum VersionError { Empty, MissingCore { at: usize }, LeadingZero { at: usize }, Overflow { at: usize }, EmptyIdentifier { at: usize }, InvalidChar { at: usize } }. pub fn parse_version(s: &str) -> Result<Version, VersionError>; pub fn compare_versions(a: &Version, b: &Version) -> std::cmp::Ordering. Tests construct or compare only valid Version values. Version equality retains build metadata; compare_versions ignores it.
+
+R3. Version strings have exactly major.minor.patch, optionally -pre identifiers, then optionally +build identifiers. No trimming, v prefix, sign, Unicode, or omitted core field is accepted. Offsets are zero-based UTF-8 byte offsets in the version string. An empty string yields Empty.
+
+R4. Parse the three core fields left to right. At each field start, consume the maximal consecutive ASCII digits. If there are no digits, return MissingCore at the start when the byte is end-of-input, dot, minus, or plus; otherwise return InvalidChar at that byte.
+
+R5. For each consumed core field, before checking its following separator: if it has multiple digits and starts with 0, return LeadingZero at the field start; otherwise if it does not fit u64, return Overflow at the field start. Thus leading zero wins over overflow, and numeric errors win over errors in the following separator.
+
+R6. After each of the first two core numbers require a dot. End, minus, or plus instead yields MissingCore at that position; any other byte yields InvalidChar there. After the patch only end, minus, or plus can start the tail; any other byte yields InvalidChar there.
+
+R7. Pre and build are nonempty dot-separated identifiers of ASCII letters, digits, or hyphen. Preserve spelling and case. Pre ends at the first plus; build runs to end. Scan each identifier left to right: return InvalidChar at the first disallowed byte before any numeric leading-zero check on that identifier.
+
+R8. An empty identifier (including an absent identifier after minus/plus, doubled dot, or trailing dot) yields EmptyIdentifier at its start, even if that start is a plus terminating pre. Pre numeric identifiers with multiple digits starting with 0 yield LeadingZero at their start after character validation. Build numeric identifiers may have leading zeros.
+
+R9. Numeric pre identifiers have arbitrary length and never overflow. Core fields accept u64::MAX. A hyphen inside either identifier kind is ordinary content, including an identifier consisting solely of hyphen.
+
+R10. Precedence compares the core tuple numerically, then pre. A release (empty pre) is higher than all pre of the same tuple. Build has no precedence effect.
+
+R11. Compare corresponding pre identifiers: all-digit identifiers precede nonnumeric identifiers; numeric identifiers compare by mathematical magnitude (length then ASCII bytes); nonnumeric identifiers compare by ASCII byte order, case-sensitive. If the common prefix is equal, the shorter identifier list precedes the longer one.
+
+R12. Range API: #[derive(Clone, Debug)] pub struct Range with opaque implementation-chosen fields; #[derive(Clone, Debug, PartialEq, Eq)] pub enum RangeError { Empty { at: usize }, Syntax { at: usize }, Version { at: usize, error: VersionError } }; pub fn parse_range(s: &str) -> Result<Range, RangeError>; pub fn matches(v: &Version, r: &Range) -> bool. RangeError positions refer to zero-based bytes of the range string, while the nested VersionError remains relative to its operand substring.
+
+R13. Range tokens are separated only by one or more ASCII space, tab, CR, or LF; leading/trailing such whitespace is accepted. Whitespace-only input returns Empty { at: 0 }. Do not silently accept Unicode whitespace. Operators are attached to their operand, never separated from it.
+
+R14. A full comparator token is an optional operator =, <, <=, >, or >= immediately followed by a full version; a bare full version means equality. Comparisons use compare_versions, so equality and inclusive boundaries ignore build metadata.
+
+R15. Choose the longest valid comparator operator prefix, then require a nonempty operand starting with an ASCII digit. If that check fails, return Syntax at the token start; otherwise invoke parse_version and wrap failures as Version { at: operand_start, error }. No ==, !=, or commas are supported.
+
+R16. Comparators within one arm are conjunctive. Contradictory comparators are valid and simply match nothing; duplicates do not change matching. Parse tokens left to right and return the first error encountered.
+
+R17. Default prerelease policy: each arm admits a prerelease only if at least one explicit version operand in that same arm has nonempty pre and the exact same core tuple as the candidate. This admission is in addition to, not a replacement for, every comparison. Stable releases never need this admission.
+
+R18. Build metadata neither grants prerelease admission nor changes the tuple used for admission. A prerelease comparator at one tuple cannot admit candidates at any other tuple.
+
+R19. For error precedence, parsing of identifiers is sequential: fully process pre, then build. Return the first encountered error according to the scanning rules even when a later field has another error.
+
+R20. Empty pre/build vectors represent absent suffixes. Valid parsing retains identifier order and original strings; input strings are not normalized, and no surrounding whitespace is valid in versions.
+
+R21. This level accepts only the full-version conjunction grammar R13–R16: no ||, caret, tilde, partial versions, wildcards, or hyphen ranges. A token not beginning with a digit or a supported comparator returns Syntax at token start; bare digit-starting partial versions yield wrapped parse_version errors. The prerelease admission policy still applies.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn pv(s:&str)->Version {parse_version(s).unwrap()}
+fn pr(s:&str)->Range {parse_range(s).unwrap()}
+#[test]
+fn public_version() {
+    let v=pv("2.1.3-rc.1+build.7");
+    assert_eq!((v.major,v.minor,v.patch),(2,1,3));
+    assert_eq!(v.pre,vec!["rc","1"]);assert_eq!(v.build,vec!["build","7"]);
+    assert_eq!(compare_versions(&pv("2.1.3-alpha"),&pv("2.1.3-beta")),std::cmp::Ordering::Less);
+}
+#[test]
+fn public_precedence() {
+    assert_eq!(compare_versions(&pv("2.1.3-rc"),&pv("2.1.3")),std::cmp::Ordering::Less);
+}
+#[test]
+fn public_comparators() {
+    let r=pr(">=2.1.0 <3.0.0");assert!(matches(&pv("2.5.0"),&r));assert!(!matches(&pv("3.0.0"),&r));
+    assert!(matches(&pv("2.1.3-rc"),&pr(">=2.1.3-beta <2.1.3")));
+}
+#[test]
+fn public_exact() {
+    assert!(matches(&pv("2.1.3"),&pr("=2.1.3")));assert!(!matches(&pv("2.1.4"),&pr("=2.1.3")));
+}
+```
+
+
+## Reviewer notes on the requirements
+
+1. **R1–R2, R12:** Deliver one Rust source file in `rust` fences, compatible with `rustc --edition 2024`, using only `std`, without inner attributes/docs. Preserve exact API names, types, variants, and derives; all specified items and fields are public. `Range` has implementation-chosen representation.
+
+2. **R3, R20:** Versions require exactly three core numbers; accept no trimming, prefix, signs, Unicode, or surrounding whitespace. Only `""` yields `VersionError::Empty`. Preserve suffix spelling, case, and identifier order; absent suffixes produce empty vectors.
+
+3. **R4, R6:** Process core fields left to right, consuming maximal ASCII digit runs. No digits means `MissingCore` at the field start for EOF, `.`, `-`, or `+`; any other byte means `InvalidChar`. After major/minor, require `.`: EOF/`-`/`+` means `MissingCore`, anything else means `InvalidChar`. After patch, only EOF/`-`/`+` is allowed.
+
+4. **R5, R9:** Validate each consumed core number before its following separator: multidigit leading zero wins over overflow, and both win over separator errors. Zero and `u64::MAX` are valid; larger values overflow. Report numeric errors at the field start; prevent arithmetic wraparound.
+
+5. **R7–R9:** Both suffix kinds require nonempty, dot-separated identifiers containing only ASCII letters, digits, or hyphen. Hyphen is ordinary content, even alone. The first `+` ends pre; build continues to EOF, so another `+` inside build is invalid. Numeric build identifiers may have leading zeros.
+
+6. **R7–R8, R19:** Fully validate an identifier’s characters before checking its numeric leading zero: `1.2.3-01!` reports `InvalidChar`. Process identifiers sequentially, completing pre before build; an earlier identifier’s leading-zero error wins over later invalid characters. Empty identifiers report their start, including EOF or a `+` ending pre: `1.2.3-+x` reports `EmptyIdentifier { at: 6 }`.
+
+7. **R8–R9, R11:** Only all-digit pre identifiers are numeric. They have unlimited length and never overflow; multidigit ones starting with zero are invalid. Compare valid numeric identifiers by length, then ASCII bytes—not integer conversion. Identifiers such as `01a` are nonnumeric and valid.
+
+8. **R2, R10–R11:** Compare core tuples numerically, then pre; a release outranks every prerelease of the same tuple. Numeric pre identifiers precede nonnumeric ones; nonnumeric comparison is case-sensitive ASCII lexicographic order. Equal common prefixes favor the shorter list. Comparison ignores build, but derived `Version` equality retains it.
+
+9. **R3, R12–R13:** Every offset is a zero-based UTF-8 byte offset. Range errors use the original range string; nested `VersionError` offsets remain operand-relative. Only ASCII space/tab/CR/LF separate tokens; leading/trailing runs are accepted. Empty or whitespace-only ranges return `RangeError::Empty { at: 0 }`; Unicode whitespace is not a separator.
+
+10. **R14–R15, R21:** Select the longest supported comparator prefix, then require an immediately attached, nonempty operand beginning with an ASCII digit. Failure yields `Syntax` at token start; otherwise wrap `parse_version` failures at operand start. Thus `==1.2.3` is syntax, while `1.2` and `1.2.3,` yield wrapped version errors. Reject unsupported range grammar.
+
+11. **R14, R16, R21:** The entire accepted range is one conjunction; there is no OR grammar. Parse tokens left to right and return the first error, even after already contradictory comparisons. Contradictions parse successfully and match nothing; duplicates have no effect. Bare versions mean equality, and all comparison boundaries ignore build metadata.
+
+12. **R17–R18:** A prerelease candidate must both satisfy every comparator and have its exact core tuple represented by an explicit prerelease operand in that conjunction. Admission alone does not establish a match. Other tuples and build-only operands cannot grant admission; stable candidates need no admission.

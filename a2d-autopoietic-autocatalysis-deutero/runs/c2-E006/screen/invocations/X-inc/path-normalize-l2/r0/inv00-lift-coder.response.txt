@@ -1,0 +1,172 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.bytes().position(|b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .bytes()
+        .position(|b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a>(
+    components: impl Iterator<Item = (&'a str, usize)>,
+    absolute: bool,
+) -> Result<Vec<String>, PathError> {
+    let mut result: Vec<String> = Vec::new();
+
+    for (component, at) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if result.last().is_some_and(|last| last != "..") {
+                result.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                result.push("..".to_owned());
+            }
+        } else {
+            result.push(component.to_owned());
+        }
+    }
+
+    Ok(result)
+}
+
+fn components_with_offsets(path: &str, start: usize) -> impl Iterator<Item = (&str, usize)> {
+    path[start..]
+        .split('/')
+        .scan(start, |offset, component| {
+            let current = *offset;
+            *offset += component.len() + 1;
+            Some((component, current))
+        })
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let components = reduce_components(components_with_offsets(path, 0), absolute)?;
+
+    let mut result = if absolute {
+        format!("/{}", components.join("/"))
+    } else if components.is_empty() {
+        ".".to_owned()
+    } else {
+        components.join("/")
+    };
+
+    if directory_intent(path) && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let normalized_cwd = if cwd.starts_with('/') {
+        normalize(cwd).map_err(|_| PathError::InvalidCwd)?
+    } else {
+        return Err(PathError::InvalidCwd);
+    };
+
+    let normalized_home = match home {
+        Some(value) => {
+            if !value.starts_with('/') {
+                return Err(PathError::InvalidHome);
+            }
+            Some(normalize(value).map_err(|_| PathError::InvalidHome)?)
+        }
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let tilde_expansion = if path.starts_with('~') {
+        if path.len() == 1 || path.as_bytes().get(1) == Some(&b'/') {
+            let home = normalized_home.ok_or(PathError::MissingHome)?;
+            Some((home, if path.len() > 1 { 2 } else { 1 }))
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+    } else {
+        None
+    };
+
+    let directory_intent = directory_intent(path);
+    let (base, remainder_start) = if let Some((home, start)) = tilde_expansion {
+        (home, start)
+    } else if path.starts_with('/') {
+        ("/".to_owned(), 0)
+    } else {
+        (normalized_cwd, 0)
+    };
+
+    let mut components: Vec<String> = base
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    for (component, at) in components_with_offsets(path, remainder_start) {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components.pop().is_none() {
+                return Err(PathError::Escape { at });
+            }
+        } else {
+            components.push(component.to_owned());
+        }
+    }
+
+    let mut result = format!("/{}", components.join("/"));
+    if directory_intent && result != "/" {
+        result.push('/');
+    }
+    Ok(result)
+}
+```

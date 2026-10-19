@@ -1,0 +1,193 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.as_bytes().last() == Some(&b'/') {
+        return true;
+    }
+    path.split('/')
+        .filter(|component| !component.is_empty())
+        .last()
+        .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a>(
+    components: impl Iterator<Item = (usize, &'a str)>,
+    stack: &mut Vec<&'a str>,
+    absolute: bool,
+) -> Result<(), PathError> {
+    for (at, component) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if stack.last().is_some_and(|last| *last != "..") {
+                stack.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                stack.push("..");
+            }
+        } else {
+            stack.push(component);
+        }
+    }
+    Ok(())
+}
+
+fn format_result(stack: &[&str], absolute: bool, intent: bool) -> String {
+    if absolute {
+        if stack.is_empty() {
+            return "/".to_string();
+        }
+        let mut result = String::from("/");
+        result.push_str(&stack.join("/"));
+        if intent {
+            result.push('/');
+        }
+        result
+    } else if stack.is_empty() {
+        ".".to_string()
+    } else {
+        let mut result = stack.join("/");
+        if intent {
+            result.push('/');
+        }
+        result
+    }
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+
+    reduce_components(
+        path.split('/')
+            .scan(0usize, |offset, component| {
+                let at = *offset;
+                *offset += component.len() + 1;
+                Some((at, component))
+            }),
+        &mut stack,
+        absolute,
+    )?;
+
+    Ok(format_result(&stack, absolute, intent))
+}
+
+fn validate_context(path: &str, error: PathError) -> Result<Vec<String>, PathError> {
+    if !path.starts_with('/') {
+        return Err(error);
+    }
+    match normalize(path) {
+        Ok(normalized) => Ok(normalized
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .map(str::to_string)
+            .collect()),
+        Err(_) => Err(error),
+    }
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components =
+        validate_context(cwd, PathError::InvalidCwd)?;
+
+    let home_components = match home {
+        Some(home_path) => Some(validate_context(home_path, PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let tilde = path.as_bytes().first() == Some(&b'~');
+    let (start_components, remainder, remainder_offset, absolute) = if tilde {
+        let suffix = &path[1..];
+        if !suffix.is_empty() && !suffix.starts_with('/') {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+        let components = home_components
+            .as_ref()
+            .ok_or(PathError::MissingHome)?;
+        let consumed = if suffix.starts_with('/') { 2 } else { 1 };
+        (components, &path[consumed..], consumed, true)
+    } else if path.starts_with('/') {
+        (&Vec::new(), path, 0, true)
+    } else {
+        (&cwd_components, path, 0, true)
+    };
+
+    let mut stack: Vec<String> = start_components.clone();
+    let components = remainder
+        .split('/')
+        .scan(remainder_offset, |offset, component| {
+            let at = *offset;
+            *offset += component.len() + 1;
+            Some((at, component))
+        });
+
+    for (at, component) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if stack.last().is_some() {
+                stack.pop();
+            } else {
+                return Err(PathError::Escape { at });
+            }
+        } else {
+            stack.push(component.to_string());
+        }
+    }
+
+    let intent = if tilde && path == "~" {
+        false
+    } else {
+        directory_intent(path)
+    };
+
+    let refs: Vec<&str> = stack.iter().map(String::as_str).collect();
+    Ok(format_result(&refs, absolute, intent))
+}
+```

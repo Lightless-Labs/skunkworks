@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,7 @@ class HardenedResult:
     duplicates: set[str] = field(default_factory=set)
     messages: dict[str, str] = field(default_factory=dict)
     output: str = ""
+    report_issues: list[str] = field(default_factory=list)
 
 
 def _diff_files(diff_text: str) -> list[tuple[str, list[str]]]:
@@ -128,7 +130,30 @@ def audit_diff(diff_text: str, sys_path_roots: list[str | Path], protected_names
                 if CONTENT_TOKENS.search(line) or SYS_MODULES.search(line):
                     reasons.append(f"pytest/evaluator manipulation in production path: {path}")
                     break
+    reasons.extend(_unscanned_content(diff_text))
     return sorted(set(reasons))
+
+
+def _unscanned_content(diff_text: str) -> list[str]:
+    """Content the line audit cannot see: renames/copies carry no '+' lines, binary patches are encoded.
+
+    Candidate diffs are generated with --no-renames, so a rename or copy header means a hand-made diff.
+    """
+    reasons: list[str] = []
+    current = None
+    for line in diff_text.splitlines():
+        match = grading.DIFF_GIT_HEADER.match(line)
+        if match:
+            current = match.group(2)
+            continue
+        if current is None:
+            continue
+        for kind in ("rename", "copy"):
+            if line.startswith(kind + " from ") or line.startswith(kind + " to "):
+                reasons.append(f"forbidden {kind} (moved content is not audited): {current}")
+        if (line == "GIT binary patch" or line.startswith("Binary files ")) and not common.is_test_path(current):
+            reasons.append(f"forbidden binary patch in production path: {current}")
+    return reasons
 
 
 PY39_STDLIB = set("""__future__ _abc _ast _asyncio _bisect _blake2 _bootlocale _bootsubprocess _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _contextvars _crypt _csv _ctypes _ctypes_test _curses _curses_panel _datetime _dbm _decimal _elementtree _functools _gdbm _hashlib _heapq _imp _io _json _locale _lsprof _lzma _md5 _multibytecodec _multiprocessing _opcode _operator _pickle _posixshmem _posixsubprocess _queue _random _sha1 _sha256 _sha3 _sha512 _signal _socket _sqlite3 _sre _ssl _stat _statistics _string _struct _symtable _thread _threading_local _tracemalloc _uuid _warnings _weakref _weakrefset _xxsubinterpreters _zoneinfo abc aifc antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb binascii binhex bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno faulthandler filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress itertools json keyword linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder multiprocessing netrc nis nntplib ntpath nturl2path numbers operator optparse os pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib posix pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shutil signal site smtpd smtplib sndhdr socket socketserver sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios test textwrap threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle types typing unicodedata unittest urllib uu uuid venv warnings wave weakref webbrowser winreg wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib""".split())
@@ -342,14 +367,26 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
             "raise SystemExit(pytest.main(%r))\n"
         ) % (str(guard_dir), str(guard_dir), pytest_args)
         args = [str(_venv_python(venv)), "-c", bootstrap]
+        read_end, write_end = os.pipe()
+        env["EVOLVE_REPORT_FD"] = str(write_end)
+        chunks: list[bytes] = []
+        reader = threading.Thread(target=lambda: chunks.extend(iter(lambda: os.read(read_end, 65536), b"")))
+        reader.start()
         try:
-            proc = run_sandboxed(args, profile, cwd=tree, env=env, capture_output=True, text=True, timeout=timeout)
+            proc = run_sandboxed(args, profile, cwd=tree, env=env, capture_output=True, text=True, timeout=timeout,
+                                 pass_fds=(write_end,))
             output = proc.stdout + proc.stderr
             code = proc.returncode
         except subprocess.TimeoutExpired as exc:
             code, output = -9, f"pytest timed out after {timeout}s\n"
             output += (exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
+        finally:
+            os.close(write_end)
+            reader.join(timeout=30)
+            os.close(read_end)
         result = HardenedResult(code, output=output)
+        streamed, issues = parse_report_stream(b"".join(chunks).decode(errors="replace"))
+        result.report_issues = issues
         cases: dict[str, list[str]] = {}
         if junit.is_file():
             exists = lambda rel: (tree / rel).is_file()
@@ -365,9 +402,54 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
                     detail = "\n".join((c.get("message", "") + "\n" + (c.text or "")).strip() for c in children)
                     result.messages[node] = detail[:1500]
         exact = enforce_required_ids(cases, node_ids)
-        result.passed, result.failed = exact["passed"], exact["failed"] | exact["duplicates"]
+        # A pass needs junit AND the guard's live stream to agree; a tampered stream passes nothing.
+        trusted = {node for node in exact["passed"] if streamed.get(node) == "pass"} if not issues else set()
+        disagree = exact["passed"] - trusted
+        if disagree:
+            result.report_issues.append(f"{len(disagree)} junit passes not confirmed by the live report stream")
+        result.passed = trusted
+        result.failed = exact["failed"] | exact["duplicates"] | disagree
         result.missing, result.duplicates = exact["missing"], exact["duplicates"]
         return result
+
+
+def parse_report_stream(text: str) -> tuple[dict[str, str], list[str]]:
+    """Per-node outcome from the guard's records, and integrity issues (no END, records after END,
+    a phase reported twice). Any issue means the stream, and so every pass, is untrusted."""
+    phases: dict[str, dict[str, str]] = {}
+    issues, ended = [], False
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            issues.append("unparseable report record")
+            continue
+        if record == ["END"]:
+            if ended:
+                issues.append("duplicate END")
+            ended = True
+            continue
+        if ended:
+            issues.append("report record after END")
+            continue
+        if not (isinstance(record, list) and len(record) == 3 and all(isinstance(x, str) for x in record)):
+            issues.append("malformed report record")
+            continue
+        node, when, outcome = record
+        if when in phases.setdefault(node, {}):
+            issues.append(f"phase reported twice: {when}")
+        phases[node][when] = outcome
+    if not ended:
+        issues.append("report stream has no END")
+    outcomes = {}
+    for node, seen in phases.items():
+        if "failed" in seen.values():
+            outcomes[node] = "fail"
+        elif seen.get("call") == "passed":
+            outcomes[node] = "pass"
+        else:
+            outcomes[node] = "skip"
+    return outcomes, sorted(set(issues))
 
 
 OPAQUE_ID = re.compile(r"e1-[0-9a-f]{12}")

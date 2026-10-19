@@ -1,0 +1,116 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement the dag-schedule level 1 task.
+
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner doc comments.
+
+R2. Use exactly the public API declarations below (field types and variant names are exact). All listed structs and enums must implement Debug, Clone, PartialEq and Eq. All API items and listed fields are pub. Private helpers are allowed.
+
+R3. Task IDs are their zero-based indices in the input slice. A deps entry names a predecessor that must finish before this task may start. The input and dependency lists must not be reordered or modified.
+
+R4. Validate ALL dependency entries before any other validation or computation. Visit tasks in ascending ID and entries left to right. Return at the first bad entry: value >= task count gives BadDependency {task,position,value}; otherwise value == task gives SelfDependency {task,position}; otherwise an entry previously seen in that same list gives DuplicateDependency {task,position,value}. Positions are zero-based. Duplicate entries in different lists are legal.
+
+R5. After the validation phases specified below, detect cycles by Kahn traversal: initially all zero-indegree IDs are available, repeatedly remove the SMALLEST currently available ID, then make its newly unblocked children available. New smaller IDs take precedence over already available larger IDs. Dependency list order has no effect on the result.
+
+R6. If Kahn traversal cannot remove all tasks, return Cycle {blocked}: all unremoved IDs in ascending order, including acyclic descendants blocked by a cycle; exclude tasks already removed. A zero-duration cycle is still a cycle. Cycle detection precedes all arithmetic, so a cycle wins over any potential time overflow.
+
+R7. All durations and times are u64 integer ticks. Zero durations are legal. Arithmetic must not wrap or saturate. Exact u64::MAX is a valid time. Never panic for an input described by this specification; return the specified error when applicable.
+
+R8. For valid acyclic input, visit tasks in the Kahn order above. A root has earliest start 0. Any other task has earliest start equal to the MAXIMUM earliest finish among its predecessors.
+
+R9. The earliest finish is earliest start + duration, using checked addition. The first overflowing task in the Kahn order returns Overflow {task}; do not choose the smallest overflowing ID independently of traversal order.
+
+R10. Timing {start,finish} represents a half-open interval [start,finish). Tasks on different branches may overlap without limits. A zero-duration task finishes at its start and does not insert an extra tick before successors.
+
+R11. The order field is the Kahn removal order. Timing vectors are indexed by input task ID, NOT by traversal order.
+
+R12. The makespan is the maximum earliest finish over ALL tasks, including isolated components, or 0 for empty input.
+
+R13. earliest returns Plan {order,times,makespan}, where times is the earliest Timing vector. The validation pipeline is dependencies, full cycle detection, then the earliest-time pass; do not return a partial plan.
+
+R14. Empty input returns an empty order, empty times, and makespan 0.
+
+R15. A root of duration u64::MAX succeeds. A zero-duration child of a task finishing at u64::MAX also succeeds, but a positive-duration child overflows.
+
+R16. Among equal predecessor finishes, only the time maximum matters; neither duplicate work nor a dependency-list-order tie-break may change timing.
+
+R17. An edge from a higher ID to a lower ID is legal. Disconnected components share the same time origin 0, with no artificial serialization.
+
+R18. A dependency error anywhere in the input wins over a cycle or overflow anywhere else, including in an earlier task. Self-dependency is a SelfDependency error, not Cycle.
+
+R19. Calls are independent and deterministic: no retained state, clock, randomness, I/O, or global scheduling state. The function returns a fresh owned result.
+
+Exact public API (derive traits as required by R2):
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task { pub duration: u64, pub deps: Vec<usize> }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing { pub start: u64, pub finish: u64 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan { pub order: Vec<usize>, pub times: Vec<Timing>, pub makespan: u64 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency { task: usize, position: usize, value: usize },
+    SelfDependency { task: usize, position: usize },
+    DuplicateDependency { task: usize, position: usize, value: usize },
+    Cycle { blocked: Vec<usize> },
+    Overflow { task: usize },
+}
+pub fn earliest(tasks: &[Task]) -> Result<Plan, Error>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn task(duration: u64, deps: &[usize]) -> Task { Task { duration, deps: deps.to_vec() } }
+// R1-R3, R8-R13
+#[test]
+fn public_chain() {
+let p = earliest(&[task(3,&[]),task(5,&[0]),task(2,&[1])]).unwrap();
+assert_eq!(p, Plan { order: vec![0,1,2], times: vec![Timing{start:0,finish:3},Timing{start:3,finish:8},Timing{start:8,finish:10}], makespan:10 });
+}
+
+// R10-R12, R17
+#[test]
+fn public_parallel() {
+let p = earliest(&[task(4,&[]),task(7,&[]),task(1,&[0,1])]).unwrap();
+assert_eq!(p.times[2], Timing{start:7,finish:8}); assert_eq!(p.makespan,8);
+}
+
+// R6
+#[test]
+fn public_cycle() {
+assert_eq!(earliest(&[task(1,&[1]),task(2,&[0])]), Err(Error::Cycle{blocked:vec![0,1]}));
+}
+```
+
+
+## Reviewer notes on the requirements
+
+1. **R1–R2:** Submit one std-only Rust source file in a `rust` fence, compatible with edition 2024, without inner attributes or inner doc comments. Preserve every API name, type, field visibility, variant, signature, and required trait exactly.
+
+2. **R3–R4, R18:** Scan all dependency lists before cycle detection or timing: ascending task ID, then left to right. Return the first invalid entry encountered, even if an earlier task belongs to a cycle or would overflow.
+
+3. **R4, R18:** Within each entry, check out-of-range first, then self-reference, then repetition within that task’s list. Report zero-based positions; repeated self-references still yield `SelfDependency`. The same predecessor appearing in different tasks’ lists is legal.
+
+4. **R3, R5, R17:** Dependencies point from predecessor to dependent; higher-ID predecessors are legal. Kahn traversal must always select the smallest ID currently available, including newly available IDs ahead of larger IDs already waiting.
+
+5. **R6, R13:** Complete cycle detection before performing any time addition. On failure, `blocked` contains every unremoved ID in ascending order, including acyclic descendants of cycles, and excludes every removed task. Zero-duration cycles remain errors.
+
+6. **R7, R9, R15:** Check each `start + duration` for overflow; exact `u64::MAX` succeeds. A root lasting `u64::MAX` and a zero-duration successor both succeed; a positive-duration successor overflows. Never wrap, saturate, or introduce sentinel values that exclude valid times.
+
+7. **R5, R9:** If multiple tasks could overflow, return the first overflowing task in the prescribed Kahn order, which need not be the smallest overflowing task ID.
+
+8. **R8, R10, R16:** Each nonroot starts at the maximum predecessor finish, never their sum. Equal finishes require no tie-break. Intervals are half-open, and zero-duration tasks add no tick or delay.
+
+9. **R10, R12, R17:** Branches and disconnected components execute concurrently from time origin zero. Makespan is the maximum finish across every task, including isolated tasks; traversal order must not serialize execution.
+
+10. **R3, R11, R13:** `order` records Kahn removal order, while `times[id]` belongs to that input task ID. Preserve input tasks and dependency-list order; return a complete plan only after every phase succeeds.
+
+11. **R12, R14:** Empty input succeeds with empty `order`, empty `times`, and makespan zero. Nonempty input containing only zero-duration tasks also has makespan zero.
+
+12. **R7, R19:** Handle specified inputs without panics and make repeated calls independent and deterministic. Return fresh owned results without retained scheduling state, clocks, randomness, or I/O.

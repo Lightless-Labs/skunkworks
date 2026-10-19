@@ -1,0 +1,223 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+    TooManyQueries { len: usize },
+    QueryOutOfRange { index: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn in_range(point: Point) -> bool {
+    (-COORD_LIMIT..=COORD_LIMIT).contains(&point.x)
+        && (-COORD_LIMIT..=COORD_LIMIT).contains(&point.y)
+}
+
+fn prepare_polygon(points: &[Point]) -> Result<Vec<Point>, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, &point) in points.iter().enumerate() {
+        if !in_range(point) {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = points.len()
+        - usize::from(points.len() >= 2 && points[0] == points[points.len() - 1]);
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    Ok(points[..effective_len].to_vec())
+}
+
+fn cross(a: Point, b: Point, q: Point) -> i128 {
+    let abx = i128::from(b.x) - i128::from(a.x);
+    let aby = i128::from(b.y) - i128::from(a.y);
+    let aqx = i128::from(q.x) - i128::from(a.x);
+    let aqy = i128::from(q.y) - i128::from(a.y);
+    abx * aqy - aby * aqx
+}
+
+fn rounded_edge_milli(a: Point, b: Point) -> u64 {
+    let dx = i128::from(b.x) - i128::from(a.x);
+    let dy = i128::from(b.y) - i128::from(a.y);
+    let squared_scaled = ((dx * dx + dy * dy) as u128) * 1_000_000;
+
+    // Find floor(sqrt(squared_scaled)) exactly.
+    let mut low = 0u128;
+    let mut high = 3_000_000_001u128;
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if mid * mid <= squared_scaled {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    // Round to nearest integer, with exact half ties upward. The midpoint
+    // comparison is performed after squaring, avoiding floating point.
+    let midpoint_fourth = 4 * squared_scaled;
+    let midpoint = 2 * low + 1;
+    if midpoint_fourth >= midpoint * midpoint {
+        (low + 1) as u64
+    } else {
+        low as u64
+    }
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    let polygon = prepare_polygon(points)?;
+    let n = polygon.len();
+
+    let mut signed_area2 = 0i128;
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+    }
+
+    let orientation = if signed_area2 > 0 {
+        Orientation::CounterClockwise
+    } else if signed_area2 < 0 {
+        Orientation::Clockwise
+    } else {
+        Orientation::Degenerate
+    };
+
+    let mut edge_milli = Vec::with_capacity(n);
+    let mut perimeter_milli = 0u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+        let length = rounded_edge_milli(a, b);
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let replace = match longest_edge {
+            None => true,
+            Some(best) if length > edge_milli[best] => true,
+            Some(best) if length < edge_milli[best] => false,
+            Some(best) => {
+                let (low, high) = if a <= b { (a, b) } else { (b, a) };
+                let old_a = polygon[best];
+                let old_b = polygon[(best + 1) % n];
+                let (old_low, old_high) = if old_a <= old_b {
+                    (old_a, old_b)
+                } else {
+                    (old_b, old_a)
+                };
+                (low, high, i) < (old_low, old_high, best)
+            }
+        };
+        if replace {
+            longest_edge = Some(i);
+        }
+    }
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location {
+    Outside,
+    Inside,
+    Boundary { edge: usize },
+}
+
+fn on_segment(a: Point, b: Point, q: Point) -> bool {
+    cross(a, b, q) == 0
+        && i128::from(q.x) >= i128::from(a.x).min(i128::from(b.x))
+        && i128::from(q.x) <= i128::from(a.x).max(i128::from(b.x))
+        && i128::from(q.y) >= i128::from(a.y).min(i128::from(b.y))
+        && i128::from(q.y) <= i128::from(a.y).max(i128::from(b.y))
+}
+
+pub fn classify(points: &[Point], queries: &[Point]) -> Result<Vec<Location>, GeomError> {
+    let polygon = prepare_polygon(points)?;
+
+    if queries.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyQueries { len: queries.len() });
+    }
+    for (index, &query) in queries.iter().enumerate() {
+        if !in_range(query) {
+            return Err(GeomError::QueryOutOfRange { index });
+        }
+    }
+
+    let n = polygon.len();
+    let mut result = Vec::with_capacity(queries.len());
+
+    for &query in queries {
+        let mut boundary = None;
+        for i in 0..n {
+            if on_segment(polygon[i], polygon[(i + 1) % n], query) {
+                boundary = Some(i);
+                break;
+            }
+        }
+        if let Some(edge) = boundary {
+            result.push(Location::Boundary { edge });
+            continue;
+        }
+
+        let mut inside = false;
+        for i in 0..n {
+            let a = polygon[i];
+            let b = polygon[(i + 1) % n];
+            if (a.y > query.y) != (b.y > query.y) {
+                let side = cross(a, b, query);
+                if (b.y > a.y && side > 0) || (b.y < a.y && side < 0) {
+                    inside = !inside;
+                }
+            }
+        }
+        result.push(if inside {
+            Location::Inside
+        } else {
+            Location::Outside
+        });
+    }
+
+    Ok(result)
+}
+```

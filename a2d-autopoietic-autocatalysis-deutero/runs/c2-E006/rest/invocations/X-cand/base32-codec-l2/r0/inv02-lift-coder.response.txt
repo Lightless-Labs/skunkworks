@@ -1,0 +1,167 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+fn alphabet_bytes(alphabet: Alphabet) -> &'static [u8; 32] {
+    match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    }
+}
+
+fn value_of(byte: u8, alphabet: Alphabet) -> Option<u8> {
+    alphabet_bytes(alphabet)
+        .iter()
+        .position(|&candidate| candidate == byte)
+        .map(|value| value as u8)
+}
+
+pub fn encode(input: &[u8], alphabet: Alphabet, padding: Padding) -> String {
+    let symbols = alphabet_bytes(alphabet);
+    let symbol_count = input.len().saturating_mul(8).saturating_add(4) / 5;
+    let padding_count = match padding {
+        Padding::Required => (8 - symbol_count % 8) % 8,
+        Padding::Omitted => 0,
+    };
+    let mut output = String::with_capacity(symbol_count.saturating_add(padding_count));
+
+    let mut accumulator = 0u8;
+    let mut bits = 0u8;
+
+    for &byte in input {
+        for shift in (0..8).rev() {
+            accumulator = (accumulator << 1) | ((byte >> shift) & 1);
+            bits += 1;
+
+            if bits == 5 {
+                output.push(symbols[accumulator as usize] as char);
+                accumulator = 0;
+                bits = 0;
+            }
+        }
+    }
+
+    if bits != 0 {
+        accumulator <<= 5 - bits;
+        output.push(symbols[accumulator as usize] as char);
+    }
+
+    for _ in 0..padding_count {
+        output.push('=');
+    }
+
+    output
+}
+
+pub fn decode(
+    input: &str,
+    alphabet: Alphabet,
+    padding: Padding,
+) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    // Pass 1: validate every byte before inspecting structure.
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && value_of(byte, alphabet).is_none() {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    let p = bytes.iter().position(|&byte| byte == b'=').unwrap_or(n);
+
+    // Pass 2: validate padding mode and placement.
+    match padding {
+        Padding::Omitted if p < n => return Err(DecodeError::Padding { offset: p }),
+        Padding::Required if p < n => {
+            if let Some(offset) = bytes[p..]
+                .iter()
+                .position(|&byte| byte != b'=')
+                .map(|relative| p + relative)
+            {
+                return Err(DecodeError::Padding { offset });
+            }
+        }
+        _ => {}
+    }
+
+    let d = p;
+    let residue = d % 8;
+
+    // Pass 3: validate data length.
+    if !matches!(residue, 0 | 2 | 4 | 5 | 7) {
+        return Err(DecodeError::InvalidLength { offset: n });
+    }
+
+    // Pass 4: validate required padding shape.
+    if padding == Padding::Required {
+        let expected_padding = match residue {
+            0 => 0,
+            2 => 6,
+            4 => 4,
+            5 => 3,
+            7 => 1,
+            _ => unreachable!(),
+        };
+        if n - p != expected_padding {
+            return Err(DecodeError::Padding { offset: p });
+        }
+    }
+
+    // Pass 5: validate unused low bits in the last symbol.
+    let unused_bits = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+
+    if unused_bits != 0 {
+        let last_value = value_of(bytes[d - 1], alphabet).expect("lexically validated");
+        let mask = (1u8 << unused_bits) - 1;
+        if last_value & mask != 0 {
+            return Err(DecodeError::TrailingBits { offset: d - 1 });
+        }
+    }
+
+    let output_capacity = d.saturating_mul(5) / 8;
+    let mut output = Vec::with_capacity(output_capacity);
+    let mut accumulator = 0u8;
+    let mut bits = 0u8;
+
+    for &byte in &bytes[..d] {
+        let value = value_of(byte, alphabet).expect("lexically validated");
+        for shift in (0..5).rev() {
+            accumulator = (accumulator << 1) | ((value >> shift) & 1);
+            bits += 1;
+
+            if bits == 8 {
+                output.push(accumulator);
+                accumulator = 0;
+                bits = 0;
+            }
+        }
+    }
+
+    Ok(output)
+}
+```

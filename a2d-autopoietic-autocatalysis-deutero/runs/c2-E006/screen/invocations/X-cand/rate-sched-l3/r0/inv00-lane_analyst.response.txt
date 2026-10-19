@@ -1,0 +1,23 @@
+1. **R2–R4:** Validate configuration before inspecting jobs: `retry_base > 0`, `retry_cap >= retry_base`; zero aging and empty input are valid. Then validate each job completely in input order: BadId → BadPriority → BadAttempts → Duplicate. An earlier job’s error wins over every later job’s error.
+
+2. **R3–R4:** IDs must contain exactly 1–16 bytes, each an ASCII lowercase letter, digit, or hyphen; leading/trailing hyphens and all-digit IDs are allowed. Priority endpoints 0 and 9 and attempt limits 1 and 32 are valid. Duplicate reports the later input index.
+
+3. **R5–R6:** Finish all local validation before checking dependencies. Traverse jobs, then dependency entries, in input order; at each entry check duplicate spelling before existence and return the first error encountered. Dependency strings receive no syntax validation. Forward references are valid; cycle detection, including self-edges, comes last.
+
+4. **R1, R7–R8:** The time watermark starts at 0 and is shared by all three timed methods. Check `now < watermark` before any other error; equality is valid. Every successful timed call, including `Ok(None)`, records `now`. Every error preserves all state, counters, time, and ordering.
+
+5. **R9–R12, R30–R31:** Before the first cycle, dispatch and completion return NoCycle after checking time. `begin_cycle` checks time before Busy; any Waiting job, including dependency-held or future-retry work, or any Running job makes it Busy. Otherwise reset every job and counter. Empty cycles are immediately terminal and may restart at the same timestamp.
+
+6. **R9, R13, R32:** `status` checks NoCycle before ID lookup, then uses exact spelling and returns Unknown for absent IDs. It never changes time or state. Returned states are owned snapshots that remain unchanged across completions and cycle resets.
+
+7. **R14–R15, R20–R21, R27:** Dispatch requires Waiting, `ready_at <= now`, and every dependency Succeeded in the current cycle. Failed attempts and Running parents do not qualify. Dispatch may continue while other jobs run; no eligible work returns `Ok(None)` without advancing beyond `now` or completing anything.
+
+8. **R16–R18:** Zero aging disables aging. Otherwise use the mathematical elapsed-time quotient and cap the resulting priority at 9 without overflow. Aging includes dependency-blocked waiting time, starts anew at retry `ready_at`, and applies only once that timestamp is reached. Ties always use original job order.
+
+9. **R11, R19, R29:** Counters start at zero each cycle and increment only on dispatch; the first ticket and Running state both contain attempt 1. Both must contain the same updated count. Completion, waiting, and blocking do not increment it.
+
+10. **R22–R24, R30:** Completion precedence is TimeReversed → NoCycle → Unknown → NotRunning, with exact lookup and no ID syntax check. Success always yields Succeeded, including on the last attempt. Failure yields Failed exactly when the dispatched attempt equals `max_attempts`; terminal jobs cannot be completed again.
+
+11. **R25–R26:** A nonterminal failed attempt `a` retries after `min(retry_cap, retry_base × 2^(a−1))`: the first delay is `retry_base`. Compute the capped mathematical product without wrapping, then saturate `now + delay` at `u64::MAX`. A retry scheduled at that maximum becomes eligible at that exact timestamp.
+
+12. **R28–R31:** Terminal failure must immediately propagate Blocked to a fixed point through all Waiting descendants having any Failed or Blocked dependency, regardless of input order or future readiness. Preserve their attempt counts and leave unrelated jobs unchanged. Failed, Blocked, and Succeeded persist until an allowed cycle reset.

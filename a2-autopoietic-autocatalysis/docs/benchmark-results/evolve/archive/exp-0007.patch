@@ -1,0 +1,100 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..1640610
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++Aggregating failures and regressions across fresh retries will help later attempts resolve never-visible-pass tasks by exposing recurring verifier problems that last-attempt-only feedback can hide.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..0224b5b 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""Aggregate verifier history across stateless retries."""
+ 
+ from __future__ import annotations
+ 
+@@ -9,8 +9,8 @@ import sys
+ from pathlib import Path
+ 
+ FEEDBACK_HEADER = (
+-    "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+-    "Start again from the original code. Verifier output from that attempt:\n"
++    "\n\n---\nPrevious attempts at this task were rejected by the verifier. "
++    "Each attempt started from the original code. Cross-attempt verifier history:\n"
+ )
+ 
+ 
+@@ -35,6 +35,61 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
++def render_history(candidates: list[dict]) -> str:
++    outcomes: dict[str, dict] = {}
++    extras = []
++    for candidate in candidates:
++        candidate_index = candidate.get("index", "?")
++        verify = candidate.get("verify", {})
++        for test in verify.get("tests", []):
++            name = test.get("name")
++            test_index = test.get("index")
++            key = f"name:{name}" if name is not None else f"index:{test_index}"
++            record = outcomes.setdefault(key, {
++                "label": name if name is not None else test_index if test_index is not None else "?",
++                "observations": [],
++            })
++            record["observations"].append({
++                "candidate": candidate_index,
++                "outcome": str(test.get("outcome", "unknown")),
++                "message": str(test.get("message", "")).strip(),
++            })
++        for reason in verify.get("rejected", []):
++            extras.append(f"[rejected] candidate {candidate_index}: {reason}")
++        if verify.get("error"):
++            extras.append(f"[error] candidate {candidate_index}: {verify['error']}")
++
++    groups = {"Repeated failures": [], "Mixed outcomes": [], "Other failures": []}
++    for record in outcomes.values():
++        failures = [item for item in record["observations"] if item["outcome"] != "pass"]
++        if not failures:
++            continue
++        passes = [item for item in record["observations"] if item["outcome"] == "pass"]
++        if len(failures) > 1:
++            group = "Repeated failures"
++        elif passes:
++            group = "Mixed outcomes"
++        else:
++            group = "Other failures"
++        failed_at = ", ".join(str(item["candidate"]) for item in failures)
++        line = f"{record['label']}: failed on candidate(s) {failed_at}"
++        if passes:
++            passed_at = ", ".join(str(item["candidate"]) for item in passes)
++            line += f"; passed on candidate(s) {passed_at}"
++        messages = list(dict.fromkeys(item["message"] for item in failures if item["message"]))
++        if messages:
++            line += "; failure details: " + " | ".join(messages)
++        groups[group].append(line)
++
++    sections = []
++    for title, lines in groups.items():
++        if lines:
++            sections.append(f"{title}:\n" + "\n".join(f"- {line}" for line in lines))
++    if extras:
++        sections.append("Verifier-level failures:\n" + "\n".join(f"- {line}" for line in extras))
++    return "\n\n".join(sections) or "No failing visible checks were reported."
++
++
+ def choose_action(state: dict, effort: str | None = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+@@ -44,7 +99,7 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
++        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_history(candidates)
+         return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),

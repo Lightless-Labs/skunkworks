@@ -36,15 +36,21 @@ def per_task_rates(rows, label) -> dict[str, tuple[int, int]]:
     return counts
 
 
+def scored_tasks(champion_rates, tasks) -> list[str]:
+    """Tasks with at least one clean champion run; a task the champion never ran cleanly has no
+    baseline and is left out of both the null and the observed delta."""
+    return [task for task in tasks if champion_rates.get(task, (0, 0))[1] > 0]
+
+
 def null_delta_samples(champion_rates, tasks, runs, draws=20000, seed=0) -> list[float]:
     rng = random.Random(seed)
-    points = {task: (successes / n if n else 0.0) for task, (successes, n) in champion_rates.items()}
+    tasks = scored_tasks(champion_rates, tasks)
     samples = []
     for _ in range(draws):
         delta_total = 0.0
         for task in tasks:
             successes, n = champion_rates[task]
-            point = successes / n if n else 0.0
+            point = successes / n
             p = rng.betavariate(successes + 0.5, n - successes + 0.5)
             outcomes = sum(rng.random() < p for _ in range(runs)) / float(runs)
             delta_total += outcomes - point
@@ -53,6 +59,9 @@ def null_delta_samples(champion_rates, tasks, runs, draws=20000, seed=0) -> list
 
 
 def delta(candidate_rows, champion_rates, tasks) -> float:
+    """Mean over the candidate's runs of sum_t (r_t - p_t). A task missing from a run (infra failure)
+    is imputed at the champion's p_t, i.e. neutral, rather than scored as a failure."""
+    tasks = scored_tasks(champion_rates, tasks)
     by_rep = {}
     for row in candidate_rows:
         if row.get("infra_failure") or row.get("opaque_id") not in tasks:
@@ -61,9 +70,8 @@ def delta(candidate_rows, champion_rates, tasks) -> float:
         by_rep.setdefault(rep, {})[row["opaque_id"]] = int(bool((row.get("grade") or {}).get("resolved")))
     if not by_rep:
         return float("nan")
-    baseline = sum((champion_rates[t][0] / champion_rates[t][1] if champion_rates[t][1] else 0.0)
-                   for t in tasks)
-    values = [sum(outcomes.get(task, 0) for task in tasks) - baseline for outcomes in by_rep.values()]
+    point = {t: champion_rates[t][0] / champion_rates[t][1] for t in tasks}
+    values = [sum(outcomes.get(t, point[t]) - point[t] for t in tasks) for outcomes in by_rep.values()]
     return sum(values) / len(values)
 
 

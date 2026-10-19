@@ -180,6 +180,13 @@ class EpisodeTests(unittest.TestCase):
 
 
 class DenyReadTests(unittest.TestCase):
+    def test_cfg_deny_read_overrides_the_default_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp) / "a", Path(tmp) / "b"; a.mkdir()
+            cfg = argparse.Namespace(deny_read=[a, b])
+            self.assertEqual(episode._deny_args(cfg, Path(tmp) / "sealed"), ["--deny-read", str(a)])
+            self.assertEqual(episode._deny_args(argparse.Namespace(), Path(tmp)), episode.deny_read_args(Path(tmp)))
+
     def test_agents_are_denied_secrets_sealed_projects_and_ssh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sealed = Path(tmp) / "sealed"; sealed.mkdir()
@@ -190,6 +197,26 @@ class DenyReadTests(unittest.TestCase):
         for path in (episode.tasks.private_dir(), Path.home() / "Projects", Path.home() / ".ssh"):
             if path.exists():
                 self.assertIn(str(path), denied)
+
+
+class CandidateDiffTests(unittest.TestCase):
+    def test_rename_is_emitted_as_delete_plus_add_so_content_is_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            (ws / "tests").mkdir()
+            (ws / "tests" / "helper.py").write_text("import sys\nsys.modules['x'] = None\n")
+            git(ws, "init", "-q")
+            git(ws, "add", "-A")
+            git(ws, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "root")
+            root = git(ws, "rev-parse", "HEAD").strip()
+            (ws / "pkg").mkdir()
+            git(ws, "mv", "tests/helper.py", "pkg/helper.py")
+            renamed = git(ws, "diff", "--cached", "-M", "--binary", root)
+            self.assertIn("rename from", renamed)
+            git(ws, "reset", "-q", "--hard", root)
+            diff = episode._candidate_diff(ws, root, renamed)
+        self.assertNotIn("rename from", diff)
+        self.assertIn("+sys.modules['x'] = None", diff)
 
 
 if __name__ == "__main__":

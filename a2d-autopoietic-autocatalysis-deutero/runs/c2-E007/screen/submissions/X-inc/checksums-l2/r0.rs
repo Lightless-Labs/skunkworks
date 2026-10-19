@@ -1,0 +1,220 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    Shape,
+    Hex { offset: usize },
+    Adler { component: usize },
+}
+
+#[derive(Debug, Clone)]
+struct State {
+    crc: u32,
+    a: u32,
+    b: u32,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            crc: 0xffff_ffff,
+            a: 1,
+            b: 0,
+        }
+    }
+
+    fn from_seed(crc32: u32, adler32: u32) -> Self {
+        Self {
+            crc: crc32 ^ 0xffff_ffff,
+            a: adler32 & 0xffff,
+            b: adler32 >> 16,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let mask = 0u32.wrapping_sub(self.crc & 1);
+                self.crc = (self.crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+
+            self.a = (self.a + u32::from(byte)) % 65_521;
+            self.b = (self.b + self.a) % 65_521;
+        }
+    }
+
+    fn checksum(&self) -> Hashes {
+        Hashes {
+            crc32: self.crc ^ 0xffff_ffff,
+            adler32: (self.b << 16) | self.a,
+        }
+    }
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut state = State::new();
+    state.update(data);
+    state.checksum().crc32
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut state = State::new();
+    state.update(data);
+    state.checksum().adler32
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    let mut state = State::new();
+    state.update(data);
+    state.checksum()
+}
+
+fn validate_spans(data_len: usize, spans: &[Span]) -> Result<(), SpanError> {
+    let mut previous_end = 0;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+        previous_end = span.end;
+    }
+
+    Ok(())
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut state = State::new();
+    for span in spans {
+        state.update(&data[span.start..span.end]);
+    }
+    Ok(state.checksum())
+}
+
+#[derive(Debug, Clone)]
+pub struct Stream {
+    state: State,
+}
+
+impl Stream {
+    pub fn new() -> Self {
+        Self {
+            state: State::new(),
+        }
+    }
+
+    pub fn checksum(&self) -> Hashes {
+        self.state.checksum()
+    }
+
+    pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> {
+        let a = adler32 & 0xffff;
+        let b = adler32 >> 16;
+
+        if a >= 65_521 {
+            return Err(SnapshotError::Adler { component: 0 });
+        }
+        if b >= 65_521 {
+            return Err(SnapshotError::Adler { component: 1 });
+        }
+
+        Ok(Self {
+            state: State::from_seed(crc32, adler32),
+        })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.state.update(data);
+    }
+
+    pub fn update_spans(
+        &mut self,
+        data: &[u8],
+        spans: &[Span],
+    ) -> Result<(), SpanError> {
+        validate_spans(data.len(), spans)?;
+
+        for span in spans {
+            self.state.update(&data[span.start..span.end]);
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.state = State::new();
+    }
+
+    pub fn snapshot(&self) -> String {
+        let hashes = self.checksum();
+        format!("c{:08x}:a{:08x}", hashes.crc32, hashes.adler32)
+    }
+
+    pub fn restore(token: &str) -> Result<Self, SnapshotError> {
+        let bytes = token.as_bytes();
+        if bytes.len() != 19 || bytes[0] != b'c' || bytes[9] != b':' || bytes[10] != b'a' {
+            return Err(SnapshotError::Shape);
+        }
+
+        let mut crc = 0u32;
+        let mut adler = 0u32;
+
+        for offset in 1..9 {
+            let digit = hex_digit(bytes[offset]).ok_or(SnapshotError::Hex { offset })?;
+            crc = (crc << 4) | u32::from(digit);
+        }
+        for offset in 11..19 {
+            let digit = hex_digit(bytes[offset]).ok_or(SnapshotError::Hex { offset })?;
+            adler = (adler << 4) | u32::from(digit);
+        }
+
+        Self::from_seed(crc, adler)
+    }
+}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}

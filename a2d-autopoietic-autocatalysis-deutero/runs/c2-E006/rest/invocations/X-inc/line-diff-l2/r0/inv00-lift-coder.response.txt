@@ -1,0 +1,299 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .collect()
+}
+
+fn validate<'a>(
+    old: &'a str,
+    new: &'a str,
+    context: usize,
+) -> Result<(Vec<&'a str>, Vec<&'a str>), DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+
+    if let Some(byte) = old.find('\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::Old,
+            byte,
+        });
+    }
+
+    if let Some(byte) = new.find('\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::New,
+            byte,
+        });
+    }
+
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+
+    if old_lines.len() > 128 || new_lines.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old_lines.len(),
+            new_len: new_lines.len(),
+        });
+    }
+
+    Ok((old_lines, new_lines))
+}
+
+fn make_script(old: &[&str], new: &[&str]) -> Vec<Edit> {
+    let m = old.len();
+    let n = new.len();
+    let width = n + 1;
+    let mut lcs = vec![0usize; (m + 1) * (n + 1)];
+
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            let value = if old[i] == new[j] {
+                1 + lcs[(i + 1) * width + j + 1]
+            } else {
+                lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+            };
+            lcs[i * width + j] = value;
+        }
+    }
+
+    let mut script = Vec::new();
+    let (mut i, mut j) = (0, 0);
+
+    while i < m && j < n {
+        if old[i] == new[j] {
+            script.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].to_owned(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_score = lcs[(i + 1) * width + j];
+            let insert_score = lcs[i * width + j + 1];
+            if delete_score > insert_score
+                || (delete_score == insert_score && (i + j) % 2 == 0)
+            {
+                script.push(Edit::Delete {
+                    old_index: i,
+                    line: old[i].to_owned(),
+                });
+                i += 1;
+            } else {
+                script.push(Edit::Insert {
+                    new_index: j,
+                    line: new[j].to_owned(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < m {
+        script.push(Edit::Delete {
+            old_index: i,
+            line: old[i].to_owned(),
+        });
+        i += 1;
+    }
+
+    while j < n {
+        script.push(Edit::Insert {
+            new_index: j,
+            line: new[j].to_owned(),
+        });
+        j += 1;
+    }
+
+    script
+}
+
+fn is_change(edit: &Edit) -> bool {
+    matches!(edit, Edit::Delete { .. } | Edit::Insert { .. })
+}
+
+fn hunk_ranges(script: &[Edit], context: usize) -> Vec<(usize, usize)> {
+    let mut groups = Vec::new();
+    let mut pos = 0;
+
+    while pos < script.len() {
+        if !is_change(&script[pos]) {
+            pos += 1;
+            continue;
+        }
+
+        let start = pos;
+        while pos < script.len() && is_change(&script[pos]) {
+            pos += 1;
+        }
+        let end = pos;
+        groups.push((start, end));
+    }
+
+    let merge_distance = 2 * context;
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+
+    for (start, end) in groups {
+        if let Some(last) = merged.last_mut() {
+            let keep_rows_between = start - last.1;
+            if keep_rows_between <= merge_distance {
+                last.1 = end;
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    merged
+        .into_iter()
+        .map(|(start, end)| {
+            let mut left = start;
+            let mut remaining = context;
+            while left > 0 && remaining > 0 && matches!(script[left - 1], Edit::Keep { .. }) {
+                left -= 1;
+                remaining -= 1;
+            }
+
+            let mut right = end;
+            remaining = context;
+            while right < script.len()
+                && remaining > 0
+                && matches!(script[right], Edit::Keep { .. })
+            {
+                right += 1;
+                remaining -= 1;
+            }
+
+            (left, right)
+        })
+        .collect()
+}
+
+fn write_hunk(out: &mut String, script: &[Edit], start: usize, end: usize) {
+    let mut old_count = 0usize;
+    let mut new_count = 0usize;
+    let mut old_before = 0usize;
+    let mut new_before = 0usize;
+
+    for edit in &script[..start] {
+        match edit {
+            Edit::Keep { .. } => {
+                old_before += 1;
+                new_before += 1;
+            }
+            Edit::Delete { .. } => old_before += 1,
+            Edit::Insert { .. } => new_before += 1,
+        }
+    }
+
+    for edit in &script[start..end] {
+        match edit {
+            Edit::Keep { .. } => {
+                old_count += 1;
+                new_count += 1;
+            }
+            Edit::Delete { .. } => old_count += 1,
+            Edit::Insert { .. } => new_count += 1,
+        }
+    }
+
+    let old_start = if old_count > 0 {
+        old_before + 1
+    } else {
+        old_before
+    };
+    let new_start = if new_count > 0 {
+        new_before + 1
+    } else {
+        new_before
+    };
+
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@"
+    );
+
+    for edit in &script[start..end] {
+        match edit {
+            Edit::Keep { line, .. } => {
+                out.push(' ');
+                out.push_str(line);
+            }
+            Edit::Delete { line, .. } => {
+                out.push('-');
+                out.push_str(line);
+            }
+            Edit::Insert { line, .. } => {
+                out.push('+');
+                out.push_str(line);
+            }
+        }
+        out.push('\n');
+    }
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    let (old_lines, new_lines) = validate(old, new, context)?;
+    let script = make_script(&old_lines, &new_lines);
+
+    if !script.iter().any(is_change) {
+        return Ok(String::new());
+    }
+
+    let ranges = hunk_ranges(&script, context);
+    let mut output = String::from("--- before\n+++ after\n");
+
+    for (start, end) in ranges {
+        write_hunk(&mut output, &script, start, end);
+    }
+
+    Ok(output)
+}
+```

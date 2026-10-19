@@ -1,0 +1,279 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Resume {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Preempt {
+        remaining: u64,
+        by: u32,
+    },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Waiting {
+    customer: Customer,
+    remaining: u64,
+    started: bool,
+    pause_time: u64,
+}
+
+#[derive(Clone)]
+struct Running {
+    customer: Customer,
+    remaining: u64,
+    work_at: u64,
+    finish: u64,
+}
+
+fn waiter_cmp(a: &Waiting, b: &Waiting) -> std::cmp::Ordering {
+    a.customer
+        .priority
+        .cmp(&b.customer.priority)
+        .then_with(|| b.started.cmp(&a.started))
+        .then_with(|| {
+            if a.started {
+                a.pause_time.cmp(&b.pause_time)
+            } else {
+                a.customer.arrival.cmp(&b.customer.arrival)
+            }
+        })
+        .then_with(|| {
+            if a.started {
+                a.customer.id.cmp(&b.customer.id)
+            } else {
+                b.customer.id.cmp(&a.customer.id)
+            }
+        })
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::HashSet;
+
+    let mut ids = HashSet::new();
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !ids.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<Customer> = customers.to_vec();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<Waiting> = Vec::new();
+    let mut running: Option<Running> = None;
+    let mut next_arrival = 0usize;
+    let mut now: Option<u64> = None;
+    let mut last_dispatched: Option<u32> = None;
+
+    loop {
+        if running.is_none() && waiting.is_empty() && next_arrival == arrivals.len() {
+            break;
+        }
+
+        let tick = if let Some(t) = now {
+            t
+        } else {
+            arrivals[next_arrival].arrival
+        };
+
+        // A scheduled finish is processed before arrivals at this tick.
+        if running.as_ref().is_some_and(|r| r.finish == tick) {
+            let r = running.take().unwrap();
+            events.push(Event {
+                time: tick,
+                customer: r.customer.id,
+                kind: Kind::Finish,
+            });
+        }
+
+        // Process the whole arrival cohort before considering dispatch or preemption.
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == tick {
+            let customer = arrivals[next_arrival].clone();
+            events.push(Event {
+                time: tick,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(Waiting {
+                remaining: customer.service,
+                customer,
+                started: false,
+                pause_time: 0,
+            });
+            next_arrival += 1;
+        }
+
+        // Reconsider preemption after the cohort, once protection has expired.
+        if let Some(r) = running.as_ref() {
+            if tick >= r.work_at && tick < r.finish {
+                waiting.sort_by(waiter_cmp);
+                if let Some(best) = waiting.first() {
+                    if best.customer.priority < r.customer.priority {
+                        let by = best.customer.id;
+                        let r = running.take().unwrap();
+                        let remaining = r.finish - tick;
+                        events.push(Event {
+                            time: tick,
+                            customer: r.customer.id,
+                            kind: Kind::Preempt { remaining, by },
+                        });
+                        waiting.push(Waiting {
+                            customer: r.customer,
+                            remaining,
+                            started: true,
+                            pause_time: tick,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Dispatch repeatedly at this tick, including inline zero-duration finishes.
+        loop {
+            if running.is_some() {
+                break;
+            }
+
+            waiting.sort_by(waiter_cmp);
+            if waiting.is_empty() {
+                break;
+            }
+
+            let item = waiting.remove(0);
+            let cost = if last_dispatched == Some(item.customer.id) {
+                0
+            } else if last_dispatched.is_none() {
+                0
+            } else {
+                switch_cost
+            };
+            let work_at = tick.checked_add(cost).ok_or(Error::TimeOverflow {
+                customer: item.customer.id,
+                time: tick,
+            })?;
+            let finish = work_at.checked_add(item.remaining).ok_or(Error::TimeOverflow {
+                customer: item.customer.id,
+                time: tick,
+            })?;
+
+            let kind = if item.started {
+                Kind::Resume {
+                    remaining: item.remaining,
+                    work_at,
+                    finish,
+                }
+            } else {
+                Kind::Start {
+                    remaining: item.remaining,
+                    work_at,
+                    finish,
+                }
+            };
+            events.push(Event {
+                time: tick,
+                customer: item.customer.id,
+                kind,
+            });
+            last_dispatched = Some(item.customer.id);
+
+            if finish == tick {
+                events.push(Event {
+                    time: tick,
+                    customer: item.customer.id,
+                    kind: Kind::Finish,
+                });
+                continue;
+            }
+
+            running = Some(Running {
+                customer: item.customer,
+                remaining: item.remaining,
+                work_at,
+                finish,
+            });
+        }
+
+        // Find the next meaningful tick: arrival, finish, or work boundary.
+        let mut next: Option<u64> = None;
+        if next_arrival < arrivals.len() {
+            next = Some(arrivals[next_arrival].arrival);
+        }
+        if let Some(r) = running.as_ref() {
+            if r.finish > tick {
+                next = Some(next.map_or(r.finish, |n| n.min(r.finish)));
+            }
+            if r.work_at > tick {
+                next = Some(next.map_or(r.work_at, |n| n.min(r.work_at)));
+            }
+        }
+
+        if let Some(n) = next {
+            now = Some(n);
+        } else {
+            // The only remaining work can be waiting while no future arrival or
+            // running event exists; dispatch it at this same tick on the next pass.
+            now = Some(tick);
+            if running.is_none() && waiting.is_empty() {
+                break;
+            }
+        }
+    }
+
+    Ok(events)
+}
+```

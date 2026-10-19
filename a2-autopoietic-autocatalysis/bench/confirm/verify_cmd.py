@@ -34,7 +34,7 @@ def candidate_diff(worktree: str | Path) -> str:
         subprocess.run(["git", "add", "-A"], cwd=root, env=env, check=True,
                        capture_output=True, text=True)
         return subprocess.run(
-            ["git", "diff", "--cached", "--binary", root_commit], cwd=root, env=env,
+            ["git", "diff", "--cached", "--binary", "--no-renames", root_commit], cwd=root, env=env,
             check=True, capture_output=True, text=True,
         ).stdout
     finally:

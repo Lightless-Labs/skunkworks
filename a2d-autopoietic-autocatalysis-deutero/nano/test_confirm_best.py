@@ -37,7 +37,7 @@ class ConfirmBest(unittest.TestCase):
         self.register("E7")
         out = self.plan(["E5", "E6", "E7"], [row("E5", "full", "provisional keep", "+0.0500")])
         self.assertEqual(out, confirm_best.say("waiting for E6 E7"))
-        self.assertEqual(out, """echo '{"decision": "confirm-best: waiting for E6 E7"}'""")
+        self.assertEqual(out, """printf '%s\\n' '{"decision": "confirm-best: waiting for E6 E7"}'""")
 
     def test_picks_the_largest_full_stage_delta_then_the_smaller_se(self):
         for e in ("E5", "E6", "E7", "E8"):
@@ -66,6 +66,39 @@ class ConfirmBest(unittest.TestCase):
         self.register("E5", incumbent="old")
         out = self.plan(["E5"], [row("E5", "full", "provisional keep", "+0.0500")])
         self.assertIn("registered against another incumbent", out)
+
+    def test_an_integrity_review_is_a_final_decision_not_pending(self):
+        for e in ("E5", "E9"):
+            self.register(e)
+        rows = [row("E5", "full", "provisional keep", "+0.0500"),
+                row("E9", "screen", "integrity review (1 web-search events)", "+0.0300")]
+        self.assertIn("--id E5 ", self.plan(["E5", "E9"], rows))
+
+    def test_at_most_two_confirmations_per_batch(self):
+        # Pre-registered (LOG, 10-17): at most 2 confirmation replicates before phase B.
+        for e in ("E5", "E6", "E7"):
+            self.register(e)
+        rows = [row("E5", "full", "provisional keep", "+0.0500"),
+                row("E6", "full", "provisional keep", "+0.0600"),
+                row("E7", "full", "provisional keep", "+0.0700"),
+                row("E7", "confirm", "discard (confirm)", "+0.0100"),
+                row("E6", "confirm", "discard (confirm)", "+0.0000")]
+        self.assertEqual(self.plan(["E5", "E6", "E7"], rows),
+                         confirm_best.say("confirmation limit reached (2 of 2); E5 waits until after phase B"))
+
+    def test_a_later_keep_is_found_even_if_an_earlier_manifest_no_longer_matches(self):
+        # After E7's promotion the incumbent changed, so E5's manifest no longer matches it.
+        self.register("E5", incumbent="old")
+        self.register("E7", incumbent="old")
+        rows = [row("E5", "full", "provisional keep", "+0.0500"),
+                row("E7", "full", "provisional keep", "+0.0700"),
+                row("E7", "confirm", "keep", "+0.0400")]
+        self.assertEqual(self.plan(["E5", "E7"], rows), confirm_best.say("E7 was already promoted"))
+
+    def test_main_turns_a_crash_into_a_visible_decision_line(self):
+        out = confirm_best.main(["E5"], results_text="x\ty\n1\t2\n")  # rows without an id column
+        self.assertTrue(out.startswith("printf"), out)
+        self.assertIn("confirm-best: error:", out)
 
     def test_nothing_left(self):
         self.register("E5")

@@ -111,6 +111,31 @@
     - "Use A²D's actual architect entrypoint". The metabolism's architect edits Rust system code, and the nanoharness is outside it. The role prompt and the dossier rule are reused, and the claim is narrowed accordingly.
   - **Accepted as reporting** (Sol #14, the A/A was calibrated on a selected keep): every keep decision is also reported under the v0 in-run threshold (0.0714) as a sensitivity check.
 
+**Addendum:** 2026-10-18 — **confirmation-2 ended in IntegrityReview; a SUPPORTED claim now needs a confirmation-3** (LOG, 10-18 03:59 UTC)
+- **What happened:** the replicate-1 web audit counted 2 web-search events in arm B (0 in D and X:frozen). By the registered C2-WEB amendment, the outcome is IntegrityReview: the set is spent with no claim.
+  - Replicate 2 and `decision.json` still run as registered; their numbers are descriptive only.
+  - The freeze holds until `decision.json`.
+- **Gap:** confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs D and B on its confirmation set) is unreachable on confirmation-2. A new blind set is needed: **confirmation-3**.
+  - The budget and deadline exits are unchanged.
+- **Fixed now (requirements for any confirmation-3 call):**
+  - The provider fix (`c2-web-provider`, 4b80fe67) is merged after `decision.json` **and** after the batch confirmation step, before phase-B round 1 (the 10-17 review rule: no provider change between an experiment's stages). It sets `-c web_search="disabled"`, and `codex_tool_calls` counts `web search:` lines, so `integrity_ok` fails on any search.
+  - The fix is verified live: a dev smoke with 0 search events and no deprecation notice.
+  - The count-only web audit stays as a second check.
+  - **No confirmation-3 call runs on an instrument with a known open channel.** That is this addendum's lesson.
+- **Authoring:** I am a proposer, so I don't author or see it. It follows the confirmation-2 pipeline (LOG "Holdouts — Confirmation-2"):
+  - written blind by Codex `gpt-6.1-sol` (high) into `$A2D_HOLDOUT_DIR`;
+  - checked with `a2d lift validate`;
+  - an independent-solve audit (Sol medium, arm D, k = 3), with blind adjudication that repairs tasks and never drops them;
+  - families disjoint from train, dev-holdout and confirmation-2;
+  - only the suite hash and aggregates are recorded.
+  - Authoring and audit use Sol, not Luna.
+- **Budget:** confirmation-3 takes confirmation-2's slot (about 3k Luna at r = 2). The phase-B trigger at 11k left still covers confirmation-3, the final look and phase B (≈ 3.0k + 1.3k + 6.6k).
+- **Decided later, with a multi-model design review** (Codex Sol plus a fresh Claude, copies only, before registration):
+  - which frozen candidate it tests: E002, which passed look 1, or a later promoted keep, which needs its own look;
+  - when it runs: now on E002, or after phase B on the best frozen harness;
+  - size and r, with power planned against the realised discordance;
+  - whether D, B and X stay the arms.
+
 ## Outcome sought
 
 Harness changes that make our coder (`codex/gpt-6-luna`, low effort) produce working software more reliably than its plain repair loop D, at the same per-task invocation budget. Then: does A²D's own proposer find such changes better than an uninformed proposer?

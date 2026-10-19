@@ -1,0 +1,74 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..43b9e46
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For tasks whose initial candidate passes all visible checks, an independent review and repair from that candidate will reduce visible-pass hidden-fail outcomes by catching gaps beyond the visible checks.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..b943bd9 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""Retry visible failures and review an initial candidate that passes the verifier."""
+ 
+ from __future__ import annotations
+ 
+@@ -7,11 +7,18 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++REVIEW_HEADER = (
++    "\n\n---\nYour current implementation passes the available verifier checks. "
++    "Independently review it against the full request for overlooked requirements, "
++    "edge cases, and assumptions the checks may not cover. Make focused corrections "
++    "if needed; otherwise keep it unchanged. Return the complete implementation."
++)
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,14 +42,33 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+         return {"agent": {"base": "fresh", "prompt": state["problem_statement"], "effort": effort}}
+     last = candidates[-1]
+-    if last.get("verify", {}).get("passed"):
+-        return {"submit": {"candidate": last["index"]}}
++
++    first_pass_position = next((
++        position for position, candidate in enumerate(candidates)
++        if candidate.get("verify", {}).get("passed")
++    ), None)
++    if first_pass_position is not None:
++        first_pass = candidates[first_pass_position]
++        review_already_attempted = first_pass_position < len(candidates) - 1
++        if (first_pass_position == 0 and len(candidates) == 1 and
++                state.get("budget", {}).get("agent_calls_left", 0) > 0):
++            return {
++                "agent": {
++                    "base": first_pass["index"],
++                    "prompt": state["problem_statement"] + REVIEW_HEADER,
++                    "effort": effort,
++                }
++            }
++        # Keep the review when it passes; otherwise retain the original passing candidate.
++        selected = last if review_already_attempted and last.get("verify", {}).get("passed") else first_pass
++        return {"submit": {"candidate": selected["index"]}}
++
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+         prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+         return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
