@@ -34,14 +34,16 @@
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
        - **State (10-19 08:50 UTC):**
          - Selection is done: 36 families. Authoring runs detached (`~/.a2d-c3-drivers/20261019T081515Z-c3_author.out`, restarted on ecfb1c65): 11 verified.
-         - Retries are pending for c3-f01 and c3-f06 (scan false positive, fixed) and c3-f10 (failed verification). After this driver exits, run `detached.sh c3_author.py --parallel 2` again; it uses the codex-home fix, 17da7217.
+         - Retries are pending for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27. After this driver exits, run `detached.sh c3_author.py --parallel 2` again on HEAD; it has the codex-home fix and the mutants-check fix.
+         - **Runner reviews:** round 1 was done 10-19 (dispositions in plan §0.13). The Sol round-2 re-check runs detached; its output goes to `scratchpad/review-early-2/SOL-REVIEW.md`, so check it.
+         - The provider branch head is 88462f81. Do not upgrade codex before the spend: the fingerprint is registered.
          - Claude Code reaped this session's watcher shells at 08:49 (memory pressure, swap 7.4 / 8 GB). Check progress by hand; the detached queue and driver are unaffected.
          - **Then:** `detached.sh c3_assemble.py`, `c3_similarity.py`, `c3_validate.py`, and `c3_fix.py` as needed. Commit every pipeline edit before a driver starts.
          - **Candidate path (C2-LOOK2, registered at 98672c36):**
            - queue lines L38–L40 run `nano/look_if_promoted.py` after L37 and again after 00:05 UTC 10-23;
            - they run the one dev-holdout look only if a batch keep was promoted; otherwise E002 stays the candidate.
          - **At the provider merge (≥ 10-22, after the batch's confirmation step AND after look 2 is done or T = 10-23 23:59 has passed; the look's controller is bound to 98672c36):**
-           - merge `c2-web-provider` (f06dc9fb), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
+           - merge `c2-web-provider` (88462f81), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
            - then `c3_audit.py` and `c3_adjudicate.py`.
          - **Registration (after the candidate is fixed at T and the suite is certified and audited):**
            - run `docs/experiments/analysis/c3_registration.py --candidate <frozen> --frozen-from … --gate … --claim-wording … [--disclosure …]`, first with `--dry-run`;

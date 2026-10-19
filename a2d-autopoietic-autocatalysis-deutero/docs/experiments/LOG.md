@@ -1688,3 +1688,10 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `docs/experiments/analysis/c3_review.py` builds a copies-only packet: the plan, the runner and its tests, the generator, the pipeline README, the provider diff and the LOG's confirmation-3 entries.
   - Codex Sol (high, web disabled) reviews it from the packet dir. A fresh Claude subagent reviews a separate copy, so the two are independent.
   - Purpose: find runner and scoring defects early. The registration itself gets its own full review once `registration.json` exists (§0.6 step 6).
+- **Early runner reviews, round 1** (09:20–09:45 UTC). Codex Sol (high, 0 searches) answered **No** with 10 blockers; a fresh Claude answered **Yes after 4 blockers**. Every blocker was fixed or answered, with dispositions in plan §0.13.
+  - Runner (7044ff12): registration binding; controller verdicts dominate; worst- and best-case **imputed CI** guards (the bootstrap port matches the controller exactly); `--json`-only transcripts; invocation-count voids; lock and atomic attempts; 00:05 start; day-long deferrals; probes counted in the cap; isolation.
+  - Generator: the candidate is derived by §0.1, with prerequisite checks.
+  - Provider branch (88462f81): the detector fails closed on noise and cut-off lines. Live controls on Luna low and Sol medium cover shell, web and file change (each item present), and the negative control shows 0 on both.
+  - Sol's "38 briefs" blocker was my LOG error, now corrected.
+  - **Round 2:** Sol re-check launched at 10:13 on a packet that includes the pipeline code.
+- **Authoring, 10:13 UTC:** 21 families verified. c3-f27's first attempt failed for the same notes-file reason, which the fixed check accepts. Retries pending for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27.
