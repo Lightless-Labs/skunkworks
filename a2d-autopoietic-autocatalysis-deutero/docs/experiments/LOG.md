@@ -1723,3 +1723,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **E009** was deferred by the daily cap (Luna today 2,562), and so will E010 be. The queue resumes at 00:05 UTC 10-20 (L15 onward).
 - **Validation** (12:54–13:39 UTC): **143 of 144 tasks accepted**, 1 rejected (c3-f13-l4). The repair round (`c3_fix.py`, one Sol job) started at 14:06. Re-assembly, similarity and validation follow.
   - *Process note:* my watchers waited on `pgrep -f "c3_validate.py"`, and that string was in their own command lines. They matched themselves and never ended, hiding a finished validation for 25 min. Watch the driver's recorded pid with `kill -0` instead.
+- **Repair and re-validation** (14:06–14:22 UTC): c3-f13 was repaired in round 1 (exit 0, 0 events, 0 flags, ok). After re-assembly, 36 families and 144 tasks; similarity clean again (max 0.04, 0 conflicts). **Re-validation: 144 of 144 accepted.**
+  - **Confirmation-3's suite is built.** What remains of step 5 is the independent-solve audit and adjudication. Both wait for the provider merge (after L37 on 10-22, and after look 2 is done or T has passed).
+  - STOP is set only after adjudication: the drain check that precedes the replicates requires it, but STOP would also refuse the adjudication jobs.

@@ -33,7 +33,8 @@
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
        - **State (10-19 13:20 UTC):**
-         - Authoring is done (36/36), assembly is done (144 tasks), and similarity is clean. Validation runs next, then `c3_fix.py` if anything is rejected.
+         - Authoring is done (36/36), assembly is done (144 tasks), similarity is clean, and **validation passed 144/144** (after one repair, c3-f13). The suite is built.
+         - Set STOP (`c3_author.py --stop`) only after adjudication; the drain check before each replicate needs it.
          - **Step 5 waits for the provider merge.** The merge comes after L37 (the batch's confirmation step, 10-22) **and** after look 2 is done or T has passed.
          - At the merge:
            - merge `c2-web-provider` (bc6922f7; it equals `PROVIDER_COMMIT`) and build;
