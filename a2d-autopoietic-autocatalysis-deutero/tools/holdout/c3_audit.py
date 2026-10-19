@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (HOLDOUT, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gateway, hashes_digest,  # noqa: E402
+from c3lib import (HOLDOUT, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gateway, hashes_digest, tree_hashes,  # noqa: E402
                    load_json, prereqs_ok, provider_merged, safe_copy, safe_read_text, save_json, suite_digest)
 
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
@@ -110,6 +110,7 @@ def main():
         if not tasks:
             emit(stage="audit", tasks=0, status="nothing-due")
             return
+        content = {tid: hashes_digest(tree_hashes(SUITE / tid)) for tid in tasks}   # what this round audits
         n = load_json(RECORDS / "audit-runs.json", {"n": 0})["n"] + 1
         save_json(RECORDS / "audit-runs.json", {"n": n, "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
         code, passed, void = run_lift(binary, tasks, n)
@@ -117,7 +118,7 @@ def main():
             if tid not in passed and tid not in void:
                 void.add(tid)                       # no score at all: no information, like a void tuple
             audit.setdefault(tid, {})[due[tid]] = {"passed": passed.get(tid, False) and tid not in void,
-                                                  "void": tid in void, "run": n}
+                                                  "void": tid in void, "run": n, "content": content[tid]}
         save_json(RECORDS / "audit.json", audit)
         failing = sorted(t for t in tasks if not audit[t][due[t]]["passed"] and not audit[t][due[t]]["void"])
         emit(stage="audit", exit=code, tasks=len(tasks), count=len(tasks) - len(failing) - len(void & set(tasks)),

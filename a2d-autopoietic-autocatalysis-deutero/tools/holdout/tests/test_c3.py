@@ -202,6 +202,20 @@ class Pipeline(unittest.TestCase):
             "print(r)")
         self.assertEqual(out, "[True, True, False, False, False]")
 
+    def test_repair_changes_only_underdetermined_tests(self):
+        """Sol re-check B9: a repair may change or remove only the tests judged UNDERDETERMINED;
+        every other test and the preamble stay byte-identical, and no test is added."""
+        out = self.lib(
+            "from c3_adjudicate import repair_keeps_determined as k\n"
+            "old = 'use x;\\n#[test]\\nfn a() { assert!(f(1)); }\\n#[test]\\nfn b() { assert!(g(2)); }\\n'\n"
+            "loosened_b = old.replace('g(2)', 'g(2) || true')\n"
+            "dropped_b = old.split('#[test]\\nfn b')[0]\n"
+            "changed_a = old.replace('f(1)', 'f(0)')\n"
+            "added = old + '#[test]\\nfn c() {}\\n'\n"
+            "print([k(old, loosened_b, {'b'}), k(old, dropped_b, {'b'}), k(old, changed_a, {'b'}),\n"
+            "       k(old, added, {'b'}), k(old, loosened_b, set()), k(old, old.replace('use x', 'use y'), {'a', 'b'})])")
+        self.assertEqual(out, "[True, True, False, False, False, False]")
+
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
                        "request_stop()\n"
@@ -420,6 +434,8 @@ class Pipeline(unittest.TestCase):
         code, lines = self.run_script("c3_audit.py", "--binary", fake, env=env)
         self.assertEqual(code, 0, lines)
         self.assertEqual(sorted(x["id"] for x in lines if x.get("stage") == "audit-fail"), [f"{f}-l2", f"{f}-l3"])
+        audited = json.loads((self.c3 / "_records" / "audit.json").read_text())
+        self.assertTrue(all(len(r["r1"]["content"]) == 64 for r in audited.values()))   # bound to the task content
         code, lines = self.run_script("c3_adjudicate.py", env=dict(self.env, C3_TEST_ADJ_UNDER=f"{f}-l2"))
         self.assertEqual(code, 0, lines)
         adj = json.loads((self.c3 / "_records" / "adjudication.json").read_text())

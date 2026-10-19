@@ -311,6 +311,19 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - the review packet now includes the pipeline's code;
     - `which codex` must resolve to the native binary; do not upgrade codex before the spend.
   - The full registration review re-runs on the written `registration.json`.
+- **Sol re-check (round 2, 10:13–10:40 UTC): No, 9 blockers.** Every one is fixed (advisor-sequenced; one combined re-review follows):
+  - **B1, candidate eligibility.** The generator checks the look-2 provenance: exactly one promoted keep; the look ran at its registration commit on that keep's evaluated snapshot; gate, manifest and snapshot are committed; the look completed by T. Without a result the candidate is unresolved before T.
+  - **B2, unfinished subset.** The suite must equal `active.json`'s final active families, each verified. Recorded replacement and drop events are disclosed.
+  - **B3, audit binding.** Each audit round records the content hash of the task it audited. Certification needs the final informative round's hash to equal the current task. The provider commit is bumped at merge.
+  - **B4, relaunch overlap.** The generation child inherits the runner lock (flock per open-file description, verified live), so the lock proves no generation is alive.
+  - **B5 and B6, isolation and probe accounting.** The preflight is a tiny `a2d lift run` of canary tasks through the real provider: 3 calls on the coder lane for latency, 1 on every registered lane. The secret must appear nowhere, with 0 tool events.
+    - Every call's CODEX_HOME sits under the holdout dir (`A2D_CODEX_HOME_ROOT`, branch 6112c307).
+    - The probe runs are ledgers under `holdout/runs/c2-*`, so the cap counts them. A probe group is recorded before launch, and one without a go holds the UTC day.
+    - Live: one Luna probe took 15.9 s, with no leak, 0 tool events and no homes left behind.
+  - **B7, controls:** pending.
+  - **B8, registration text:** states the imputed CI guards.
+  - **B9, repairs.** A hidden-test repair may change or remove only the tests judged UNDERDETERMINED; the preamble and every other test stay byte-identical, and nothing is added. A whole-task (`*`) verdict allows only `task.json`.
+
 - *Answered by the early reviews (2026-10-19): yes; imputed CI guards adopted, see the dispositions above.* Original question: should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request

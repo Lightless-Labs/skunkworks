@@ -164,6 +164,12 @@ def _certified(tasks):
     audit = load_json(RECORDS / "audit.json", {})
     adj = load_json(RECORDS / "adjudication.json", {})
     excluded = set(load_json(RECORDS / "excluded.json", {"tasks": []})["tasks"])
+    from c3lib import SUITE, hashes_digest, tree_hashes
+    for t in tasks:                     # the final informative audit round saw exactly the current task
+        rounds = audit.get(t, {})
+        final = rounds.get("r2") or rounds.get("r1") or {}
+        if final.get("content") != hashes_digest(tree_hashes(SUITE / t)):
+            return False
     return (c3_audit.clean_suite(tasks) and all("r1" in audit.get(t, {}) for t in tasks)
             and all(c3_audit.needs(audit, adj, t) is None for t in tasks)
             and not c3_adjudicate.due(audit, adj, tasks) and not (excluded & set(tasks)))

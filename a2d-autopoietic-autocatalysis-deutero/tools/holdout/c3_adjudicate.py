@@ -115,8 +115,35 @@ def parse_verdicts(w, expected):
     return got if {t: sorted(v) for t, v in got.items()} == {t: sorted(v) for t, v in expected.items()} else None
 
 
-def apply_repair(fid, tid, w):
-    """c3_fix pattern: verified author files, snapshot, copy the repair in, verify, else restore."""
+TEST_ATTR = re.compile(r"^[ \t]*#\[test\]", re.M)
+TEST_FN = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def test_segments(text):
+    """(preamble, {test name: its #[test] segment}) of a flat hidden_tests.rs, or None."""
+    starts = [m.start() for m in TEST_ATTR.finditer(text)]
+    segs = {}
+    for a, b in zip(starts, starts[1:] + [len(text)]):
+        m = TEST_FN.search(text, a, b)
+        if not m or m.group(1) in segs:
+            return None
+        segs[m.group(1)] = text[a:b].rstrip()
+    return text[:starts[0] if starts else len(text)].rstrip(), segs
+
+
+def repair_keeps_determined(old, new, under):
+    """The repaired hidden tests only change or remove tests judged UNDERDETERMINED: the
+    preamble and every other test stay byte-identical, and no test is added (Sol re-check B9)."""
+    a, b = test_segments(old), test_segments(new)
+    if a is None or b is None or a[0] != b[0] or not set(b[1]) <= set(a[1]):
+        return False
+    return all(b[1][name] == a[1][name] for name in b[1] if name not in under)
+
+
+def apply_repair(fid, tid, w, verdicts=None):
+    """c3_fix pattern: verified author files, snapshot, copy the repair in, verify, else restore.
+    `verdicts` ({test: verdict}) limits a hidden-test repair to the UNDERDETERMINED tests; a
+    whole-task verdict (`*`, the submission did not compile) allows only task.json."""
     from c3_author import complete
     status_path = RECORDS / f"author-{fid}" / "status.json"
     st = load_json(status_path, {})
@@ -128,6 +155,11 @@ def apply_repair(fid, tid, w):
         names = sorted(p.name for p in src.iterdir()) if src.is_dir() and not src.is_symlink() else []
         if not names or not set(names) <= {"task.json", "hidden_tests.rs"}:
             return False
+        under = {t.rsplit("::", 1)[-1] for t, v in (verdicts or {}).items() if v == "UNDERDETERMINED"}
+        if "hidden_tests.rs" in names:
+            if "*" in under or not repair_keeps_determined(safe_read_text(out / tid / "hidden_tests.rs", C3),
+                                                           safe_read_text(src / "hidden_tests.rs", w), under):
+                return False
         if "task.json" in names:
             old = json.loads(safe_read_text(out / tid / "task.json", C3))
             new = json.loads(safe_read_text(src / "task.json", w))
@@ -209,7 +241,7 @@ def one(key, tasks):
                 under += undetermined
                 rec = {"verdicts": v, "repaired": False, "excluded": False}
                 if undetermined and mode == "repair":
-                    rec["repaired"] = apply_repair(fid, tid, w)
+                    rec["repaired"] = apply_repair(fid, tid, w, v)
                 if undetermined and not rec["repaired"]:
                     rec["excluded"] = True
                     excluded.add(tid)

@@ -28,7 +28,7 @@ for t in tasks:
     if t in void:
         continue
     (d / "r0.hidden.txt").write_text("test oracle::hidden_a ... ok\n"
-                                     + ("test oracle::hidden_b ... FAILED\n" if t in fail else ""))
+                                     + ("test oracle::hidden_long_positive_queue ... FAILED\n" if t in fail else ""))
     lines.append({"kind": "score", "arm": "D", "task": t, "result": {"all_passed": t not in fail}})
 (out / "ledger.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
 print("SECRET run output")
