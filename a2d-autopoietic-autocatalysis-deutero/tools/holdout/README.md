@@ -34,7 +34,7 @@ Plan: `docs/plans/2026-10-18-confirmation-3.md` (§0.4, §0.6, §0.10, §0.11). 
   - `prereqs_ok()`: confirmation-2's `web-audit-r2.json` is committed at HEAD, and `tools/holdout` and the plan are unmodified relative to HEAD. It records the commit.
   - `DriverLock`: one driver at a time.
   - `STOP` and the **launch gate**: `request_stop()` (`c3_author.py --stop`) and every `Popen` of a job (`c3lib.launch`) hold the same lock (`_records/launch.lock`). Once STOP exists, no job of any kind starts, select and namecheck included. A launch refused at the gate releases its reserved attempt or round; for selection, it removes the unlaunched workdir.
-  - `drained()`: STOP set, no live driver, no live job process group, and no live member of any job sandbox. It fails closed.
+  - `drained()`: STOP set, no live driver, no live job process group, no live member of any job sandbox, and the positive relocation check (every attempted family has session files in its relocated `CODEX_HOME`). It fails closed.
 - **Process groups:** each job is its own session, killed with `killpg` on timeout, exception or exit, and then reaped by sandbox membership (above).
 - **Inventory completeness:** traversal errors raise (`os.walk(onerror=...)`), so a partial inventory or prior manifest fails selection instead of silently omitting families.
 - **Selection provenance:** `select.json` carries the selection generation; `--reset` retires it with the failed briefs and job records, so only the current generation's successful job can be accepted.
@@ -49,8 +49,12 @@ Plan: `docs/plans/2026-10-18-confirmation-3.md` (§0.4, §0.6, §0.10, §0.11). 
 6. `c3_audit.py`: the independent-solve audit (Codex Sol medium, arm D, k = 3, via `a2d lift run --record-hidden-output` on a sub-suite of the tasks due).
    - It runs only on the merged, fixed provider. It also requires that validation and similarity were both clean on exactly the current suite (digest), that nothing is pending, and that every suite family matches its current verified author files.
    - Round 1 covers every task once. Round 2 is the single re-audit, of repaired tasks and of tasks whose round-1 tuple was void.
+   - Before launch (§0.10): temp-root ancestry, a canary preflight through the real provider on the solver lane (`confirm3.probe_run`), and every call's `CODEX_HOME` under the holdout dir (`A2D_CODEX_HOME_ROOT`).
+   - Each task's round is reserved durably before launch; an interrupted reservation becomes a void round, never a fresh call. The child inherits the driver lock.
+   - A tuple with a tool event, a missing transcript or an invocation-count mismatch is void, and a codex change during the run voids the run.
+   - Each run records its git head, binary sha and codex fingerprint; each round records the content hash of the task it audited (`audit-runs.json`, `audit.json`). No binary override outside tests.
 7. `c3_adjudicate.py`: one sandboxed Sol job per family and mode (`authoring/ADJUDICATE.md`), with only the failing tasks, the solver's submission and its hidden output. Each failing hidden test is classified DETERMINED (kept unchanged) or UNDERDETERMINED. Verdicts are strictly parsed against the failing tests the driver read.
-   - Repair mode: UNDERDETERMINED tasks come back with only `requirements` and/or `hidden_tests.rs` changed, applied the `c3_fix` way. Then steps 3–5 run again, then the re-audit.
+   - Repair mode: UNDERDETERMINED tasks come back with **only `requirements` changed** (task.json); hidden tests are never edited. The repair is applied the `c3_fix` way, then steps 3–5 run again, then the re-audit.
    - Classify mode, after the re-audit: still UNDERDETERMINED means excluded, and the family is replaced.
    - A missing or malformed repair, or 2 failed jobs, excludes the task (fail closed).
 8. The hash and the registration.
