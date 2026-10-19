@@ -241,6 +241,14 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - after the kill, a bounded join of the pipe readers collects the partial `--json` stream and stderr;
     - the meter writes it for the failed call and counts its tool events *without* the missing-`turn.completed` penalty. That penalty would otherwise turn every timeout into a tool event, because a killed call never completes its turn.
     - A timeout whose partial stream holds only allowed items (reasoning, agent messages) is a failed call. One holding any other item is a tool event, and its tuple is void.
+- **Mid-authoring scan fix (2026-10-19 ~08:00 UTC; disclosed in the registration).** Two of the first 7 authoring attempts (c3-f01, c3-f06) were rejected by the command scan, each with 2 flagged commands.
+  - A category-only diagnostic printed the matched pattern class, never command text. Every flag was the job scheduler `at` as the first word of a prose line inside a multi-line command or a heredoc.
+  - Fix:
+    - heredoc bodies fed to `cat`/`tee` are skipped as file content (bodies fed to a shell are still scanned);
+    - `at`/`batch` leave the tool list, because `atrun` is not loaded on macOS.
+  - Both records then scan 0. The rule's intent is unchanged: broker, network or outside-path commands still count, and the seatbelt profile and probes remain the boundary.
+  - The two spent first attempts stay spent; both families keep their second.
+  - Authoring was stopped by STOP, which lets in-flight jobs finish, and restarted on the fixed commit. Jobs before 08:00 ran under the earlier pipeline commit.
 - **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request

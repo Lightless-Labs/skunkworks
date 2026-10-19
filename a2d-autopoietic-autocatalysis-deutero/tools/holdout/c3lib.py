@@ -1056,11 +1056,43 @@ def prior_manifest():
     return {"sha256": h.hexdigest(), "count": n}
 
 
+# Not "at"/"batch": common prose words (a heredoc or multi-line command line starting with
+# "at" cost 2 of the first 7 authoring attempts, 2026-10-19), and atrun is not loaded on macOS,
+# so a queued job never runs.
 SUSPICIOUS_TOOLS = {"launchctl", "osascript", "open", "curl", "wget", "nc", "ncat", "ssh", "scp", "sftp", "git",
                     "pip", "pip3", "npm", "brew", "sudo", "su", "security", "defaults", "pbcopy", "pbpaste",
-                    "crontab", "at", "batch", "ping", "dig", "nslookup", "telnet", "ftp", "rsync"}
+                    "crontab", "ping", "dig", "nslookup", "telnet", "ftp", "rsync"}
 OUTSIDE_PATH = re.compile(r"/Users/|/Volumes/|/private/(?:tmp|var)|~/|\$HOME|\.a2d-")
 SYSTEM_TOOL_PATH = re.compile(r"/(?:usr/)?s?bin/(" + "|".join(sorted(SUSPICIOUS_TOOLS)) + r")\b")
+
+
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+DATA_SINKS = {"cat", "tee"}
+
+
+def _strip_data_heredocs(inner):
+    """Drop the bodies of heredocs fed to cat or tee: they are file content, not commands
+    (a body line starting with "at" or "open" is prose). A heredoc fed to anything else
+    (sh, bash, python, ...) is kept and scanned line by line. File writes through patches
+    are not scanned at all, so this is no weaker; the seatbelt profile is the boundary."""
+    lines, out, i = inner.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        m = HEREDOC.search(line)
+        if not m:
+            continue
+        words = re.split(r"[;&|]+|\$\(|`", line[:m.start()])[-1].split()
+        if not words or os.path.basename(words[0].strip("\"'(")) not in DATA_SINKS:
+            continue
+        end, tabs = m.group(3), m.group(1) == "-"
+        while i < len(lines) and (lines[i].lstrip("\t") if tabs else lines[i]) != end:
+            i += 1
+        if i < len(lines):
+            out.append(lines[i])                       # the terminator
+            i += 1
+    return "\n".join(out)
 
 
 def _segments(inner):
@@ -1094,7 +1126,7 @@ def suspicious_commands(record, workdir):
         if e.get("type") == "item.started" and isinstance(item, dict) and item.get("type") == "command_execution":
             cmd = str(item.get("command", ""))
             m = re.match(r"^/bin/(?:zsh|bash|sh) -lc (['\"])(.*)\1$", cmd, re.S)
-            inner = (m.group(2) if m else cmd).replace(w, "")
+            inner = _strip_data_heredocs((m.group(2) if m else cmd).replace(w, ""))
             for t in tcs:
                 inner = inner.replace(t, "")
             if OUTSIDE_PATH.search(inner) or SYSTEM_TOOL_PATH.search(inner) \

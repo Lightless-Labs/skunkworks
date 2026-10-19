@@ -169,12 +169,22 @@ class Pipeline(unittest.TestCase):
                 "/bin/zsh -lc './check.sh reference.rs hidden_tests.rs'",
                 "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'",
                 "/bin/zsh -lc 'cp /usr/bin/open ./x && ./x -a Terminal'",
-                "/bin/zsh -lc 'ls; curl -s example.com'"]
+                "/bin/zsh -lc 'ls; curl -s example.com'",
+                # A heredoc fed to cat/tee is file content: a body line starting with "at" or
+                # "open" is prose, not a command (2026-10-19: 2 of 7 first attempts lost to this).
+                "/bin/zsh -lc \"mkdir -p d && cat > d/NOTES.md <<'EOF'\nat most two retries\nopen questions: none\n"
+                "EOF\nrustc --version\"",
+                "/bin/zsh -lc \"tee REPORT.md <<-EOF >/dev/null\n\tat the boundary\n\tEOF\"",
+                # A heredoc fed to a shell is commands.
+                "/bin/zsh -lc \"bash <<'EOF'\ncurl -s example.com\nEOF\"",
+                # `at` is not a tool here (atrun is not loaded on macOS), so prose lines are safe.
+                "bash -lc \"bash <<'EOF'\nat this point the reference passes\nEOF\"",
+                "/bin/zsh -lc 'echo hi | at now + 1 minute'"]
         (rec / "codex.jsonl").write_text("".join(
             json.dumps({"type": "item.started", "item": {"type": "command_execution", "command": c}}) + "\n"
             for c in cmds))
         self.assertEqual(self.lib(f"from c3lib import suspicious_commands\nprint(suspicious_commands('scan', {str(w)!r}))"),
-                         "3")
+                         "4")
 
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
