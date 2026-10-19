@@ -38,7 +38,7 @@
          - Claude Code reaped this session's watcher shells at 08:49 (memory pressure, swap 7.4 / 8 GB). Check progress by hand; the detached queue and driver are unaffected.
          - **Then:** `detached.sh c3_assemble.py`, `c3_similarity.py`, `c3_validate.py`, and `c3_fix.py` as needed. Commit every pipeline edit before a driver starts.
          - **At the provider merge (≥ 10-22, after the batch's confirmation step):**
-           - merge `c2-web-provider` (d7f04741), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
+           - merge `c2-web-provider` (f06dc9fb), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
            - then `c3_audit.py` and `c3_adjudicate.py`.
          - **Before registration:** write the generation runner in `nano/confirm3.py`. It needs:
            - the spend-day rule, a drain check and launch isolation;

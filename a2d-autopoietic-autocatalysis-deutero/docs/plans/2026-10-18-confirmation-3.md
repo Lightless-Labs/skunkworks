@@ -263,7 +263,7 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - sleep tool, worktrees, workspace dependencies, unified-exec tty, shell snapshot, realtime, MCP elicitation, write-stdin approval, local automation, daemon auto-start.
     - A live PONG with them all off emits only thread/turn events and one agent_message.
     - `code_mode_host` stays on, because disabling it emits an `error` item on every call, which the allowlist would count.
-  - At merge, `c3lib.PROVIDER_COMMIT` becomes d7f04741.
+  - At merge, `c3lib.PROVIDER_COMMIT` becomes the branch head (f06dc9fb at 09:05 UTC 10-19).
 - **Registration-step items from §7, status 2026-10-19:**
   - **Interleaving: checked, no fix needed.** The controller runs arms interleaved, in completion order under parallel jobs.
     - Confirmation-2's manifests (432 submissions each): every quarter holds 32–40 of each arm, and the longest same-arm run is 6–7.

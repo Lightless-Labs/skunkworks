@@ -1658,3 +1658,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Codex 0.162 still injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k), with no switch to disable them (5 variants tried). Both are the same in every arm and carry no task information, so they are disclosed.
   - 10 more default-on features are now disabled on the branch (d7f04741). Two live PONG calls showed that disabling `code_mode_host` emits an `error` item on every call, so it stays on. With the rest off, the event stream is clean.
   - Provider tests pass 27/27, and so does the live zero-tool-events test. 3 Luna calls were spent on probes.
+- **Step-3 positive and negative controls, live** (09:00 UTC, provider branch, now `#[ignore]` tests).
+  - With one tool switched back on, a call asked to use it shows ≥ 1 tool event in the provider's detector: Luna shell 2, Luna web search 2, Sol shell 2, Sol web search 2.
+  - The provider as configured shows 0 tool events on a PONG call on both lanes.
+  - So the detector works on both lanes, and a run with 0 events is informative. 6 calls (2 Luna, 4 incl. Sol). The branch head is in the commit below.
