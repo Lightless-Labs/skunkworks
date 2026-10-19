@@ -1678,3 +1678,9 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **PASS:** the promoted keep is the confirmation-3 candidate, frozen by file hash. **FAIL, failed run or past T:** E002.
 - **Instrument:** the look runs under this registration's controller, so the provider merge (`c2-web-provider`) waits until look 2 is done or T has passed. The controller refuses a run whose crates changed since `--registered-at`.
 - **Budget:** about 1.25k Luna + 0.2k Sol (look 1: 1,240 invocations). The worst-case cap check is 2,000, and a cap deferral is not an attempt.
+- **E006 (Sol spec notes), full stage: DISCARD** (L11, 05:54–09:00 UTC 10-19). Δall-pass +2.86 pp (SE 2.35), below the 3.57 pp threshold. The screen had been +2.9 pp on all-pass and −1.6 pp on hidden fraction. Discards stay logged in `results.tsv`.
+- **E008 first prompts read** (screen, X:cand, rr-scheduler-l1, 09:05 UTC):
+  - inv00–inv02 are the plain coder prompt (5.3k chars each).
+  - inv03 is the synthesis call (13.8k chars): the task, the public tests, then "Earlier candidate drafts", which holds the three drafts with their public results only. It asks for one solution that uses the drafts as material and keeps the exact API.
+  - inv04 is E002's unchanged Sol judge over the candidate files.
+  - No hidden content: "hidden" appears only in the standard boilerplate and judge wording. The design matches the hypothesis.
