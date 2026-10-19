@@ -559,8 +559,33 @@ fn codex_json_usage(events: &str) -> Option<TokenUsage> {
 /// link to the caller's `auth.json`: no plugins, skills, memories, AGENTS.md,
 /// hooks or config from the user's home reach the model (C2-MCP), and the
 /// environment cannot drift with the user's codex setup.
+/// Where a call's private CODEX_HOME lives: under `root` (`A2D_CODEX_HOME_ROOT`) when set,
+/// else inside the call's cwd. Confirmation-3 §0.10 wants CODEX_HOME under $A2D_HOLDOUT_DIR,
+/// while the cwd stays under the temp root, whose ancestry holds no codex context.
+fn codex_home_in(cwd: &std::path::Path, root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match root {
+        Some(root) if !root.is_empty() => {
+            std::path::PathBuf::from(root).join(cwd.file_name().unwrap_or_default())
+        }
+        _ => cwd.join(".codex_home"),
+    }
+}
+
+fn codex_home_root() -> Option<std::ffi::OsString> {
+    std::env::var_os("A2D_CODEX_HOME_ROOT")
+}
+
+/// Remove a call's cwd and, when it lives elsewhere, its private CODEX_HOME.
+fn remove_call_dirs(cwd: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(cwd);
+    let home = codex_home_in(cwd, codex_home_root());
+    if !home.starts_with(cwd) {
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
 fn isolated_codex_home(cwd: &std::path::Path) -> Result<std::path::PathBuf, ProviderError> {
-    let home = cwd.join(".codex_home");
+    let home = codex_home_in(cwd, codex_home_root());
     std::fs::create_dir_all(&home).map_err(|e| {
         ProviderError::InvocationFailed(format!("failed to create isolated CODEX_HOME: {e}"))
     })?;
@@ -617,7 +642,7 @@ impl Provider for CliProvider {
                 opencode_tool_denial_config(),
             )
             .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&sandbox_dir);
+                remove_call_dirs(&sandbox_dir);
                 ProviderError::InvocationFailed(format!(
                     "failed to write opencode tool-denial config: {e}"
                 ))
@@ -635,7 +660,7 @@ impl Provider for CliProvider {
         remove_network_configuration_env(&mut command);
         if self.command == "codex" {
             let home = isolated_codex_home(&sandbox_dir).inspect_err(|_| {
-                let _ = std::fs::remove_dir_all(&sandbox_dir);
+                remove_call_dirs(&sandbox_dir);
             })?;
             command.env("CODEX_HOME", home);
             // Its own process group, so a timeout kills Codex's helpers too and the
@@ -648,7 +673,7 @@ impl Provider for CliProvider {
         }
 
         let mut child = command.spawn().map_err(|e| {
-            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            remove_call_dirs(&sandbox_dir);
             ProviderError::InvocationFailed(format!(
                 "{} not found or failed to start: {e}",
                 self.command
@@ -687,7 +712,7 @@ impl Provider for CliProvider {
                         {
                             set_failed_call_transcript(transcript);
                         }
-                        let _ = std::fs::remove_dir_all(&sandbox_dir);
+                        remove_call_dirs(&sandbox_dir);
                         return Err(ProviderError::InvocationFailed(format!(
                             "{} timed out after {}s",
                             self.command,
@@ -697,7 +722,7 @@ impl Provider for CliProvider {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 Err(e) => {
-                    let _ = std::fs::remove_dir_all(&sandbox_dir);
+                    remove_call_dirs(&sandbox_dir);
                     return Err(ProviderError::InvocationFailed(format!(
                         "{} wait failed: {e}",
                         self.command
@@ -707,7 +732,7 @@ impl Provider for CliProvider {
         }
 
         let status = child.wait().map_err(|e| {
-            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            remove_call_dirs(&sandbox_dir);
             ProviderError::InvocationFailed(format!("{} output read failed: {e}", self.command))
         })?;
         let stdout = join_pipe_reader(stdout_reader);
@@ -715,7 +740,7 @@ impl Provider for CliProvider {
         let last_message = (self.command == "codex")
             .then(|| std::fs::read_to_string(sandbox_dir.join(CODEX_LAST_MESSAGE_FILE)).ok())
             .flatten();
-        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        remove_call_dirs(&sandbox_dir);
 
         if !status.success() {
             if self.command == "codex" {
@@ -998,6 +1023,17 @@ mod tests {
                 assert!(n >= 1, "{model} {kind}: the detector saw no tool event");
             }
         }
+    }
+
+    #[test]
+    fn codex_home_goes_under_the_root_when_one_is_set() {
+        let cwd = std::path::Path::new("/tmp/a2d-provider-codex-1-2");
+        assert_eq!(codex_home_in(cwd, None), cwd.join(".codex_home"));
+        assert_eq!(codex_home_in(cwd, Some("".into())), cwd.join(".codex_home"));
+        assert_eq!(
+            codex_home_in(cwd, Some("/h/root".into())),
+            std::path::PathBuf::from("/h/root/a2d-provider-codex-1-2")
+        );
     }
 
     #[test]
