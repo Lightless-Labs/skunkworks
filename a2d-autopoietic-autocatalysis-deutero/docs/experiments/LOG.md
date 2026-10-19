@@ -1645,3 +1645,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - At merge (≥ 10-22), bump `c3lib.PROVIDER_COMMIT` to f765c67d.
 - **Version pin under `--json`:** codex 0.162 prints no version banner in `--json` mode (1-call probe). `nano/confirm3.py` therefore accepts `--json` transcripts without one, and the confirmation-3 runner will bracket each replicate with the codex binary's realpath and sha256 (§0.13).
 - **Authoring progress** (07:46 UTC): 4 of the first 5 families verified. c3-f01's first attempt was rejected by the command scan (2 flagged commands). Possible false-positive classes are heredoc lines that start with a listed word, or toolchain exploration, but sealed content cannot be inspected. The rate is watched, and families have 2 attempts plus replacement.
+- **Two mid-authoring pipeline fixes** (disclosed in plan §0.13):
+  1. **Command scan false positive** (ecfb1c65). A category-only diagnostic (pattern class, never text) showed that both rejected first attempts (c3-f01, c3-f06) were flagged for the word `at` starting a prose line in a multi-line command or heredoc.
+     - Heredoc bodies fed to `cat`/`tee` are now data, and `at`/`batch` are off the tool list (`atrun` is not loaded on macOS).
+     - Authoring was stopped by STOP, which drained the in-flight jobs, then restarted at 08:15.
+  2. **Retry isolation** (17da7217). Codex 0.162 writes `skills/` into its `CODEX_HOME` on every run, and the isolation check ran before the home was recreated.
+     - Both retries were refused (fail closed, no attempt spent), and every `c3_fix` repair would have been too.
+     - The home is now reset before the check. The fake codex reproduces it.
+  - The pipeline suite passes 21/21 after each fix. The running driver keeps the earlier code for its first attempts, and the next run picks up the retries.
+- **Authoring, 08:40 UTC:** 8 families verified (f02–f05, f07–f09, f11). c3-f10's first attempt failed verification (exit 0, 0 events, 0 flags) and has 1 attempt left. 25 families are pending.
