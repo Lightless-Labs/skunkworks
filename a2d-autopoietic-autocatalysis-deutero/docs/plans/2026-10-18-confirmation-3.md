@@ -278,6 +278,39 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - an attempt record before the first call; one relaunch with the same seed;
     - scoring by §0.13.
   - Still open for the registration: new seeds, the exposure-exclusion policy, and branch-specific call caps from the frozen candidate.
+- **Early reviews of the runner, 2026-10-19 (copies only, web disabled):**
+  - Codex Sol (high, 0 searches): **No**, with 10 blockers.
+  - A fresh Claude: **Yes** once 4 blockers are fixed.
+
+  Dispositions:
+  - **Registration binding (Claude B1).** Fixed. The only valid `--registered-at` is the single commit that added `registration.json`. Every attempt record must carry it, and the registered provider commit must be in its history.
+  - **Controller verdicts dominate (Claude B2, Sol B3).** Fixed: the controller's Invalid and IntegrityReview, the claim and the comparison classes.
+    - Its `complete` flag is **not** required: it is false on any void tuple, which would contradict §0.4's tuple voids up to 5%. Aborted generations are Invalid.
+  - **CI under imputation (both, the open question).** Adopted, which tightens §0.4:
+    - SUPPORTED also needs the worst-case imputed whole-family bootstrap ci_low > 0;
+    - RULED OUT needs the best-case imputed ci_high < +10 pp.
+    - The bootstrap is a stdlib port of the controller's and matched its lift and CI exactly on 4 dev comparisons. Decisions use unrounded values.
+  - **Launch isolation (both).** Fixed for the parts that apply to a no-tool replicate (temp-root ancestry, auth-only home per call, native-binary fingerprint). The rest is disclosed.
+  - **Spend time and deferrals (Sol B5).** Fixed. A replicate starts at or after 00:05 UTC. A cap or latency no-go is recorded and holds for the UTC day. Latency probes count toward the cap (Sol B9).
+  - **Mutual exclusion (both).** Fixed: an exclusive runner lock, an atomic attempt reservation with the pid recorded, and a relaunch only after a recorded terminal failure.
+  - **Generator discretion (Claude B4, Sol B7).** Fixed. The candidate is derived by §0.1: the look-2 snapshot iff a valid PASS completed by T, else E002 by sha. The generator also requires:
+    - the provider merge (recorded);
+    - certification on exactly this suite;
+    - 4 tasks per family and ≥ 30 families;
+    - non-empty lanes.
+    It refuses with the list of what is missing.
+  - **Detector strictness (Sol B1).** Fixed on the provider branch (88462f81). The marker selects the JSON parser, and every unparsable line counts, a killed call's cut-off line included. This supersedes the cut-off exception written above: only the missing `turn.completed` is excused.
+  - **Controls coverage (Sol B8).** Fixed. Live controls run on the registered lanes at their efforts (Luna low, Sol medium) for shell, web search and file change, each showing its own item type. MCP and image are covered by the allowlist only.
+  - **Selection count (Sol B10).** A LOG error, now corrected: all 40 briefs were written and namecheck validity requires all 40 verdicts, giving 38 OK, 36 active and 2 spares. No rule changed.
+  - **Non-blocking:**
+    - transcripts must be `--json`, and tuples with invocation-count mismatches are void;
+    - planned tuples come from the registration;
+    - manifests are written only when both replicates are done;
+    - no holdout paths appear in messages;
+    - disclosures added, plus the exposure policy and branch caps as a required field;
+    - the review packet now includes the pipeline's code;
+    - `which codex` must resolve to the native binary; do not upgrade codex before the spend.
+  - The full registration review re-runs on the written `registration.json`.
 - **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request

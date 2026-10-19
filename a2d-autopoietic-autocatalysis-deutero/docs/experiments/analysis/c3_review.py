@@ -19,6 +19,8 @@ FILES = ["docs/plans/2026-10-18-confirmation-3.md", "runs/c2-confirm3/registrati
          "nano/confirm3.py", "nano/test_confirm3.py", "nano/look_if_promoted.py",
          "docs/experiments/analysis/c3_registration.py", "docs/experiments/analysis/c3_power.py",
          "tools/holdout/README.md", "runs/c2-confirm2/registration.json"]
+GLOBS = ["tools/holdout/*.py", "tools/holdout/*.sh", "tools/holdout/authoring/*", "tools/holdout/tests/*.py",
+         "tools/holdout/tests/*.sh"]
 BRIEF = """# Review: confirmation-3 pre-registration (A²D cycle 2)
 
 You are one of two independent reviewers (the other is a fresh Claude). Read only the files in
@@ -62,6 +64,12 @@ def build(packet):
             dst = packet / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src, dst)
+    for pattern in GLOBS:                      # the pipeline's implementation, not only its README
+        for src in sorted(ROOT.glob(pattern)):
+            if src.is_file():
+                dst = packet / src.relative_to(ROOT)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(src, dst)
     log = (ROOT / "docs/experiments/LOG.md").read_text()
     start = log.find("### C2-MCP")
     (packet / "LOG-confirmation-3.md").write_text(log[start:] if start >= 0 else log[-60000:])
