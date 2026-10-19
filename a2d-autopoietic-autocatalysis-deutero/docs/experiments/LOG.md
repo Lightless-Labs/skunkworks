@@ -1654,3 +1654,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
      - The home is now reset before the check. The fake codex reproduces it.
   - The pipeline suite passes 21/21 after each fix. The running driver keeps the earlier code for its first attempts, and the next run picks up the retries.
 - **Authoring, 08:40 UTC:** 8 families verified (f02–f05, f07–f09, f11). c3-f10's first attempt failed verification (exit 0, 0 events, 0 flags) and has 1 attempt left. 25 families are pending.
+- **Step-3 injected-context check** (09:00 UTC, `codex debug prompt-input`, no model call). Under the provider branch's isolation, the injected context drops from 18.4k to 12.3k chars, and the plugins and user skills are gone.
+  - Codex 0.162 still injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k), with no switch to disable them (5 variants tried). Both are the same in every arm and carry no task information, so they are disclosed.
+  - 10 more default-on features are now disabled on the branch (d7f04741). Two live PONG calls showed that disabling `code_mode_host` emits an `error` item on every call, so it stays on. With the rest off, the event stream is clean.
+  - Provider tests pass 27/27, and so does the live zero-tool-events test. 3 Luna calls were spent on probes.

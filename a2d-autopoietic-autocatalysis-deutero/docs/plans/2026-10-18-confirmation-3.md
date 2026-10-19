@@ -253,6 +253,17 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Cause: codex 0.162 writes its bundled `skills/` into `CODEX_HOME` on every run. The check runs before `run_codex` recreates the job's home, so it saw the previous run's `skills/`. A fixed-vocabulary diagnostic confirmed it: only `skills` was present, and in every workdir that has run.
   - Every re-author and every `c3_fix` repair, which uses the same family workdir, would have been refused the same way.
   - Fix: `c3_author.prepare` and `c3_fix` reset the job's codex home before the isolation check. The fake codex now writes `skills/` like the real one, and the suite passes 21/21.
+- **Injected-context check (step 3, 2026-10-19, `codex debug prompt-input`, local render, no model call).**
+  - With the provider's isolation (fresh `CODEX_HOME` holding only auth, empty cwd, features disabled, web search off), the injected developer context falls from 18.4k to 12.3k chars. The plugins and the user's skills are gone.
+  - **Residue that cannot be disabled in 0.162** (5 variants tried: more features off, `skip_host_skill_discovery`, `multi_agent_v2`/`collaboration_modes` off, `skills.enabled=false`):
+    - ~7.3k chars of `<skills_instructions>` listing codex's 4 bundled skills (imagegen, openai-docs, skill-creator, skill-installer), which codex writes into every fresh home;
+    - ~2.8k chars of multi-agent role and mode text.
+  - It is the same in every arm and carries no task information. With shell tools disabled, the model cannot open the skill files. **Disclosed in the registration.**
+  - **Tightening:** 10 more default-on features are disabled on the provider branch (d7f04741):
+    - sleep tool, worktrees, workspace dependencies, unified-exec tty, shell snapshot, realtime, MCP elicitation, write-stdin approval, local automation, daemon auto-start.
+    - A live PONG with them all off emits only thread/turn events and one agent_message.
+    - `code_mode_host` stays on, because disabling it emits an `error` item on every call, which the allowlist would count.
+  - At merge, `c3lib.PROVIDER_COMMIT` becomes d7f04741.
 - **Registration-step items from §7, status 2026-10-19:**
   - **Interleaving: checked, no fix needed.** The controller runs arms interleaved, in completion order under parallel jobs.
     - Confirmation-2's manifests (432 submissions each): every quarter holds 32–40 of each arm, and the longest same-arm run is 6–7.
