@@ -1521,7 +1521,8 @@ fn nano_harness_v0_matches_native_d_prompts_and_submission() {
     let normalise = |text: String| -> String {
         text.split_whitespace()
             // Per-call oracle randomness: temp paths, the randomised public
-            // module name, and thread ids.
+            // module name, thread ids, and libtest durations (0.00s vs 0.30s
+            // under load).
             .map(|w| {
                 if w.contains("a2d-oracle-") || w.contains("/var/folders/") || w.contains("/tmp/") {
                     "<tmp>"
@@ -1529,6 +1530,8 @@ fn nano_harness_v0_matches_native_d_prompts_and_submission() {
                     "<module>"
                 } else if w.starts_with('(') && w.ends_with(')') && w[1..w.len() - 1].chars().all(|c| c.is_ascii_digit()) {
                     "(<thread>)"
+                } else if w.len() > 1 && w.ends_with('s') && w[..w.len() - 1].parse::<f64>().is_ok() {
+                    "<secs>"
                 } else {
                     w
                 }
@@ -1826,4 +1829,55 @@ fn external_registration_survives_manifest_scoring_pooling_and_compare() {
         comparison["x"]["harness"],
         ledger_records(&run)[0]["externals"]["nano"]
     );
+}
+
+#[test]
+fn a_failed_codex_call_keeps_its_partial_transcript() {
+    // plan 2026-10-18-confirmation-3 §0.13: a timed-out call is audited like any other,
+    // and only real tool events in its partial stream count.
+    use a2d_core::provider::Provider;
+    struct Failing(String);
+    impl Provider for Failing {
+        fn name(&self) -> &str {
+            "test/failing"
+        }
+        fn invoke(&self, _: &InvocationRequest) -> Result<InvocationResponse, ProviderError> {
+            a2d_providers::cli::set_failed_call_transcript(self.0.clone());
+            Err(ProviderError::InvocationFailed("codex timed out after 300s".into()))
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let meter = meter_in(dir.path(), 10);
+    let marker = a2d_providers::cli::CODEX_STDERR_MARKER;
+    let quiet = format!(
+        "{{\"type\":\"thread.started\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"reasoning\"}}}}\n{marker}"
+    );
+    let tool = format!(
+        "{{\"type\":\"thread.started\"}}\n{{\"type\":\"item.started\",\"item\":{{\"type\":\"command_execution\"}}}}\n{marker}"
+    );
+    for (task, transcript, tools) in [("t1", quiet, 0usize), ("t2", tool, 1)] {
+        let scope = crate::meter::Scope::new("D", task, 0, 5);
+        let metered = crate::meter::MeteredProvider::new(
+            Arc::new(Failing(transcript.clone())),
+            meter.clone(),
+            scope.clone(),
+        );
+        let request = InvocationRequest {
+            enzyme_id: EnzymeId::from("lift-coder"),
+            system: String::new(),
+            prompt: "p".into(),
+            max_tokens: 10,
+        };
+        assert!(metered.invoke(&request).is_err());
+        assert_eq!(scope.tool_calls(), tools, "{task}");
+        let saved = dir.path().join("invocations/D").join(task).join("r0/inv00-lift-coder.transcript.txt");
+        assert_eq!(fs::read_to_string(saved).unwrap(), transcript);
+        let rec = ledger_records(dir.path())
+            .into_iter()
+            .filter(|r| r["kind"] == "invocation")
+            .last()
+            .unwrap();
+        assert_eq!(rec["tool_calls"], json!(tools));
+    }
+    assert!(a2d_providers::cli::take_failed_call_transcript().is_none());
 }
