@@ -1,0 +1,235 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WordsError {
+    Empty,
+    InvalidByte { index: usize },
+    Separator { index: usize },
+    InvalidWord { index: usize },
+    Range,
+    NonCanonical { index: usize },
+}
+
+const LIMIT: u128 = 1_000_000_000_000_000_000;
+
+const SMALL: [&str; 20] = [
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+];
+
+const TENS: [&str; 10] = [
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
+    "ninety",
+];
+
+const SCALES: [&str; 7] = [
+    "", "thousand", "million", "billion", "trillion", "quadrillion", "quintillion",
+];
+
+fn append_group(value: u16, output: &mut String) {
+    let hundreds = value / 100;
+    let remainder = value % 100;
+
+    if hundreds != 0 {
+        output.push_str(SMALL[hundreds as usize]);
+        output.push_str(" hundred");
+        if remainder != 0 {
+            output.push_str(" and ");
+        }
+    }
+
+    if remainder >= 20 {
+        output.push_str(TENS[(remainder / 10) as usize]);
+        if remainder % 10 != 0 {
+            output.push('-');
+            output.push_str(SMALL[(remainder % 10) as usize]);
+        }
+    } else if remainder != 0 {
+        output.push_str(SMALL[remainder as usize]);
+    }
+}
+
+pub fn words_encode(value: i128) -> Result<String, WordsError> {
+    let magnitude = value.unsigned_abs();
+    if magnitude > LIMIT {
+        return Err(WordsError::Range);
+    }
+
+    if magnitude == 0 {
+        return Ok("zero".to_string());
+    }
+
+    let mut result = String::new();
+    if value < 0 {
+        result.push_str("minus ");
+    }
+
+    let mut groups = [0u16; 7];
+    let mut remaining = magnitude;
+    for group in &mut groups {
+        *group = (remaining % 1000) as u16;
+        remaining /= 1000;
+    }
+
+    let mut emitted_higher = false;
+    for index in (0..7).rev() {
+        let group = groups[index];
+        if group == 0 {
+            continue;
+        }
+
+        if !result.is_empty() && result != "minus " {
+            if index == 0 && group < 100 && emitted_higher {
+                result.push_str(" and ");
+            } else {
+                result.push(' ');
+            }
+        }
+
+        append_group(group, &mut result);
+        if index != 0 {
+            result.push(' ');
+            result.push_str(SCALES[index]);
+            emitted_higher = true;
+        }
+    }
+
+    Ok(result)
+}
+
+fn word_value(word: &str) -> Option<u128> {
+    if word == "zero" {
+        return Some(0);
+    }
+
+    for (value, spelling) in SMALL.iter().enumerate().skip(1) {
+        if word == *spelling {
+            return Some(value as u128);
+        }
+    }
+
+    for (value, spelling) in TENS.iter().enumerate().skip(2) {
+        if word == *spelling {
+            return Some((value * 10) as u128);
+        }
+    }
+
+    match word {
+        "hundred" => Some(100),
+        "thousand" => Some(1_000),
+        "million" => Some(1_000_000),
+        "billion" => Some(1_000_000_000),
+        "trillion" => Some(1_000_000_000_000),
+        "quadrillion" => Some(1_000_000_000_000_000),
+        "quintillion" => Some(1_000_000_000_000_000_000),
+        "and" => Some(0),
+        _ => None,
+    }
+}
+
+pub fn words_decode(input: &str) -> Result<i128, WordsError> {
+    if input.is_empty() {
+        return Err(WordsError::Empty);
+    }
+
+    let bytes = input.as_bytes();
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if !(byte.is_ascii_lowercase() || byte == b' ' || byte == b'-') {
+            return Err(WordsError::InvalidByte { index });
+        }
+    }
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b' ' || byte == b'-' {
+            if index == 0
+                || index + 1 == bytes.len()
+                || !bytes[index - 1].is_ascii_lowercase()
+                || !bytes[index + 1].is_ascii_lowercase()
+            {
+                return Err(WordsError::Separator { index });
+            }
+        }
+    }
+
+    let tokens: Vec<(usize, &str)> = input
+        .split(|character| character == ' ' || character == '-')
+        .scan(0usize, |offset, token| {
+            let start = *offset;
+            *offset += token.len() + 1;
+            Some((start, token))
+        })
+        .collect();
+
+    for (index, token) in &tokens {
+        if *token == "minus" {
+            if *index != 0 {
+                return Err(WordsError::InvalidWord { index: *index });
+            }
+        } else if word_value(token).is_none() {
+            return Err(WordsError::InvalidWord { index: *index });
+        }
+    }
+
+    let negative = tokens.first().is_some_and(|(_, token)| *token == "minus");
+    let arithmetic_start = if negative { 1 } else { 0 };
+    let mut total: u128 = 0;
+    let mut group: u128 = 0;
+
+    for (_, token) in tokens.iter().skip(arithmetic_start) {
+        match *token {
+            "and" => {}
+            "hundred" => group = group.saturating_mul(100),
+            "thousand" => {
+                total = total.saturating_add(group.saturating_mul(1_000));
+                group = 0;
+            }
+            "million" => {
+                total = total.saturating_add(group.saturating_mul(1_000_000));
+                group = 0;
+            }
+            "billion" => {
+                total = total.saturating_add(group.saturating_mul(1_000_000_000));
+                group = 0;
+            }
+            "trillion" => {
+                total = total.saturating_add(group.saturating_mul(1_000_000_000_000));
+                group = 0;
+            }
+            "quadrillion" => {
+                total = total.saturating_add(group.saturating_mul(1_000_000_000_000_000));
+                group = 0;
+            }
+            "quintillion" => {
+                total = total.saturating_add(group.saturating_mul(1_000_000_000_000_000_000));
+                group = 0;
+            }
+            _ => group = group.saturating_add(word_value(token).unwrap()),
+        }
+
+        if total.saturating_add(group) > LIMIT {
+            return Err(WordsError::Range);
+        }
+    }
+
+    let magnitude = total + group;
+    let value = if negative && magnitude != 0 {
+        -(magnitude as i128)
+    } else {
+        magnitude as i128
+    };
+
+    let canonical = words_encode(value)?;
+    if canonical != input {
+        let differing_index = canonical
+            .as_bytes()
+            .iter()
+            .zip(bytes.iter())
+            .position(|(left, right)| left != right)
+            .unwrap_or_else(|| canonical.len().min(bytes.len()));
+        return Err(WordsError::NonCanonical {
+            index: differing_index,
+        });
+    }
+
+    Ok(value)
+}

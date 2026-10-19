@@ -1,0 +1,94 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let bytes = path.as_bytes();
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes[bytes.len() - 1] == b'/'
+        || path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<(&str, usize)> = Vec::new();
+    let mut start = 0;
+
+    while start < bytes.len() {
+        while start < bytes.len() && bytes[start] == b'/' {
+            start += 1;
+        }
+        if start == bytes.len() {
+            break;
+        }
+
+        let component_start = start;
+        while start < bytes.len() && bytes[start] != b'/' {
+            start += 1;
+        }
+
+        let component = &path[component_start..start];
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|(name, _)| *name != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: component_start });
+                } else {
+                    components.push((component, component_start));
+                }
+            }
+            _ => components.push((component, component_start)),
+        }
+    }
+
+    let joined = components
+        .iter()
+        .map(|(component, _)| *component)
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let mut result = if absolute {
+        if joined.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_owned()
+    } else {
+        joined
+    };
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}

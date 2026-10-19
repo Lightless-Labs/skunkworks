@@ -1,0 +1,136 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn rounded_sqrt(n: u128) -> u128 {
+    // Integer square root, using the restoring bit-by-bit algorithm.
+    let mut remainder = n;
+    let mut root = 0u128;
+    let mut bit = 1u128 << 126; // Largest power of four representable in u128.
+    while bit > remainder {
+        bit >>= 2;
+    }
+    while bit != 0 {
+        if remainder >= root + bit {
+            remainder -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+
+    // Round to the nearest integer; ties round upward. The midpoint comparison
+    // avoids squaring a potentially large candidate.
+    if remainder > root {
+        root + 1
+    } else {
+        root
+    }
+}
+
+fn edge_length_milli(a: Point, b: Point) -> u64 {
+    let dx = (i128::from(a.x) - i128::from(b.x)).unsigned_abs();
+    let dy = (i128::from(a.y) - i128::from(b.y)).unsigned_abs();
+    let scaled_squared = (dx * dx + dy * dy) * 1_000_000;
+    rounded_sqrt(scaled_squared) as u64
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points.first() == points.last() {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(effective_len);
+
+    for index in 0..effective_len {
+        let a = polygon[index];
+        let b = polygon[(index + 1) % effective_len];
+
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+
+        edge_milli.push(edge_length_milli(a, b));
+    }
+
+    let perimeter_milli = edge_milli.iter().copied().sum();
+    let longest_edge = (0..effective_len).max_by(|&i, &j| {
+        edge_milli[i]
+            .cmp(&edge_milli[j])
+            .then_with(|| {
+                let pair = |index: usize| {
+                    let a = polygon[index];
+                    let b = polygon[(index + 1) % effective_len];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                pair(j).cmp(&pair(i))
+            })
+            .then_with(|| j.cmp(&i))
+    });
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}

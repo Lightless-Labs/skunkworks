@@ -1,0 +1,351 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+    InvalidLink { index: usize },
+    DuplicateLink { first: usize, second: usize },
+    Loop { index: usize },
+    Limit { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.ends_with('/') {
+        return true;
+    }
+    path.rsplit('/')
+        .find(|component| !component.is_empty())
+        .is_some_and(|component| component == "." || component == "..")
+}
+
+fn raw_components(path: &str, offset: usize) -> Vec<(String, usize)> {
+    let bytes = path.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i] == b'/' {
+            i += 1;
+        }
+        if i == bytes.len() {
+            break;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i] != b'/' {
+            i += 1;
+        }
+        result.push((path[start..i].to_owned(), offset + start));
+    }
+    result
+}
+
+fn reduce_component(
+    stack: &mut Vec<String>,
+    component: &str,
+    at: usize,
+    absolute: bool,
+) -> Result<bool, PathError> {
+    if component == "." {
+        return Ok(false);
+    }
+    if component == ".." {
+        if stack.last().is_some_and(|last| last != "..") {
+            stack.pop();
+        } else if absolute {
+            return Err(PathError::Escape { at });
+        } else {
+            stack.push("..".to_owned());
+        }
+        return Ok(false);
+    }
+    stack.push(component.to_owned());
+    Ok(true)
+}
+
+fn render(stack: &[String], absolute: bool, dir_intent: bool) -> String {
+    let mut result = if absolute {
+        if stack.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", stack.join("/"))
+        }
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    };
+
+    if dir_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+    let absolute = path.starts_with('/');
+    let intent = directory_intent(path);
+    let mut stack = Vec::new();
+
+    for (component, at) in raw_components(path, 0) {
+        reduce_component(&mut stack, &component, at, absolute)?;
+    }
+
+    Ok(render(&stack, absolute, intent))
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, ()> {
+    if !path.starts_with('/') {
+        return Err(());
+    }
+    let normalized = normalize(path).map_err(|_| ())?;
+    if normalized == "/" {
+        Ok(Vec::new())
+    } else {
+        Ok(normalized
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+}
+
+fn validate_home(home: Option<&str>) -> Result<Option<Vec<String>>, PathError> {
+    match home {
+        Some(path) => validate_context(path)
+            .map(Some)
+            .map_err(|_| PathError::InvalidHome),
+        None => Ok(None),
+    }
+}
+
+fn request_start<'a>(
+    path: &'a str,
+    cwd: &[String],
+    home: Option<&[String]>,
+) -> Result<(bool, Vec<String>, &'a str, usize), PathError> {
+    let bytes = path.as_bytes();
+    if bytes.first() == Some(&b'~') {
+        if bytes.len() == 1 || bytes.get(1) == Some(&b'/') {
+            let home = home.ok_or(PathError::MissingHome)?;
+            let consumed = if bytes.len() > 1 { 2 } else { 1 };
+            return Ok((true, home.to_vec(), &path[consumed..], consumed));
+        }
+        return Err(PathError::UnsupportedTilde { at: 1 });
+    }
+
+    if path.starts_with('/') {
+        Ok((true, Vec::new(), path, 0))
+    } else {
+        Ok((true, cwd.to_vec(), path, 0))
+    }
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd_components = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_components = validate_home(home)?;
+    validate_raw(path)?;
+
+    let intent = directory_intent(path);
+    let (_, mut stack, remainder, offset) =
+        request_start(path, &cwd_components, home_components.as_deref())?;
+
+    for (component, at) in raw_components(remainder, offset) {
+        reduce_component(&mut stack, &component, at, true)?;
+    }
+
+    Ok(render(&stack, true, intent))
+}
+
+fn validate_links(links: &[Link]) -> Result<(), PathError> {
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+
+    for (index, link) in links.iter().enumerate() {
+        let path_valid = link.path.starts_with('/')
+            && !link.path.ends_with('/')
+            && link.path != "/"
+            && normalize(&link.path)
+                .is_ok_and(|normalized| normalized == link.path);
+        if !path_valid || validate_raw(&link.target).is_err() {
+            return Err(PathError::InvalidLink { index });
+        }
+
+        if let Some((_, first)) = seen.iter().find(|(path, _)| *path == link.path) {
+            return Err(PathError::DuplicateLink {
+                first: *first,
+                second: index,
+            });
+        }
+        seen.push((&link.path, index));
+    }
+    Ok(())
+}
+
+struct Traversal<'a> {
+    links: &'a [Link],
+    stack: Vec<String>,
+    active: Vec<usize>,
+    expansions: usize,
+    max_expansions: usize,
+}
+
+impl Traversal<'_> {
+    fn current_path(&self) -> String {
+        if self.stack.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", self.stack.join("/"))
+        }
+    }
+
+    fn push_ordinary(&mut self, component: &str) -> Result<(), PathError> {
+        self.stack.push(component.to_owned());
+
+        let matched = self
+            .links
+            .iter()
+            .position(|link| link.path == self.current_path());
+
+        if let Some(index) = matched {
+            if self.active.contains(&index) {
+                return Err(PathError::Loop { index });
+            }
+            if self.expansions >= self.max_expansions {
+                return Err(PathError::Limit { index });
+            }
+            self.expansions += 1;
+
+            let target = self.links[index].target.clone();
+            self.stack.pop();
+            self.active.push(index);
+
+            let target_absolute = target.starts_with('/');
+            if target_absolute {
+                self.stack.clear();
+            }
+            for (part, at) in raw_components(&target, 0) {
+                self.process_component(&part, at, true)?;
+            }
+
+            self.active.pop();
+        }
+        Ok(())
+    }
+
+    fn process_component(
+        &mut self,
+        component: &str,
+        at: usize,
+        absolute: bool,
+    ) -> Result<(), PathError> {
+        if component == "." {
+            return Ok(());
+        }
+        if component == ".." {
+            if self.stack.last().is_some_and(|last| last != "..") {
+                self.stack.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                self.stack.push("..".to_owned());
+            }
+            return Ok(());
+        }
+        self.push_ordinary(component)
+    }
+
+    fn process_components(
+        &mut self,
+        components: Vec<(String, usize)>,
+        absolute: bool,
+    ) -> Result<(), PathError> {
+        for (component, at) in components {
+            self.process_component(&component, at, absolute)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn resolve_links(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let cwd_components = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_components = validate_home(home)?;
+    validate_links(links)?;
+    validate_raw(path)?;
+
+    let intent = directory_intent(path);
+    let (absolute, start, remainder, offset) =
+        request_start(path, &cwd_components, home_components.as_deref())?;
+
+    let mut traversal = Traversal {
+        links,
+        stack: Vec::new(),
+        active: Vec::new(),
+        expansions: 0,
+        max_expansions,
+    };
+
+    // Context components are traversed from root so they can themselves match links.
+    if !absolute && !path.starts_with('~') {
+        traversal.process_components(
+            cwd_components
+                .iter()
+                .cloned()
+                .map(|component| (component, 0))
+                .collect(),
+            true,
+        )?;
+    } else if path.starts_with('~') {
+        traversal.process_components(
+            start
+                .iter()
+                .cloned()
+                .map(|component| (component, 0))
+                .collect(),
+            true,
+        )?;
+    }
+
+    traversal.process_components(raw_components(remainder, offset), true)?;
+    Ok(render(&traversal.stack, true, intent))
+}
+```

@@ -1,0 +1,127 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut account = Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    };
+
+    for (index, event) in events.iter().enumerate() {
+        let result = match event {
+            Event::Open { limit } => {
+                if !(1..=1_000_000_000).contains(limit) {
+                    Err(ApplyError::InvalidLimit)
+                } else if account.status != Status::New {
+                    Err(ApplyError::AlreadyOpened)
+                } else {
+                    account.status = Status::Open;
+                    account.limit = *limit;
+                    Ok(())
+                }
+            }
+            Event::Deposit { amount } => match account.status {
+                Status::New => Err(ApplyError::NotOpened),
+                Status::Closed => Err(ApplyError::Closed),
+                Status::Open => {
+                    if *amount <= 0 {
+                        Err(ApplyError::InvalidAmount)
+                    } else if *amount > account.limit - account.balance {
+                        Err(ApplyError::LimitExceeded)
+                    } else {
+                        account.balance += *amount;
+                        Ok(())
+                    }
+                }
+            },
+            Event::Withdraw { amount, floor } => match account.status {
+                Status::New => Err(ApplyError::NotOpened),
+                Status::Closed => Err(ApplyError::Closed),
+                Status::Open => {
+                    if *amount <= 0 {
+                        Err(ApplyError::InvalidAmount)
+                    } else if *floor < 0 || *floor > account.limit {
+                        Err(ApplyError::InvalidFloor)
+                    } else if *amount > account.balance {
+                        Err(ApplyError::InsufficientFunds)
+                    } else if account.balance - *amount < *floor {
+                        Err(ApplyError::FloorViolation)
+                    } else {
+                        account.balance -= *amount;
+                        Ok(())
+                    }
+                }
+            },
+            Event::Close { expected_version } => match account.status {
+                Status::New => Err(ApplyError::NotOpened),
+                Status::Closed => Err(ApplyError::Closed),
+                Status::Open => {
+                    if *expected_version != account.version {
+                        Err(ApplyError::CloseVersion {
+                            expected: *expected_version,
+                            actual: account.version,
+                        })
+                    } else if account.balance != 0 {
+                        Err(ApplyError::NonZeroBalance)
+                    } else {
+                        account.status = Status::Closed;
+                        Ok(())
+                    }
+                }
+            },
+        };
+
+        if let Err(kind) = result {
+            return Err(ReplayError { index, kind });
+        }
+        account.version += 1;
+    }
+
+    Ok(account)
+}
+```

@@ -1719,3 +1719,5 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Assembly** (12:48): 36 families, 144 tasks, 0 missing.
 - **Similarity** (12:51): 144 tasks against 1,035 prior tasks; max similarity 0.04, max containment 0.17, **0 conflicts**.
 - **Validation** running from 12:54.
+- **E008 (Sol: the 4th sample becomes a synthesis of 3 drafts), screen: DISCARD** (L12, 09:00–13:05 UTC 10-19). Δall-pass +0.0 pp (SE 2.9). The first prompts were read before the result and are as designed (above).
+  - **E009** was deferred by the daily cap (Luna today 2,562), and so will E010 be. The queue resumes at 00:05 UTC 10-20 (L15 onward).
