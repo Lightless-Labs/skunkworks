@@ -32,8 +32,10 @@
        - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
-       - **State (10-19 07:55 UTC):**
-         - Selection is done: 36 families (38 proposed, 2 namecheck conflicts). Authoring runs at parallel 2. Watch the scan rejections: 1 of 5 so far.
+       - **State (10-19 08:50 UTC):**
+         - Selection is done: 36 families. Authoring runs detached (`~/.a2d-c3-drivers/20261019T081515Z-c3_author.out`, restarted on ecfb1c65): 11 verified.
+         - Retries are pending for c3-f01 and c3-f06 (scan false positive, fixed) and c3-f10 (failed verification). After this driver exits, run `detached.sh c3_author.py --parallel 2` again; it uses the codex-home fix, 17da7217.
+         - Claude Code reaped this session's watcher shells at 08:49 (memory pressure, swap 7.4 / 8 GB). Check progress by hand; the detached queue and driver are unaffected.
          - **Then:** `detached.sh c3_assemble.py`, `c3_similarity.py`, `c3_validate.py`, and `c3_fix.py` as needed. Commit every pipeline edit before a driver starts.
          - **At the provider merge (≥ 10-22, after the batch's confirmation step):**
            - merge `c2-web-provider` (f765c67d), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
