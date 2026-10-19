@@ -726,6 +726,9 @@ def cmd_confirm_score(args):
     """Score each replicate once against its committed anchor, then pool.
     The controller refuses to score a ledger that already has scores, so an
     interrupted scoring is reported as failed rather than repeated."""
+    sealed = CONFIRM2_DIR / "sealed-sha256.txt"
+    if sealed.exists():  # scored 10-19; decision sealed in the holdout dir until confirmation-3's decision
+        sys.exit(f"{sealed} exists; the set is scored and its decision is sealed")
     pooled = CONFIRM2_DIR / "pooled-summary.json"
     if pooled.exists():
         sys.exit(f"{pooled} exists; the set is scored and pooled once")
