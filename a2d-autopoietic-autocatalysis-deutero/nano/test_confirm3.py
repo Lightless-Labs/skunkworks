@@ -243,7 +243,7 @@ class Generate(unittest.TestCase):
                    "C2_SEALED": root / "sealed.txt"}
         (root / "sealed.txt").write_text("x\n")
         self.patchers = [mock.patch.object(c3, k, v) for k, v in patches.items()]
-        self.patchers.append(mock.patch.object(c3.subprocess, "run", side_effect=self.fake_run))
+        self.patchers.append(mock.patch.object(c3.subprocess, "Popen", side_effect=self.fake_popen))
         for pt in self.patchers:
             pt.start()
 
@@ -264,6 +264,11 @@ class Generate(unittest.TestCase):
         (out / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         return mock.Mock(returncode=1 if self.fail else 0)
 
+    def fake_popen(self, cmd, **kw):
+        self.assertIn("pass_fds", kw)                     # the child inherits the runner lock
+        code = self.fake_run(cmd, **kw).returncode
+        return mock.Mock(pid=4242, wait=lambda: code)
+
     def generate(self, rep=1, relaunch=False):
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
@@ -279,6 +284,7 @@ class Generate(unittest.TestCase):
         self.assertIn("--defer-scoring", cmd)
         self.assertTrue(json.loads((self.dir / "bracket-r1.json").read_text())["match"])
         self.assertEqual(json.loads((self.dir / "attempt-r1.json").read_text())["registered_at"], "abc")
+        self.assertEqual(json.loads((self.dir / "generation-r1.json").read_text())["pid"], 4242)
         self.assertEqual(self.generate()[-1]["decision"], "already generated")
         self.assertEqual(len(self.calls), 1)
 

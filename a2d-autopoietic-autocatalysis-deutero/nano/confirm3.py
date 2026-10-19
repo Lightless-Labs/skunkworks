@@ -436,7 +436,10 @@ def luna_today():
 
 
 class Lock:
-    """One runner at a time (generate, manifest, score)."""
+    """One runner at a time (generate, manifest, score). A flock belongs to the open file
+    description, and the generation child inherits the descriptor (pass_fds), so the lock is
+    held until the child and every descendant that inherited it have exited: acquiring it
+    proves that no generation is alive."""
 
     def __enter__(self):
         DIR.mkdir(parents=True, exist_ok=True)
@@ -448,7 +451,7 @@ class Lock:
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self.f, fcntl.LOCK_UN)
+        # Close only: LOCK_UN would act on the description shared with a live generation child.
         self.f.close()
 
 
@@ -467,7 +470,7 @@ def reserve(path, data):
 def cmd_generate(args):
     """One replicate, attempted once (one logged relaunch with the same seed after a recorded
     terminal failure)."""
-    with Lock():
+    with Lock() as lock:
         reg = registration(args.registered_at)
         sha = registration_commit()
         check_attempts(sha)
@@ -482,7 +485,8 @@ def cmd_generate(args):
             if not first.exists():
                 sys.exit("a relaunch needs a failed first attempt")
             if not failure.exists():
-                # Under the lock no first-attempt runner is alive, and its generation never completed.
+                # Under the lock no first-attempt generation is alive (its descendants held the lock),
+                # and it never completed.
                 failure.write_text(json.dumps({"rep": rep, "recorded_utc": now().isoformat(),
                                                "reason": "no generation_complete; no runner alive"}) + "\n")
         if attempt.exists() or out.exists():
@@ -536,7 +540,10 @@ def cmd_generate(args):
             cmd += ["--lane", f"{name}={spec}"]
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(str(out) + ".log", "a") as log:
-            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
+            child = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, pass_fds=(lock.f.fileno(),))
+            (DIR / f"generation-r{rep}{suffix(relaunch)}.json").write_text(
+                json.dumps({"pid": child.pid, "started_utc": now().isoformat()}) + "\n")
+            code = child.wait()
         after = codex_fingerprint()
         (DIR / f"bracket-r{rep}{suffix(relaunch)}.json").write_text(
             json.dumps({"before": before, "after": after, "match": after == before}, indent=1) + "\n")

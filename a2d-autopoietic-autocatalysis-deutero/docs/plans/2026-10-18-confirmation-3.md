@@ -299,7 +299,7 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - 4 tasks per family and ≥ 30 families;
     - non-empty lanes.
     It refuses with the list of what is missing.
-  - **Detector strictness (Sol B1).** Fixed on the provider branch (88462f81). The marker selects the JSON parser, and every unparsable line counts, a killed call's cut-off line included. This supersedes the cut-off exception written above: only the missing `turn.completed` is excused.
+  - **Detector strictness (Sol B1).** Fixed on the provider branch (88462f81). The marker selects the JSON parser, and every unparsable line counts, a killed call's cut-off line included. This supersedes the cut-off-line exception of the first fix (f765c67d; LOG 10-19): only the missing `turn.completed` is excused.
   - **Controls coverage (Sol B8).** Fixed. Live controls run on the registered lanes at their efforts (Luna low, Sol medium) for shell, web search and file change, each showing its own item type. MCP and image are covered by the allowlist only.
   - **Selection count (Sol B10).** A LOG error, now corrected: all 40 briefs were written and namecheck validity requires all 40 verdicts, giving 38 OK, 36 active and 2 spares. No rule changed.
   - **Non-blocking:**
@@ -311,7 +311,7 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - the review packet now includes the pipeline's code;
     - `which codex` must resolve to the native binary; do not upgrade codex before the spend.
   - The full registration review re-runs on the written `registration.json`.
-- **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
+- *Answered by the early reviews (2026-10-19): yes; imputed CI guards adopted, see the dispositions above.* Original question: should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.

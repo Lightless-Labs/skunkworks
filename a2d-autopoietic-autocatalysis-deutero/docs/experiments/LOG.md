@@ -1636,7 +1636,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Fix:**
     - Codex runs in its own process group. A timeout kills the group, then joins the pipes within 5 s (fail closed).
     - The partial transcript passes to the meter through a thread-local slot.
-    - The meter writes it and counts tool events with the same allowlist, minus the missing-`turn.completed` penalty and a cut-off last line.
+    - The meter writes it and counts tool events with the same allowlist, minus the missing-`turn.completed` penalty and a cut-off last line. *(Superseded by 88462f81: a cut-off last line now counts, fail closed.)*
   - **Verification:**
     - A unit test showed that a plain kill leaves a grandchild holding the pipes, which is why the group kill is needed.
     - A live Luna call forced to time out (12 s) left a transcript with 0 tool events in 3 of 3 runs. One was killed before its first event.

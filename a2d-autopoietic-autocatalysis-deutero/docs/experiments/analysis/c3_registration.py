@@ -50,8 +50,10 @@ FIXED_DISCLOSURES = [
     "and user skills loaded; confirmation-3 runs with them off (C2-WEB, C2-MCP, plan §0.13). Symmetric across arms.",
     "Integrity policy: tuple-level voids with worst-case imputation, weaker than confirmation-2's any-event "
     "amendment but conservative for the claim; IntegrityReview above 0.5% tool events per replicate.",
-    "The CI is the controller's whole-family bootstrap on complete tuples; imputation binds the point threshold "
-    "(SUPPORTED: worst case; RULED OUT: best case).",
+    "Voids are imputed on the CI as well as the point (early reviews, plan §0.13): SUPPORTED needs the controller "
+    "rule on complete tuples AND the worst-case imputed point >= +10 pp AND the worst-case imputed whole-family "
+    "bootstrap ci_low > 0 vs both comparators; RULED OUT needs the controller RuledOut AND the best-case imputed "
+    "ci_high < +10 pp. The bootstrap is the controller's (ported; exact on 4 dev comparisons).",
     "Codex version: --json transcripts carry no banner, so the binary is pinned by a sha256 fingerprint bracketing "
     "each replicate; a change voids that replicate's tuples.",
     "Spent sets: confirmation-2 (IntegrityReview, web search in arm B); its scored data stays sealed until this "
@@ -177,13 +179,16 @@ def build(args, suite):
         "decision_rule": {
             "authority": "nano/confirm3.py decide() over runs/c2-confirm3/pooled-summary.json (a2d lift pool of both "
                          "replicate ledgers) and the per-(task, arm, replicate) voids",
-            "SUPPORTED": "X vs D and X vs B both Supported by the controller rule (ci_low > 0, lift >= +10 pp, >= 10 "
-                         "families, discordance) AND worst-case imputed all-pass lift >= +10 pp vs both over every "
-                         "planned (task, replicate)",
-            "RULED OUT": "X vs D RuledOut (ci_high < +10 pp) AND best-case imputed lift vs D < +10 pp",
-            "IntegrityReview": "any hidden-test name hit, or tool events > 0.5% of a replicate's invocations",
-            "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard, "
-                       "an aborted generation, or a missing comparison",
+            "SUPPORTED": "X vs D and X vs B both Supported by the controller rule on complete tuples (ci_low > 0, lift "
+                         ">= +10 pp, >= 10 families, discordance) AND, over every planned (task, replicate) with voids "
+                         "imputed worst-case (void X = fail, void D/B = pass), lift >= +10 pp and whole-family "
+                         "bootstrap ci_low > 0 vs both",
+            "RULED OUT": "X vs D RuledOut on complete tuples (ci_high < +10 pp) AND best-case imputed (void X = pass, "
+                         "void D = fail) bootstrap ci_high < +10 pp",
+            "IntegrityReview": "any hidden-test name hit, tool events > 0.5% of a replicate's invocations, or the "
+                               "controller's own IntegrityReview",
+            "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
+                       "own Invalid, an aborted generation, or a missing comparison",
             "void tuple": "void or unscored submission, any tool event, any invocation without a transcript or "
                           "(legacy text transcripts) from another codex version; all tuples of a replicate whose codex "
                           "fingerprint changed",
