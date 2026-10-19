@@ -58,6 +58,28 @@ const CODEX_ALLOWED_EVENTS: &[&str] = &[
 ];
 /// Separates the `--json` event stream from Codex's stderr in a transcript.
 pub const CODEX_STDERR_MARKER: &str = "\n--- codex stderr ---\n";
+/// How long a killed child's pipes may take to close. A grandchild holding a pipe
+/// must not hang the call; then no transcript is captured (fail closed).
+const KILLED_PIPE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+thread_local! {
+    static FAILED_CALL_TRANSCRIPT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The transcript of this thread's last failed Codex call (timeout, non-zero exit,
+/// no final message), taken once. `invoke` returns only an error for such a call, so
+/// the caller that records it (the lift meter) takes its partial event stream and
+/// stderr here, on the same thread, right after `invoke` (plan
+/// 2026-10-18-confirmation-3 §0.13: failed calls are audited like any other).
+pub fn take_failed_call_transcript() -> Option<String> {
+    FAILED_CALL_TRANSCRIPT.with(|t| t.borrow_mut().take())
+}
+
+/// Store a failed call's transcript for `take_failed_call_transcript`.
+pub fn set_failed_call_transcript(transcript: String) {
+    FAILED_CALL_TRANSCRIPT.with(|t| *t.borrow_mut() = Some(transcript));
+}
 
 impl CliProvider {
     /// Create a Codex CLI provider.
@@ -368,6 +390,48 @@ fn join_pipe_reader(reader: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8>
         .unwrap_or_default()
 }
 
+/// Join a pipe reader only if it finishes within `grace`; otherwise leave it running.
+fn join_pipe_reader_within(
+    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
+    grace: std::time::Duration,
+) -> Option<Vec<u8>> {
+    let handle = reader?;
+    let start = std::time::Instant::now();
+    while !handle.is_finished() {
+        if start.elapsed() > grace {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    handle.join().ok()
+}
+
+/// Kill a child spawned with `process_group(0)` together with everything in its group
+/// (Codex helpers that would otherwise keep the output pipes open), then the child.
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
+/// A killed call's transcript (event stream, marker, stderr), if both pipes closed in time.
+fn killed_call_transcript(
+    stdout: Option<std::thread::JoinHandle<Vec<u8>>>,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+    grace: std::time::Duration,
+) -> Option<String> {
+    let out = join_pipe_reader_within(stdout, grace)?;
+    let err = join_pipe_reader_within(stderr, grace)?;
+    Some(format!(
+        "{}{CODEX_STDERR_MARKER}{}",
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    ))
+}
+
 /// The Codex CLI ends its stderr log with `tokens used` and the total on the
 /// next line (e.g. `7,477`).
 fn codex_usage(stderr: &str) -> TokenUsage {
@@ -396,10 +460,25 @@ pub const CODEX_LAST_MESSAGE_FILE: &str = "last-message.txt";
 /// Legacy text transcripts (codex stderr before 2026-10-18): lines `exec`,
 /// `web search: …` and `mcp: …` (C2-WEB, C2-MCP).
 pub fn codex_tool_calls(transcript: &str) -> usize {
+    codex_tool_events(transcript, false)
+}
+
+/// Tool events in the transcript of a *failed* call (killed at the timeout, non-zero
+/// exit, no final message): the same allowlist, except that a missing `turn.completed`
+/// and a cut-off last line are expected there, not events, because the call ended
+/// before its turn did. An empty event stream has no events.
+pub fn codex_tool_calls_failed(transcript: &str) -> usize {
+    codex_tool_events(transcript, true)
+}
+
+fn codex_tool_events(transcript: &str, failed: bool) -> usize {
     let events = transcript
         .split_once(CODEX_STDERR_MARKER)
         .map(|(events, _)| events)
         .unwrap_or(transcript);
+    if failed && events.trim().is_empty() {
+        return 0;
+    }
     if !events.trim_start().starts_with('{') {
         return transcript
             .lines()
@@ -410,9 +489,11 @@ pub fn codex_tool_calls(transcript: &str) -> usize {
     }
     let mut count = 0;
     let mut completed = false;
-    for line in events.lines().filter(|l| !l.trim().is_empty()) {
+    let lines: Vec<&str> = events.lines().filter(|l| !l.trim().is_empty()).collect();
+    for (i, line) in lines.iter().enumerate() {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            count += 1;
+            let cut_off = failed && i + 1 == lines.len() && !events.ends_with('\n');
+            count += usize::from(!cut_off);
             continue;
         };
         let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -433,7 +514,7 @@ pub fn codex_tool_calls(transcript: &str) -> usize {
             }
         }
     }
-    if !completed {
+    if !completed && !failed {
         count += 1;
     }
     count
@@ -485,6 +566,7 @@ impl Provider for CliProvider {
     }
 
     fn invoke(&self, request: &InvocationRequest) -> Result<InvocationResponse, ProviderError> {
+        let _ = take_failed_call_transcript();
         let args = (self.args_builder)(request);
 
         if std::env::var("A2D_TRACE").is_ok_and(|v| !v.is_empty() && v != "0") {
@@ -540,6 +622,13 @@ impl Provider for CliProvider {
                 let _ = std::fs::remove_dir_all(&sandbox_dir);
             })?;
             command.env("CODEX_HOME", home);
+            // Its own process group, so a timeout kills Codex's helpers too and the
+            // partial transcript can be read (plan 2026-10-18-confirmation-3 §0.13).
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
         }
 
         let mut child = command.spawn().map_err(|e| {
@@ -570,8 +659,18 @@ impl Provider for CliProvider {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if start.elapsed() > timeout {
-                        let _ = child.kill();
+                        if self.command == "codex" {
+                            kill_group(&mut child);
+                        } else {
+                            let _ = child.kill();
+                        }
                         let _ = child.wait();
+                        if self.command == "codex"
+                            && let Some(transcript) =
+                                killed_call_transcript(stdout_reader, stderr_reader, KILLED_PIPE_GRACE)
+                        {
+                            set_failed_call_transcript(transcript);
+                        }
                         let _ = std::fs::remove_dir_all(&sandbox_dir);
                         return Err(ProviderError::InvocationFailed(format!(
                             "{} timed out after {}s",
@@ -603,6 +702,12 @@ impl Provider for CliProvider {
         let _ = std::fs::remove_dir_all(&sandbox_dir);
 
         if !status.success() {
+            if self.command == "codex" {
+                set_failed_call_transcript(format!(
+                    "{}{CODEX_STDERR_MARKER}{stderr}",
+                    String::from_utf8_lossy(&stdout)
+                ));
+            }
             return Err(ProviderError::InvocationFailed(format!(
                 "{} exited with {status}: {stderr}",
                 self.command
@@ -616,6 +721,7 @@ impl Provider for CliProvider {
             match &last_message {
                 Some(message) => (message.clone(), None),
                 None => {
+                    set_failed_call_transcript(format!("{raw}{CODEX_STDERR_MARKER}{stderr}"));
                     return Err(ProviderError::InvocationFailed(
                         "codex produced no final message".to_string(),
                     ));
@@ -684,6 +790,63 @@ mod tests {
     }
 
     #[test]
+    fn failed_call_transcripts_do_not_count_the_cut_off_turn() {
+        // plan 2026-10-18-confirmation-3 §0.13: a killed call never completes its turn.
+        let partial = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.started\"}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\"}}\n";
+        let t = |events: &str| format!("{events}{CODEX_STDERR_MARKER}stderr noise\n");
+        assert_eq!(codex_tool_calls(&t(partial)), 1);
+        assert_eq!(codex_tool_calls_failed(&t(partial)), 0);
+        // The kill can cut the last line mid-object; an empty stream has no events.
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"item.compl"))), 0);
+        assert_eq!(codex_tool_calls_failed(&t("")), 0);
+        // Everything else still counts, as for a completed call.
+        let tool = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n";
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{tool}"))), 1);
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}not json\n{partial}"))), 1);
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"weird\"}}\n"))), 1);
+    }
+
+    #[test]
+    fn a_killed_call_leaves_its_partial_transcript() {
+        use std::os::unix::process::CommandExt;
+        // `sleep` is a child of `sh` holding the pipes, like a Codex helper: only a
+        // group kill closes them.
+        let mut child = Command::new("sh")
+            .args(["-c", "printf '{\"type\":\"thread.started\"}\\n'; echo noise >&2; sleep 30"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = spawn_pipe_reader(child.stdout.take());
+        let err = spawn_pipe_reader(child.stderr.take());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        kill_group(&mut child);
+        let _ = child.wait();
+        let t = killed_call_transcript(out, err, std::time::Duration::from_secs(5)).expect("transcript");
+        assert_eq!(t, format!("{{\"type\":\"thread.started\"}}\n{CODEX_STDERR_MARKER}noise\n"));
+    }
+
+    #[test]
+    fn a_pipe_held_by_a_grandchild_does_not_hang_the_kill() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & printf x; sleep 30"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = spawn_pipe_reader(child.stdout.take());
+        let err = spawn_pipe_reader(child.stderr.take());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = child.kill();
+        let _ = child.wait();
+        let start = std::time::Instant::now();
+        assert!(killed_call_transcript(out, err, std::time::Duration::from_millis(500)).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
     fn codex_legacy_text_transcripts_count_mcp_calls() {
         assert_eq!(codex_tool_calls("codex\nmcp: codex/list_mcp_resources started\nPONG\n"), 1);
     }
@@ -722,6 +885,30 @@ mod tests {
         let transcript = response.transcript.expect("transcript");
         assert_eq!(codex_tool_calls(&transcript), 0, "{transcript}");
         assert!(response.usage.total() > 0);
+    }
+
+    /// Live: a real Luna call killed at a short timeout leaves its partial transcript,
+    /// with no tool events (run alone: `cargo test -p a2d-providers live_codex_timeout -- --ignored`;
+    /// it sets the process-wide timeout variable).
+    #[test]
+    #[ignore]
+    fn live_codex_timeout_leaves_a_partial_transcript() {
+        // SAFETY: run on its own (see above); no other thread reads the environment.
+        unsafe { std::env::set_var("A2D_PROVIDER_TIMEOUT_SECS", "12") };
+        let provider = CliProvider::codex("gpt-6-luna", Some("medium"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "You are a careful writer.".to_string(),
+            prompt: "Write a 4000-word essay on the history of double-entry bookkeeping.".to_string(),
+            max_tokens: 10,
+        };
+        let error = provider.invoke(&request).expect_err("must time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
+        // Usually `thread.started` and more; a cold start can be killed before the first
+        // event (seen 1 in 3 runs on 2026-10-19), which is still a transcript.
+        let transcript = take_failed_call_transcript().expect("partial transcript");
+        assert!(transcript.contains(CODEX_STDERR_MARKER));
+        assert_eq!(codex_tool_calls_failed(&transcript), 0, "{transcript}");
     }
 
     #[test]
