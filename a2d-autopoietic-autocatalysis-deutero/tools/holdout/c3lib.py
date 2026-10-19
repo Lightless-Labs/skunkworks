@@ -1095,6 +1095,26 @@ def _strip_data_heredocs(inner):
     return "\n".join(out)
 
 
+MUTANT_NAMES = tuple(f"m{i}.rs" for i in (1, 2, 3, 4))
+
+
+def mutants_ok(d):
+    """A task's mutants/ holds m1.rs..m4.rs as plain files, and no other source file or
+    directory (which would make the mutant set ambiguous). Other files, such as an author's
+    notes, are ignored: assembly copies only m1..m4 (2026-10-19, plan §0.13)."""
+    d = Path(d)
+    if d.is_symlink() or not d.is_dir():
+        return False
+    entries = list(d.iterdir())
+    names = {p.name for p in entries}
+    if not set(MUTANT_NAMES) <= names:
+        return False
+    for p in entries:
+        if p.is_symlink() or p.is_dir() or (p.name.endswith(".rs") and p.name not in MUTANT_NAMES):
+            return False
+    return all((d / m).is_file() for m in MUTANT_NAMES)
+
+
 def _segments(inner):
     """First word of every shell segment (split on ; & | newlines, $( and backticks)."""
     words = []

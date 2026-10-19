@@ -186,6 +186,22 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.lib(f"from c3lib import suspicious_commands\nprint(suspicious_commands('scan', {str(w)!r}))"),
                          "4")
 
+    def test_mutants_dir_allows_notes_but_not_extra_sources(self):
+        """2026-10-19: 2 of 13 first attempts wrote a notes file next to m1..m4 and were
+        rejected; assembly copies only m1..m4, so a non-source extra is harmless, while an
+        extra .rs file or directory makes the mutant set ambiguous."""
+        out = self.lib(
+            "import tempfile, pathlib\nfrom c3lib import mutants_ok\n"
+            "d = pathlib.Path(tempfile.mkdtemp())\n"
+            "for i in (1, 2, 3, 4): (d / f'm{i}.rs').write_text('fn main() {}')\n"
+            "r = [mutants_ok(d)]\n"
+            "(d / 'NOTES.md').write_text('notes')\nr.append(mutants_ok(d))\n"
+            "(d / 'm5.rs').write_text('x')\nr.append(mutants_ok(d))\n(d / 'm5.rs').unlink()\n"
+            "(d / 'sub').mkdir()\nr.append(mutants_ok(d))\n(d / 'sub').rmdir()\n"
+            "(d / 'm4.rs').unlink()\nr.append(mutants_ok(d))\n"
+            "print(r)")
+        self.assertEqual(out, "[True, True, False, False, False]")
+
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
                        "request_stop()\n"

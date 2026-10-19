@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, StopRequested, drained,  # noqa: E402
-                   emit, gateway, isolation_check, job_codex_home, load_json, prereqs_ok, request_stop, run_codex, safe_copy,
+                   emit, gateway, isolation_check, job_codex_home, load_json, mutants_ok, prereqs_ok, request_stop, run_codex, safe_copy,
                    safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands,
                    tree_hashes)
 
@@ -48,7 +48,7 @@ def complete(fid):
             for f in CONTRACT:
                 if not safe_read_text(d / f, C3).strip():
                     return False
-            if sorted(p.name for p in (d / "mutants").iterdir()) != [f"m{i}.rs" for i in (1, 2, 3, 4)]:
+            if not mutants_ok(d / "mutants"):
                 return False
             for i in (1, 2, 3, 4):
                 safe_read_text(d / "mutants" / f"m{i}.rs", C3)

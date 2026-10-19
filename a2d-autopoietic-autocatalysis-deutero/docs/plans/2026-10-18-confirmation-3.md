@@ -253,6 +253,10 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Cause: codex 0.162 writes its bundled `skills/` into `CODEX_HOME` on every run. The check runs before `run_codex` recreates the job's home, so it saw the previous run's `skills/`. A fixed-vocabulary diagnostic confirmed it: only `skills` was present, and in every workdir that has run.
   - Every re-author and every `c3_fix` repair, which uses the same family workdir, would have been refused the same way.
   - Fix: `c3_author.prepare` and `c3_fix` reset the job's codex home before the isolation check. The fake codex now writes `skills/` like the real one, and the suite passes 21/21.
+- **Mutants-directory check (2026-10-19 ~09:25 UTC).** Two first attempts (c3-f10, c3-f18) exited 0 with 0 events and 0 flagged commands, yet failed verification.
+  - A fixed-vocabulary diagnostic (check names, counts and entry kinds only) showed that every level held m1–m4 plus one extra non-source file, such as an author's notes. The exact-listing check rejected that, although SPEC.md never says "nothing else" and assembly copies only m1–m4.
+  - Fix (`c3lib.mutants_ok`, used by the verifier and by assembly): m1.rs–m4.rs must be plain files; any other `.rs` file, any directory or any symlink still fails; other files are ignored. The authoring instructions are unchanged.
+  - Both outputs now verify. Their recorded first attempts stay failed, and their second attempts rerun.
 - **Injected-context check (step 3, 2026-10-19, `codex debug prompt-input`, local render, no model call).**
   - With the provider's isolation (fresh `CODEX_HOME` holding only auth, empty cwd, features disabled, web search off), the injected developer context falls from 18.4k to 12.3k chars. The plugins and the user's skills are gone.
   - **Residue that cannot be disabled in 0.162** (5 variants tried: more features off, `skip_host_skill_discovery`, `multi_agent_v2`/`collaboration_modes` off, `skills.enabled=false`):

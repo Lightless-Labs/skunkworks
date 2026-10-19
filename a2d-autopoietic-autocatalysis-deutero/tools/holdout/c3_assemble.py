@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, hashes_digest,  # noqa: E402
+from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, hashes_digest, mutants_ok,  # noqa: E402
                    load_json, replace_family, safe_copy, safe_read_text, save_json, tree_hashes)
 
 MAX_ATTEMPTS = 2
@@ -37,7 +37,7 @@ def copy_task(fid, level, staging):
         tj = json.loads(safe_read_text(src / "task.json", C3))
         if tj.get("id") != tid or tj.get("family") != fid or not TASK_RE.match(tid):
             return False
-        if sorted(p.name for p in (src / "mutants").iterdir()) != list(MUTANTS):
+        if not mutants_ok(src / "mutants"):
             return False
         for f in CONTRACT:
             safe_copy(src / f, staging / tid / f, C3, staging)
