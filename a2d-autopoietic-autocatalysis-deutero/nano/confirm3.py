@@ -25,7 +25,8 @@ TOOL_RATE_MAX = 0.005
 VOID_SHARE_MAX = 0.05
 X = "X:frozen"
 COMPARATORS = ("D", "B")
-BANNER = re.compile(r"^OpenAI Codex v(\S+)")
+BANNER = re.compile(r"^OpenAI Codex v(\S+)")          # legacy text transcripts only
+CODEX_STDERR_MARKER = "\n--- codex stderr ---\n"     # a2d-providers: --json events, marker, stderr
 
 
 def records(out):
@@ -41,6 +42,9 @@ def transcript_ok(out, prompt_path, pinned):
     if not t.is_file():
         return False
     with open(t, errors="replace") as f:
+        if CODEX_STDERR_MARKER in f.read():
+            return True             # --json transcript: no banner; the version is pinned by bracketing the replicate
+        f.seek(0)
         # Log noise can precede the banner (as in confirmation-2's web audit).
         for line in (next(f, "") for _ in range(20)):
             m = BANNER.match(line)

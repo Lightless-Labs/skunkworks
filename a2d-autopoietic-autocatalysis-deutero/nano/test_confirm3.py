@@ -95,6 +95,19 @@ class Tuples(unittest.TestCase):
         self.assertEqual(len(t), 60)
         self.assertEqual(stats, {"invocations": 120, "tool_calls": 1})
 
+    def test_json_transcripts_carry_no_banner(self):
+        # codex 0.162 --json prints no version banner (probe 2026-10-19); the version is pinned by
+        # bracketing each replicate, so a --json transcript only has to exist.
+        f = Fixture(pathlib.Path(self.tmp.name) / "r1")
+        for arm in ARMS:
+            for t in TASKS:
+                f.tuple(arm, t)
+        out = f.write()
+        for tr in out.rglob("*.transcript.txt"):
+            tr.write_text('{"type":"thread.started"}\n{"type":"turn.completed"}\n\n--- codex stderr ---\nnoise\n')
+        t, _ = c3.replicate_tuples(out, 1, "0.162.0")
+        self.assertFalse(any(v["void"] for v in t.values()))
+
     def test_missing_score_is_void(self):
         f = Fixture(pathlib.Path(self.tmp.name) / "r1")
         for arm in ARMS:
