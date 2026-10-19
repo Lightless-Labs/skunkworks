@@ -1626,3 +1626,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Yesterday's 552 s / 179 s were the host stall, not the profile. `fseventsd` is still hot (about 80% CPU), but file creation has recovered.
   - The confirmation-3 suite passes 21/21 (987 s), including `test_check_sh_compiles_under_sandbox` (24 s).
 - **Confirmation-3 selection started** (06:45 UTC, `detached.sh c3_select.py`). The prerequisites hold: replicate 2's web audit is at HEAD and the pipeline is clean. Authoring follows in idle queue windows.
+- **Confirmation-3 selection done** (07:04 UTC 10-19). The inventory saw 868 holdout tasks and 167 repo tasks (120 families). Sol proposed 38 families, and the namecheck found 2 conflicts, leaving **36 selected**. 0 non-allowlisted events and 0 skipped commands.
+- **Authoring started** (07:05 UTC, `detached.sh c3_author.py --parallel 2`). This **deviates from the HANDOFF's "idle queue windows"**, which was my own caution, not a plan rule. The plan's rule (§7: drain before any registered window) covers confirmation generations, and none runs before 10-24.
+  - Authoring uses Sol only, and the host compile is healthy again.
+  - Waiting for idle windows would push the audit, which can only run after the provider merge (≥ 10-22), past the registration date.
+  - Parallelism is 2, not 3, as a hedge on shared-account load. The queue's provider timeout rate is watched: dev baseline 0.47% of calls.
