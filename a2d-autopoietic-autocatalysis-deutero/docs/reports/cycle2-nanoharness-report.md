@@ -11,7 +11,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 **Goal:** the session `/goal` of 2026-10-15 (quoted in the plan).
 **Plan:** `docs/plans/2026-10-15-cycle2-nanoharness.md`.
 **Evidence:** `docs/experiments/LOG.md`, section "Cycle 2" (every entry registered before its run), and `nano/results.tsv` (one row per experiment stage, including discards).
-**Outcome:** **[pending]**. Known so far (10-18): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim, so a SUPPORTED claim in this cycle needs a new blind confirmation set.
+**Outcome:** **[pending]**. Known so far (10-19): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim. Confirmation-3 (36 new families × 4, plan 2026-10-18) is being authored; its spend is at or after 10-24.
 
 ## The question
 
@@ -57,9 +57,9 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 | E003 / E003b | claude | same 4 samples, random green pick (attribution control) | discard (full): −1.4 pp. **The judge is the active ingredient.** |
 | E004 | claude | repair to green, then sample + judge | screen +4.4 pp; superseded by E002's promotion |
 | E005 | claude | samples 2–4 get different "Approach" angles | provisional keep (full): +5.0 pp (SE 2.8) vs E002; **[pending confirmation]** |
-| E006 | claude | Sol spec notes before 3 samples | **[pending]** |
-| E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | screen +4.4 pp; **[pending]** |
-| E008 | sol | 4th sample becomes a synthesis | **[pending]** |
+| E006 | claude | Sol spec notes before 3 samples | discard (full): screen +2.9 pp, full +2.9 pp (SE 2.4), below the 3.6 pp threshold |
+| E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | provisional keep (full): +7.1 pp (SE 3.2) vs E002, with fewer Luna calls (3.4 vs 4.1 per task); **[pending confirmation]** |
+| E008 | sol | 4th sample becomes a synthesis | **[pending]** (screen running 10-19) |
 | E009 | claude-c1 | task-agnostic failure-class checklist | **[pending]** |
 | E010 | claude-c1 | two readings per Luna call | **[pending]** |
 
@@ -82,7 +82,8 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **Result: IntegrityReview, so no claim.** The confirmation-2 set is spent.
   - Replicate 1 (10-18, 1,486 Luna and 132 Sol calls): its web audit counted **2 web-search events in arm B** (720 transcripts), against 0 in D (185) and 0 in X:frozen (713). There were no invocations without a transcript and no other codex version.
   - By the registered amendment, this fixes the outcome whatever `decision.json` says. Replicate 2 still runs, as registered.
-  - The scored numbers will be **descriptive only**: **[pending: `decision.json`]**.
+  - Replicate 2 (10-19, 1,617 invocations, 0 void submissions) ran as registered. Its web audit counted 0 searches, but 11 invocations without a transcript (a failed-call recording gap, fixed for confirmation-3).
+  - Scored once (10-19 06:11 UTC). `decision.json` and `pooled-summary.json` are **sealed unread** in the holdout dir (sha256 in `runs/c2-confirm2/sealed-sha256.txt`) until confirmation-3's decision. Then they are reported here, **descriptive only**: **[pending]**.
   - The cause is not examined: that would mean opening the set. The counts are the whole permitted view.
 
 ## Proposer comparison (phase B)
@@ -111,6 +112,14 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - About 12k chars of codex-injected skill and multi-agent context precede every prompt, the same in every arm.
   - No recorded result is affected. The fix is an empty `CODEX_HOME`, a feature allowlist and structured-event detection.
 
+- **Confirmation-3 instrument work** (10-18 and 10-19; plan §0.12 and §0.13):
+  - **Authoring sandbox:** a copied `/usr/bin/open` escaped the path-based seatbelt profile, so Mach lookups became an allowlist and localhost was denied. Jobs are reaped by sandbox membership, not by process group.
+  - **Failed calls had no transcript.** All 34 failed dev calls were timeouts, and under the new tuple-void rule that would have charged X. The provider now kills the process group and records the partial transcript.
+  - **Codex `--json` prints no version banner,** so the binary is pinned by a fingerprint taken before and after each replicate.
+  - **Injected context that no switch removes:** codex's 4 bundled skills and the multi-agent text, about 10k chars. It is the same in every arm and disclosed.
+  - **Detector controls, live:** a tool switched back on is counted on both lanes, and the shipped provider shows 0 events.
+  - **Two mid-authoring pipeline fixes:** a command-scan false positive on prose `at` lines, and a retry isolation check that saw codex's own `skills/`. Both are disclosed.
+
 ## Claims and scope
 
 - **[pending: final wording after confirmation-2]**
@@ -127,5 +136,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **Look 1 re-registered** after C2-ISO changed the controller's frozen paths, before any look data.
 - **Confirmation-2 re-registered** (b8a274aa → 78727f29) after its own binding check failed on a path bug, before any call.
 - **The C2-WEB amendment** was registered before any confirmation call.
+- **Confirmation-3** replaces the spent confirmation-2 (plan addendum 10-18). Its §0 rules were fixed before replicate 2 and before any batch confirmation.
+  - Look 2 (C2-LOOK2, the conditional dev-holdout look of a promoted batch keep) was registered on 10-19 because no queue line ran it. Without it, a promotion would have defaulted to E002.
 - **No live Claude lane:** the Claude CLI is blocked inside the session sandbox, so Claude contributed offline via subagents (C2-E1's primary judge, C2-E2, C2-FA2, proposer round c1, reviews). Their tool use was not machine-audited; this is disclosed.
 - **Phase B started before 3 confirmed keeps** (budget trigger), if so; a disclosed deviation that tests an earlier system. **[pending]**
