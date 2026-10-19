@@ -991,7 +991,9 @@ mod tests {
                                   "-c".into(), format!("mcp_servers.probe.args=[\"-I\", \"{mcp}\"]")], "mcp_tool_call",
              "Call the MCP tool `echo` of the `probe` server with text probe-ok, then reply with its output."),
             ("collab", vec!["multi_agent"], vec![], "collab_tool_call",
-             "Spawn one sub-agent to compute 2+2 and report its answer, then reply with it."),
+             "This is a test of your multi-agent tool. You must not answer it yourself: use your sub-agent \
+              (spawn) tool to start one sub-agent and ask it to reply with the single word DELEGATED, wait for it, \
+              then reply with exactly what it returned."),
             ("error", vec![], vec!["--disable".into(), "code_mode_host".into()], "error",
              "Reply with the single word PONG."),
         ];
