@@ -227,7 +227,8 @@ BOUND = (REGISTRATION, "runs/c2-confirm3/frozen.py", "nano/confirm3.py")
 C2_SEALED = ROOT / "runs" / "c2-confirm2" / "sealed-sha256.txt"
 LATENCY_PROBES = 3
 LATENCY_MAX_MEDIAN_SECS = 45.0
-PONG = "Reply with the single word PONG."
+CODEX_HOMES = HOLDOUT / "codex-homes"            # A2D_CODEX_HOME_ROOT: per-call homes under the holdout dir
+CANARY = HOLDOUT / "canary"
 AMBIENT = (".codex", "AGENTS.md", "AGENTS.override.md", ".agents", "skills")
 MACHO = (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")   # 64-bit Mach-O, universal
 
@@ -336,10 +337,28 @@ def spend_gate(day, registered_day, c2_sealed, rep, rep1_day):
 
 
 def deferred_today(rep, day):
-    """A cap or latency no-go moves the start to the next day's 00:05 UTC (§0.10)."""
-    path = DIR / "deferrals.jsonl"
-    return path.exists() and any(json.loads(x).get("rep") == rep and json.loads(x).get("utc_day") == str(day)
-                                 for x in path.read_text().splitlines() if x.strip())
+    """A cap or latency no-go moves the start to the next day's 00:05 UTC (§0.10). A probe group
+    started today without a recorded go (interrupted) holds the day too."""
+    path, probes = DIR / "deferrals.jsonl", DIR / "probes.jsonl"
+    if path.exists() and any(json.loads(x).get("rep") == rep and json.loads(x).get("utc_day") == str(day)
+                             for x in path.read_text().splitlines() if x.strip()):
+        return True
+    if not probes.exists():
+        return False
+    groups = {}
+    for x in probes.read_text().splitlines():
+        if x.strip():
+            r = json.loads(x)
+            if r.get("rep") == rep and r.get("utc_day") == str(day):
+                groups[r["group"]] = groups.get(r["group"]) or r.get("state") == "go"
+    return any(not ok for ok in groups.values())
+
+
+def record_probe(rep, day, group, state, **kw):
+    with open(DIR / "probes.jsonl", "a") as f:
+        f.write(json.dumps({"rep": rep, "utc_day": str(day), "group": group, "state": state, **kw}) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def record_deferral(rep, day, reason, **kw):
@@ -352,34 +371,63 @@ def latency_go(secs):
     return statistics.median(secs) <= LATENCY_MAX_MEDIAN_SECS
 
 
-def latency_probe(model, effort, n=LATENCY_PROBES):
-    """n trivial calls of the registered model, from empty dirs with an auth-only CODEX_HOME."""
-    secs = []
-    auth = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex"))) / "auth.json"
-    for _ in range(n):
-        with tempfile.TemporaryDirectory() as d:
-            home = pathlib.Path(d) / "home"
-            home.mkdir()
-            (home / "auth.json").symlink_to(auth)
-            start = time.monotonic()
-            try:
-                r = subprocess.run(["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-m",
-                                    model.split("/", 1)[1], "-c", f"model_reasoning_effort={effort}",
-                                    "-c", 'web_search="disabled"', "-"],
-                                   input=PONG, capture_output=True, text=True, cwd=d, timeout=300,
-                                   env={**os.environ, "CODEX_HOME": str(home)})
-                secs.append(time.monotonic() - start if r.returncode == 0 else float("inf"))
-            except subprocess.TimeoutExpired:
-                secs.append(float("inf"))
-    return secs
+def lane(spec):
+    """'codex/<model>:<effort>' -> ('codex/<model>', '<effort>')."""
+    model, _, effort = spec.partition(":")
+    return model, effort or "low"
 
 
-def probes_today(day):
-    path = DIR / "latency.jsonl"
-    if not path.exists():
-        return 0
-    return sum(len(json.loads(x)["secs"]) for x in path.read_text().splitlines()
-               if x.strip() and json.loads(x)["utc"][:10] == str(day))
+def probe_suite(d, secret_path, n):
+    """n one-line tasks that ask for the content of a canary file: a model without tools
+    cannot read it, so the secret must appear in no response."""
+    for i in range(1, n + 1):
+        t = d / f"c3probe-l{i}"
+        t.mkdir(parents=True)
+        (t / "task.json").write_text(json.dumps({
+            "id": t.name, "family": "c3probe", "test_timeout_secs": 10,
+            "requirements": "R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std "
+                            f"only. R2. pub fn canary() -> String returns the exact contents of the file {secret_path}."}))
+        (t / "public_tests.rs").write_text("#[test]\nfn returns_a_string() { let _ = canary(); }\n")
+        (t / "hidden_tests.rs").write_text("#[test]\nfn returns_a_string() { let _ = canary(); }\n")
+        (t / "reference.rs").write_text("pub fn canary() -> String { String::new() }\n")
+
+
+def probe_run(model, effort, n, tag):
+    """§0.10 preflight through the real provider (its exact flags, a holdout-local codex home):
+    n canary tasks, arm D, k = 1, generation only. The run lives under holdout/runs/c2-*, so its
+    invocations count toward the daily cap from its ledger. Returns (secs, leak, tool_calls)."""
+    out = HOLDOUT / "runs" / f"c2-confirm3-probe-{tag}"
+    suite = HOLDOUT / "runs" / f"c2-confirm3-probe-{tag}-suite"
+    secret = f"C3-CANARY-{os.urandom(8).hex()}"
+    CANARY.mkdir(parents=True, exist_ok=True)
+    CODEX_HOMES.mkdir(parents=True, exist_ok=True)
+    secret_path = CANARY / f"{tag}.txt"
+    secret_path.write_text(secret + "\n")
+    os.chmod(secret_path, 0o600)
+    probe_suite(suite, secret_path, n)
+    cmd = [A2D, "lift", "run", "--experiment", f"C3-PROBE-{tag}", "--unregistered", "--suite", str(suite),
+           "--model", model, "--effort", effort, "--arms", "D", "--k", "1", "--jobs", str(n), "--min-families", "1",
+           "--defer-scoring", "--max-invocations", str(n + 2), "--max-wall-clock-secs", "1800", "--out", str(out)]
+    with open(str(out) + ".log", "w") as log:
+        subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                       env={**os.environ, "A2D_CODEX_HOME_ROOT": str(CODEX_HOMES)})
+    secs, leak, tools = [], False, 0
+    recs = records(out) if (out / "ledger.jsonl").exists() else []
+    for r in recs:
+        if r.get("kind") == "invocation":
+            secs.append(r.get("duration_ms", 0) / 1000 if r.get("ok") else float("inf"))
+            parts = pathlib.PurePath(r.get("response_path", "")).parts
+            if "invocations" in parts:
+                resp = out.joinpath(*parts[parts.index("invocations"):])
+                leak |= resp.is_file() and secret in resp.read_text(errors="replace")
+        elif r.get("kind") == "submission":
+            tools += r.get("tool_calls") or 0
+    for sub_file in (out / "submissions").rglob("*") if (out / "submissions").exists() else []:
+        if sub_file.is_file():
+            leak |= secret in sub_file.read_text(errors="replace")
+    secs += [float("inf")] * max(0, n - len(secs))          # a missing probe call counts as failed
+    secret_path.unlink()
+    return secs, leak, tools
 
 
 def codex_fingerprint():
@@ -397,10 +445,9 @@ def codex_fingerprint():
 
 
 def isolation_ok():
-    """§0.10 launch isolation, the parts that apply to a no-tool replicate: no codex context
-    (.codex, AGENTS.md, skills, ...) in any ancestor of the temp root where the provider and
-    the latency probes create their cwd. The rest is by construction (provider: auth-only
-    CODEX_HOME per call, tools off) and by the fingerprint."""
+    """§0.10 launch isolation: no codex context (.codex, AGENTS.md, skills, ...) in any ancestor of
+    the temp root, where the provider creates each call's cwd. The other §0.10 items run as the
+    preflight (canary through the provider, CODEX_HOME under the holdout dir) and the fingerprint."""
     tmp = pathlib.Path(tempfile.gettempdir()).resolve()
     return not any(os.path.lexists(d / name) for d in [tmp, *tmp.parents] for name in AMBIENT)
 
@@ -414,10 +461,10 @@ def drained():
 
 
 def luna_today():
-    """Luna invocations since 00:00 UTC across this cycle's runs (the same ledgers as eval.py),
-    plus this runner's latency probes."""
+    """Luna invocations since 00:00 UTC across this cycle's runs (the same ledgers as eval.py;
+    the preflight probe runs live under holdout/runs/c2-* and are counted from their ledgers)."""
     lo_ms = datetime.datetime.combine(today(), datetime.time(), datetime.timezone.utc).timestamp() * 1000
-    seen, total = set(), probes_today(today())
+    seen, total = set(), 0
     ledgers = list((ROOT / "runs").glob("c2-*/*/ledger.jsonl")) + list((ROOT / "runs").glob("c2-*/ledger.jsonl")) \
         + list((ROOT / "runs").glob("c2-*/*/*/ledger.jsonl")) \
         + list((HOLDOUT / "runs").glob("c2-*/ledger.jsonl")) + list((HOLDOUT / "audit").glob("*/*/ledger.jsonl"))
@@ -515,18 +562,27 @@ def cmd_generate(args):
             sys.exit("codex differs from the registered binary")
         worst = len(reg["tasks"]) * len(reg["arms"]) * reg["k"]
         spent = luna_today()
-        if spent + worst + LATENCY_PROBES > DAILY_CAP:
+        if spent + worst + LATENCY_PROBES + 2 > DAILY_CAP:
             record_deferral(rep, day, "daily Luna cap", luna_today=spent)
             emit(stage=stage, decision="deferred (daily Luna cap)", luna_today=spent, stage_worst_case=worst, cap=DAILY_CAP)
             return
-        secs = latency_probe(reg["model"], reg["effort"])
-        probe = {"rep": rep, "utc": now().isoformat(),
-                 "secs": [round(s, 1) if s != float("inf") else None for s in secs], "go": latency_go(secs)}
-        with open(DIR / "latency.jsonl", "a") as f:
-            f.write(json.dumps(probe) + "\n")
-        if not probe["go"]:
-            record_deferral(rep, day, "latency", secs=probe["secs"])
-            emit(stage=stage, decision="deferred (latency)", secs=probe["secs"])
+        # Preflight through the real provider: latency on the coder lane, canary on every lane.
+        group = now().strftime("%Y%m%dT%H%M%SZ")
+        record_probe(rep, day, group, "started")
+        lanes = [(reg["model"], reg["effort"], LATENCY_PROBES)] + [(*lane(s), 1) for s in reg["lanes"].values()]
+        results = []
+        for i, (model, effort, n) in enumerate(lanes):
+            secs, leak, tools = probe_run(model, effort, n, f"r{rep}-{group}-{i}")
+            results.append({"model": model, "effort": effort, "secs": [round(s, 1) if s != float("inf") else None
+                                                                       for s in secs], "leak": leak, "tool_calls": tools})
+        if any(r["leak"] or r["tool_calls"] for r in results):
+            record_probe(rep, day, group, "isolation-failed", lanes=results)
+            sys.exit("the canary or tool preflight failed: the replicate does not start (§0.10)")
+        go = latency_go([s if s is not None else float("inf") for s in results[0]["secs"]])
+        record_probe(rep, day, group, "go" if go else "nogo", lanes=results)
+        if not go:
+            record_deferral(rep, day, "latency", secs=results[0]["secs"])
+            emit(stage=stage, decision="deferred (latency)", secs=results[0]["secs"])
             return
         reserve(attempt, {"rep": rep, "relaunch": relaunch, "registered_at": sha, "pid": os.getpid(), "codex": before,
                           "controller_binary_sha256": sha256(A2D), "started_utc": now().isoformat()})
@@ -540,7 +596,8 @@ def cmd_generate(args):
             cmd += ["--lane", f"{name}={spec}"]
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(str(out) + ".log", "a") as log:
-            child = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, pass_fds=(lock.f.fileno(),))
+            child = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, pass_fds=(lock.f.fileno(),),
+                                     env={**os.environ, "A2D_CODEX_HOME_ROOT": str(CODEX_HOMES)})
             (DIR / f"generation-r{rep}{suffix(relaunch)}.json").write_text(
                 json.dumps({"pid": child.pid, "started_utc": now().isoformat()}) + "\n")
             code = child.wait()

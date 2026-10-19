@@ -238,7 +238,8 @@ class Generate(unittest.TestCase):
                    "commit_day": lambda sha: datetime.date(2026, 10, 23), "now": lambda: self.DAY,
                    "today": lambda: self.DAY.date(), "drained": lambda: True, "isolation_ok": lambda: True,
                    "codex_fingerprint": lambda: dict(fp), "luna_today": lambda: 0,
-                   "latency_probe": lambda model, effort: [5.0, 6.0, 7.0], "DIR": self.dir, "A2D": str(root / "a2d"),
+                   "probe_run": lambda model, effort, n, tag: ([5.0] * n, False, 0), "DIR": self.dir,
+                   "A2D": str(root / "a2d"),
                    "out_dir": lambda rep, relaunch=False: self.runs / f"r{rep}{'-relaunch1' if relaunch else ''}",
                    "C2_SEALED": root / "sealed.txt"}
         (root / "sealed.txt").write_text("x\n")
@@ -293,7 +294,7 @@ class Generate(unittest.TestCase):
                             ("now", lambda: datetime.datetime(2026, 10, 24, 0, 2, tzinfo=datetime.timezone.utc))):
             with mock.patch.object(c3, name, value):
                 self.assertTrue(self.generate()[-1]["decision"].startswith("deferred"), name)
-        with mock.patch.object(c3, "latency_probe", lambda model, effort: [90.0, 90.0, 5.0]):
+        with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag: ([90.0, 90.0, 5.0][:n], False, 0)):
             self.assertEqual(self.generate()[-1]["decision"], "deferred (latency)")
         # The same day stays deferred even once latency is fine (next 00:05 UTC).
         self.assertTrue(self.generate()[-1]["decision"].startswith("deferred (a no-go today"))
@@ -302,6 +303,21 @@ class Generate(unittest.TestCase):
         nxt = datetime.datetime(2026, 10, 25, 1, 0, tzinfo=datetime.timezone.utc)
         with mock.patch.object(c3, "now", lambda: nxt), mock.patch.object(c3, "today", lambda: nxt.date()):
             self.assertEqual(self.generate()[-1]["decision"], "generated (scoring deferred)")
+
+    def test_canary_leak_or_tool_event_stops_the_replicate(self):
+        for result in (([5.0] * 3, True, 0), ([5.0] * 3, False, 1)):
+            with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag, r=result: (r[0][:n], r[1], r[2])), \
+                    self.assertRaises(SystemExit):
+                self.generate()
+            # The failed preflight holds the day (a retry the same day is deferred, not run).
+            self.assertTrue(self.generate()[-1]["decision"].startswith("deferred (a no-go today"))
+            (self.dir / "probes.jsonl").unlink()
+        self.assertFalse((self.dir / "attempt-r1.json").exists())
+        self.assertEqual(self.calls, [])
+
+    def test_an_interrupted_probe_group_holds_the_day(self):
+        c3.record_probe(1, self.DAY.date(), "g1", "started")          # crashed before its go
+        self.assertTrue(self.generate()[-1]["decision"].startswith("deferred (a no-go today"))
 
     def test_cap_deferral_holds_for_the_day(self):
         with mock.patch.object(c3, "luna_today", lambda: 2800):
