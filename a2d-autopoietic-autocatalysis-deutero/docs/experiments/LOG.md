@@ -1733,3 +1733,5 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Detector controls recorded, complete** (14:59 UTC, branch 3ca9102b, `runs/c2-confirm3/controls.json`): on Luna low and Sol medium, shell, web search, file change, MCP, sub-agent and error each detected on the first attempt, with the negative control at 0.
   - The 14:48 run had been incomplete: Sol medium answered "spawn a sub-agent to compute 2+2" directly 3 times. The prompt now requires delegation (0f6d140f).
 - **Audit** (run 1, head 2830f5ba, codex fingerprint recorded): the preflight passed, and the 144-task Sol solve is running.
+- **Audit round 1** (14:47–15:31 UTC, Sol medium, k = 3, run 1 at 2830f5ba): of 144 tasks, **139 solved** by the independent solve, 1 failed (c3-f16-l1) and 4 void (no information; each gets its one re-audit).
+- **Adjudication** (15:32, one Sol high job, blind): c3-f16-l1's failing test was judged UNDERDETERMINED and **repaired, requirements only** (hidden tests untouched); none excluded. Re-assembly gave 144 tasks; similarity clean (max 0.04, 0 conflicts). Re-validation is running, then audit round 2 (the repaired task plus the 4 voids).
