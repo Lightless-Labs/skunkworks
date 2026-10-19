@@ -1617,3 +1617,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **L10 web audit:** 0 web-search events in every arm. However, 11 invocations have no transcript (B 2, D 1, X-frozen 8; replicate 1 had 0), so they are unaudited. Descriptive only: the set is already IntegrityReview from replicate 1.
   - The attempt record and the audit are committed (9b5ca3c9), and so are the content-free manifests of both replicates (c6c61814).
   - `confirm-score` runs detached and sealed from 05:58 UTC. Its stdout goes to the holdout runs dir. A wrapper moves `decision.json` and `pooled-summary.json` unread to `c2-confirm2-decision/` and keeps only their sha256 and the exit code.
+- **Confirmation-2 scored and sealed** (06:11 UTC 10-19, rc 0, 14 min): `decision.json` and `pooled-summary.json` are unread in the holdout dir. Their sha256s are pinned in `runs/c2-confirm2/sealed-sha256.txt` (7e4735fd), and they are read only after confirmation-3's decision.
+  - `confirm-score` now refuses once that file exists (70b5c85c). Without the guard, a re-run would re-pool and write the decision back into the repo.
+  - **The freeze window is over** (`crates/`, Cargo files, eval.py's CONFIRM2 section). `c2-web-provider` is still merged only after the batch's confirmation step (≥ 10-22), so the provider doesn't change between an experiment's stages.
