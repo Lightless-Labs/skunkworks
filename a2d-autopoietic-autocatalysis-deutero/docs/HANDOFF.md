@@ -37,9 +37,11 @@
          - Set STOP (`c3_author.py --stop`) only after adjudication; the drain check before each replicate needs it.
          - **Step 5 waits for the provider merge.** The merge comes after L37 (the batch's confirmation step, 10-22) **and** after look 2 is done or T has passed.
          - At the merge:
-           - merge `c2-web-provider` (bc6922f7; it equals `PROVIDER_COMMIT`) and build;
-           - run `c3_controls.py --lanes <coder + candidate lanes>` and commit `runs/c2-confirm3/controls.json`;
-           - then `detached.sh c3_audit.py`, `c3_adjudicate.py`, and `c3_audit.py` again for round 2.
+           - merge the `c2-web-provider` head (≥ 3ca9102b: the provider, main's tooling and the committed `controls.json`) and build. Do not re-pin `PROVIDER_COMMIT` (bc6922f7).
+           - Re-run `c3_controls.py` only if the candidate's lanes differ from Luna low and Sol medium.
+         - **Audit (started early, 14:47 10-19) runs from the branch worktree** (`scratchpad/wt-web`; plan §0.13):
+           - when it exits, run `c3_adjudicate.py` from the worktree, then `c3_audit.py` again for round 2, then `c3_author.py --stop`;
+           - output: `~/.a2d-c3-drivers/*c3_audit.out`; wait on `_records/driver.pid` with `kill -0`, never `pgrep -f`.
          - **Registration:** after T, `c3_registration.py` (dry-run first; it lists any unmet prerequisite), then a full review (Sol plus a fresh Claude) on the written `registration.json`, then commit. Spend ≥ 10-24 via `nano/confirm3.py generate` (queue lines).
          - **Early reviews:** 3 rounds; every blocker fixed (plan §0.13). Round 3: the fresh Claude said Yes (with fixes), Sol said No (7, all fixed). The next review is the full one on the registration.
        - **State (10-18 14:40 UTC):**
