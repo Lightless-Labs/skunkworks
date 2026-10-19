@@ -479,35 +479,37 @@ pub fn codex_tool_calls(transcript: &str) -> usize {
 
 /// Tool events in the transcript of a *failed* call (killed at the timeout, non-zero
 /// exit, no final message): the same allowlist, except that a missing `turn.completed`
-/// and a cut-off last line are expected there, not events, because the call ended
-/// before its turn did. An empty event stream has no events.
+/// is expected there, not an event, because the call ended before its turn did. An
+/// empty event stream has no events; a cut-off last line still counts (fail closed).
 pub fn codex_tool_calls_failed(transcript: &str) -> usize {
     codex_tool_events(transcript, true)
 }
 
 fn codex_tool_events(transcript: &str, failed: bool) -> usize {
-    let events = transcript
+    // The marker, not the first character, selects the --json parser: noise before the
+    // first event must not switch to the lenient legacy count (Sol review, 2026-10-19).
+    let json = transcript
         .split_once(CODEX_STDERR_MARKER)
         .map(|(events, _)| events)
-        .unwrap_or(transcript);
-    if failed && events.trim().is_empty() {
+        .or_else(|| transcript.trim_start().starts_with('{').then_some(transcript));
+    if failed && json.is_some_and(|events| events.trim().is_empty()) {
         return 0;
     }
-    if !events.trim_start().starts_with('{') {
+    let Some(events) = json else {
         return transcript
             .lines()
             .filter(|line| {
                 line.trim() == "exec" || line.starts_with("web search:") || line.starts_with("mcp: ")
             })
             .count();
-    }
+    };
     let mut count = 0;
     let mut completed = false;
-    let lines: Vec<&str> = events.lines().filter(|l| !l.trim().is_empty()).collect();
-    for (i, line) in lines.iter().enumerate() {
+    for line in events.lines().filter(|l| !l.trim().is_empty()) {
+        // Every unparsable line counts, a cut-off last line of a killed call included:
+        // it could be a tool event (fail closed).
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            let cut_off = failed && i + 1 == lines.len() && !events.ends_with('\n');
-            count += usize::from(!cut_off);
+            count += 1;
             continue;
         };
         let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -811,9 +813,13 @@ mod tests {
         let t = |events: &str| format!("{events}{CODEX_STDERR_MARKER}stderr noise\n");
         assert_eq!(codex_tool_calls(&t(partial)), 1);
         assert_eq!(codex_tool_calls_failed(&t(partial)), 0);
-        // The kill can cut the last line mid-object; an empty stream has no events.
-        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"item.compl"))), 0);
+        // A line cut off by the kill could have been a tool event: it counts. An empty
+        // stream has no events.
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"item.compl"))), 1);
         assert_eq!(codex_tool_calls_failed(&t("")), 0);
+        // Noise before the first event cannot switch to the lenient legacy count.
+        let tool = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n";
+        assert_eq!(codex_tool_calls(&t(&format!("warning: noise\n{partial}{tool}"))), 3);
         // Everything else still counts, as for a completed call.
         let tool = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n";
         assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{tool}"))), 1);
@@ -888,8 +894,8 @@ mod tests {
     #[test]
     #[ignore]
     fn live_codex_call_returns_text_with_zero_tool_events() {
-        for model in ["gpt-6-luna", "gpt-6.1-sol"] {
-            let provider = CliProvider::codex(model, Some("low"));
+        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "medium")] {
+            let provider = CliProvider::codex(model, Some(effort));
             let request = InvocationRequest {
                 enzyme_id: a2d_core::types::EnzymeId::from("coder"),
                 system: "Reply with exactly one word.".to_string(),
@@ -928,19 +934,26 @@ mod tests {
         assert_eq!(codex_tool_calls_failed(&transcript), 0, "{transcript}");
     }
 
-    /// Live positive controls (confirmation-3 §0.4, step 3): with one tool switched back
-    /// on, a call asked to use it must show up in `codex_tool_calls`, on both lanes (Luna
-    /// coder, Sol judge). The negative control is `live_codex_call_returns_text_with_zero_tool_events`.
+    /// Live positive controls (confirmation-3 §0.4, step 3; Sol review 2026-10-19): on each
+    /// registered lane at its registered effort (Luna low = coder, Sol medium = E002's judge),
+    /// with one tool switched back on, a call asked to use it must SUCCEED and its transcript
+    /// must contain that tool's own item type, counted by `codex_tool_calls`. The negative
+    /// control is `live_codex_call_returns_text_with_zero_tool_events`. Kinds without a live
+    /// control here (MCP, image) are covered by the allowlist: any other item type counts.
     /// Run alone: `cargo test -p a2d-providers live_codex_positive_controls -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn live_codex_positive_controls_count_each_tool_kind() {
-        let kinds: [(&str, &str, &str); 2] = [
-            ("shell", "shell_tool", "Run the shell command `echo probe-ok` and then reply with its output."),
-            ("web", "", "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
+        let kinds: [(&str, &[&str], &str, &str); 3] = [
+            ("shell", &["shell_tool", "unified_exec"], "command_execution",
+             "Run the shell command `echo probe-ok` and then reply with its output."),
+            ("web", &[], "web_search",
+             "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
+            ("file", &["shell_tool", "unified_exec"], "file_change",
+             "Create a file named probe.txt containing the single line ok, using your file-editing (apply_patch) tool, then reply done."),
         ];
-        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "low")] {
-            for (kind, feature, prompt) in kinds {
+        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "medium")] {
+            for (kind, features, item, prompt) in kinds {
                 let base = CliProvider::codex(model, Some(effort));
                 let provider = CliProvider {
                     name: base.name.clone(),
@@ -948,21 +961,20 @@ mod tests {
                     output_parser: Box::new(|output: &str| (output.to_string(), None)),
                     args_builder: Box::new(move |req: &InvocationRequest| {
                         let mut args = (base.args_builder)(req);
-                        if !feature.is_empty() {
-                            // drop "--disable <feature>" and its unified-exec twin
-                            let mut i = 0;
-                            while i + 1 < args.len() {
-                                if args[i] == "--disable" && (args[i + 1] == feature || args[i + 1] == "unified_exec") {
-                                    args.drain(i..i + 2);
-                                } else {
-                                    i += 1;
-                                }
+                        let mut i = 0;
+                        while i + 1 < args.len() {
+                            if args[i] == "--disable" && features.contains(&args[i + 1].as_str()) {
+                                args.drain(i..i + 2);
+                            } else {
+                                i += 1;
                             }
-                        } else {
-                            for a in args.iter_mut() {
-                                if a == "web_search=\"disabled\"" {
-                                    *a = "web_search=\"live\"".to_string();
-                                }
+                        }
+                        for a in args.iter_mut() {
+                            if kind == "web" && a == "web_search=\"disabled\"" {
+                                *a = "web_search=\"live\"".to_string();
+                            }
+                            if kind == "file" && a == "read-only" {
+                                *a = "workspace-write".to_string();
                             }
                         }
                         args
@@ -974,12 +986,15 @@ mod tests {
                     prompt: prompt.to_string(),
                     max_tokens: 10,
                 };
-                let transcript = match provider.invoke(&request) {
-                    Ok(response) => response.transcript.expect("transcript"),
-                    Err(error) => take_failed_call_transcript().unwrap_or_else(|| panic!("{model} {kind}: {error}")),
-                };
+                let response = provider
+                    .invoke(&request)
+                    .unwrap_or_else(|e| panic!("{model} {kind}: the control call failed: {e}"));
+                let transcript = response.transcript.expect("transcript");
+                let marker = format!("\"type\":\"{item}\"");
                 let n = codex_tool_calls(&transcript);
-                eprintln!("positive control {model} {kind}: {n} tool events");
+                eprintln!("positive control {model}:{effort} {kind}: {item} present {}, {n} tool events",
+                          transcript.contains(&marker));
+                assert!(transcript.contains(&marker), "{model} {kind}: no {item} item");
                 assert!(n >= 1, "{model} {kind}: the detector saw no tool event");
             }
         }
