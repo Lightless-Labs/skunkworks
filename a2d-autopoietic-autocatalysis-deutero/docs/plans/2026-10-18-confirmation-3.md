@@ -268,6 +268,12 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - A live PONG with them all off emits only thread/turn events and one agent_message.
     - `code_mode_host` stays on, because disabling it emits an `error` item on every call, which the allowlist would count.
   - At merge, `c3lib.PROVIDER_COMMIT` becomes the branch head (f06dc9fb at 09:05 UTC 10-19).
+- **Audit from the provider branch, before main's merge (2026-10-19 ~14:30 UTC; a step-order deviation, disclosed).** §0.6 step 5 says the audit runs "under the re-frozen commit".
+  - Main cannot merge the provider before L37 (10-22) and look 2 or T (10-23 23:59), and look 2's controller is bound to `98672c36`. Waiting would push the audit, and so the registration and the spend, to about 10-26.
+  - Instead, `main` (52f778) was merged into `c2-web-provider` (merge commit fd36c2b2, which differs from main only in the provider's `crates/` files). `a2d` was built in the branch worktree, and the controls (`controls.json`) and the audit run from there. The tooling is main's, the provider is the reviewed one, and the holdout and records dirs are shared.
+  - Main later merges that same branch commit, so the audited instrument's trees equal the registered ones.
+  - The generator binds the audit by provider ancestry (`PROVIDER_COMMIT` bc6922f7 in the audit head) and the codex fingerprint, not by main's HEAD.
+  - The queue and look 2 keep main's binary, so they are unaffected.
 - **Registration-step items from §7, status 2026-10-19:**
   - **Interleaving: checked, no fix needed.** The controller runs arms interleaved, in completion order under parallel jobs.
     - Confirmation-2's manifests (432 submissions each): every quarter holds 32–40 of each arm, and the longest same-arm run is 6–7.
