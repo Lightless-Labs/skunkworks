@@ -232,6 +232,15 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Confirmation-2's replicate 2 had 11 such calls (X 8, B 2, D 1) during the host stall. Under §0.4 each one voids its tuple, so transient provider errors would cost X through imputation and could cross the 5% gate. Such a call is still unaudited: a timed-out call may have run a tool before failing.
   - **Instrument fix (step 3, on the provider branch, merged ≥ 10-22 with `c2-web-provider`):** the Codex provider returns its captured stderr with the error, and the meter writes the transcript for failed calls too. The scoring counts them like any other transcript.
   - "Missing transcript" then means a recording failure. The §0.4 rule is unchanged, and the fix only adds audit coverage.
+- **Two probes, 2026-10-19:**
+  - **Version pin.** `codex exec --json` (0.162) prints no version banner, so with the provider branch no transcript can carry the version.
+    - The pin is a **bracket** instead. The generation runner records the codex binary's realpath and sha256 before launch (in the attempt record) and again after `generation_complete`.
+    - A mismatch voids every tuple of that replicate, which makes it Invalid under the 5% gate.
+    - Legacy text transcripts keep the banner check.
+  - **Failed calls are timeouts.** All 34 failed invocations in the dev ledgers (0.47% of 7,177) are provider timeouts. So the transcript fix has to cover the timeout path:
+    - after the kill, a bounded join of the pipe readers collects the partial `--json` stream and stderr;
+    - the meter writes it for the failed call and counts its tool events *without* the missing-`turn.completed` penalty. That penalty would otherwise turn every timeout into a tool event, because a killed call never completes its turn.
+    - A timeout whose partial stream holds only allowed items (reasoning, agent messages) is a failed call. One holding any other item is a tool event, and its tuple is void.
 - **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request
