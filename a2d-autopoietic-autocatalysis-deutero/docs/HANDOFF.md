@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-19 07:55 UTC (session 145: **confirmation-2 is complete and sealed**. Replicate 2 generated (9b5ca3c9) and was scored at 06:11; `decision.json` and `pooled-summary.json` are unread in the holdout dir, with sha256 in `runs/c2-confirm2/sealed-sha256.txt`, and `confirm-score` refuses to re-run. The freeze window is over. **Confirmation-3:** the profile compile timing meets the bar (43 s cold, 1 s warm). Selection picked 36 families, and **authoring runs detached from 07:05 UTC** at parallel 2 (`~/.a2d-c3-drivers/20261019T070551Z-c3_author.out`). The scoring rules are in `nano/confirm3.py` (plan §0.13). The failed-call transcript fix is on `c2-web-provider` (f765c67d, pushed). The queue runner is pid 7116, on L11 (E006 rest).)
+**Last updated:** 2026-10-19 13:20 UTC (session 145: **confirmation-3 authored: 36/36 families**. Assembled to 144 tasks; similarity clean (max 0.04, 0 conflicts); **validation running** (`~/.a2d-c3-drivers/20261019T125356Z-c3_validate.out`). The runner, generator, audit and provider were hardened through **3 early review rounds** (Sol plus a fresh Claude; plan §0.13). The provider branch head is **bc6922f7** (= `c3lib.PROVIDER_COMMIT`). Batch: E006 discard (full), E008 discard (screen); E009 and E010 deferred by the cap until 00:05 10-20. Confirmation-2 is sealed. Queue runner pid 7116.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -32,24 +32,15 @@
        - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
-       - **State (10-19 08:50 UTC):**
-         - Selection is done: 36 families. Authoring runs detached (`~/.a2d-c3-drivers/20261019T081515Z-c3_author.out`, restarted on ecfb1c65): 11 verified.
-         - Retries are pending for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27. After this driver exits, run `detached.sh c3_author.py --parallel 2` again on HEAD; it has the codex-home fix and the mutants-check fix.
-         - **Runner reviews:** round 1 was done 10-19 (dispositions in plan §0.13). The Sol round-2 re-check runs detached; its output goes to `scratchpad/review-early-2/SOL-REVIEW.md`, so check it.
-         - The provider branch head is 70be19ac. Do not upgrade codex before the spend: the fingerprint is registered.
-         - Claude Code reaped this session's watcher shells at 08:49 (memory pressure, swap 7.4 / 8 GB). Check progress by hand; the detached queue and driver are unaffected.
-         - **Then:** `detached.sh c3_assemble.py`, `c3_similarity.py`, `c3_validate.py`, and `c3_fix.py` as needed. Commit every pipeline edit before a driver starts.
-         - **Candidate path (C2-LOOK2, registered at 98672c36):**
-           - queue lines L38–L40 run `nano/look_if_promoted.py` after L37 and again after 00:05 UTC 10-23;
-           - they run the one dev-holdout look only if a batch keep was promoted; otherwise E002 stays the candidate.
-         - **At the provider merge (≥ 10-22, after the batch's confirmation step AND after look 2 is done or T = 10-23 23:59 has passed; the look's controller is bound to 98672c36):**
-           - merge `c2-web-provider` (70be19ac), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
-           - then `c3_audit.py` and `c3_adjudicate.py`.
-         - **Registration (after the candidate is fixed at T and the suite is certified and audited):**
-           - run `docs/experiments/analysis/c3_registration.py --candidate <frozen> --frozen-from … --gate … --claim-wording … [--disclosure …]`, first with `--dry-run`;
-           - it writes `runs/c2-confirm3/registration.json` and `frozen.py`;
-           - the runner is `nano/confirm3.py generate | manifest | score` (built, 17 tests).
-         - Then run the registration review (Sol plus a fresh Claude), with "CI under imputation?" as an open question (§0.13).
+       - **State (10-19 13:20 UTC):**
+         - Authoring is done (36/36), assembly is done (144 tasks), and similarity is clean. Validation runs next, then `c3_fix.py` if anything is rejected.
+         - **Step 5 waits for the provider merge.** The merge comes after L37 (the batch's confirmation step, 10-22) **and** after look 2 is done or T has passed.
+         - At the merge:
+           - merge `c2-web-provider` (bc6922f7; it equals `PROVIDER_COMMIT`) and build;
+           - run `c3_controls.py --lanes <coder + candidate lanes>` and commit `runs/c2-confirm3/controls.json`;
+           - then `detached.sh c3_audit.py`, `c3_adjudicate.py`, and `c3_audit.py` again for round 2.
+         - **Registration:** after T, `c3_registration.py` (dry-run first; it lists any unmet prerequisite), then a full review (Sol plus a fresh Claude) on the written `registration.json`, then commit. Spend ≥ 10-24 via `nano/confirm3.py generate` (queue lines).
+         - **Early reviews:** 3 rounds; every blocker fixed (plan §0.13). Round 3: the fresh Claude said Yes (with fixes), Sol said No (7, all fixed). The next review is the full one on the registration.
        - **State (10-18 14:40 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.
          - Step 2 is done: the pipeline is in `tools/holdout/` (read its README first). Sol's 5th re-check (134393a2) says **Yes**. Plan §0.12 and the LOG (10-18) cover 4 rounds of fixes:
