@@ -1,9 +1,12 @@
 """python3 -I nano/test_confirm3.py"""
+import argparse
+import io
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import confirm3 as c3  # noqa: E402
@@ -172,6 +175,113 @@ class Decide(unittest.TestCase):
     def test_output_is_counts_only(self):
         d = self.decide(summary(), self.tuples())
         self.assertNotIn("f00", json.dumps(d))
+
+
+
+class Gates(unittest.TestCase):
+    def test_spend_day(self):
+        d = __import__("datetime").date
+        g = c3.spend_gate
+        self.assertEqual(g(d(2026, 10, 23), d(2026, 10, 20), True, 1, None), "before 2026-10-24")
+        self.assertEqual(g(d(2026, 10, 24), d(2026, 10, 24), True, 1, None), "registration day")
+        self.assertEqual(g(d(2026, 10, 24), d(2026, 10, 23), False, 1, None), "confirmation-2 decision missing")
+        self.assertIsNone(g(d(2026, 10, 24), d(2026, 10, 23), True, 1, None))
+        self.assertEqual(g(d(2026, 10, 24), d(2026, 10, 23), True, 2, d(2026, 10, 24)), "replicate 1's day")
+        self.assertIsNone(g(d(2026, 10, 25), d(2026, 10, 23), True, 2, d(2026, 10, 24)))
+
+    def test_latency(self):
+        self.assertTrue(c3.latency_go([10.0, 50.0, 20.0]))
+        self.assertFalse(c3.latency_go([10.0, float("inf"), 60.0]))
+
+
+class Generate(unittest.TestCase):
+    """The replicate runner's order: gates (deferrals write nothing), attempt record before
+    the first model call, then the codex bracket."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.tmp.name)
+        self.dir, self.runs = root / "repo-runs", root / "holdout-runs"
+        self.dir.mkdir()
+        self.reg = {"tasks": TASKS, "arms": ARMS, "k": 5, "model": "codex/gpt-6-luna", "effort": "low",
+                    "seeds": {"1": 9191, "2": 9292}, "claim": "X:frozen>D,X:frozen>B", "lanes": {},
+                    "suite_hash": "h" * 64, "codex_version": "codex-cli 0.162.0", "codex_files": {"codex": "s"}}
+        self.calls = []
+        fp = {"realpath": "/x/codex", "files": {"codex": "s"}, "version": "codex-cli 0.162.0"}
+        patches = {"registration": lambda sha: self.reg, "commit_day": lambda sha: c3.datetime.date(2026, 10, 23),
+                   "today": lambda: c3.datetime.date(2026, 10, 24), "drained": lambda: True,
+                   "codex_fingerprint": lambda: dict(fp), "luna_today": lambda: 0,
+                   "latency_probe": lambda model, effort: [5.0, 6.0, 7.0], "DIR": self.dir,
+                   "out_dir": lambda rep, relaunch=False: self.runs / f"r{rep}{'-relaunch1' if relaunch else ''}",
+                   "C2_SEALED": root / "sealed.txt"}
+        (root / "sealed.txt").write_text("x\n")
+        self.patchers = [mock.patch.object(c3, k, v) for k, v in patches.items()]
+        self.patchers.append(mock.patch.object(c3.subprocess, "run", side_effect=self.fake_run))
+        for pt in self.patchers:
+            pt.start()
+
+    def tearDown(self):
+        for pt in self.patchers:
+            pt.stop()
+        self.tmp.cleanup()
+
+    def fake_run(self, cmd, **kw):
+        self.calls.append(cmd)
+        self.assertTrue((self.dir / "attempt-r1.json").exists(), "attempt record precedes the run")
+        out = pathlib.Path(cmd[cmd.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "ledger.jsonl").write_text(json.dumps({"kind": "registration"}) + "\n" + json.dumps(
+            {"kind": "generation_complete", "aborted": False, "ts_ms": 1_792_800_000_000}) + "\n")
+        return mock.Mock(returncode=0)
+
+    def generate(self, rep=1, relaunch=False):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            c3.cmd_generate(argparse.Namespace(rep=rep, registered_at="abc", relaunch=relaunch, jobs=8))
+        return [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+
+    def test_generates_once_with_attempt_record_and_bracket(self):
+        self.assertEqual(self.generate()[-1]["decision"], "generated (scoring deferred)")
+        self.assertEqual(len(self.calls), 1)
+        cmd = self.calls[0]
+        self.assertEqual(cmd[cmd.index("--seed") + 1], "9191")
+        self.assertIn("--defer-scoring", cmd)
+        self.assertTrue(json.loads((self.dir / "bracket-r1.json").read_text())["match"])
+        self.assertEqual(self.generate()[-1]["decision"], "already generated")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_deferrals_write_nothing(self):
+        for name, value in (("today", lambda: c3.datetime.date(2026, 10, 23)), ("luna_today", lambda: 2800),
+                            ("latency_probe", lambda model, effort: [90.0, 90.0, 5.0])):
+            with mock.patch.object(c3, name, value):
+                self.assertTrue(self.generate()[-1]["decision"].startswith("deferred"), name)
+            self.assertFalse((self.dir / "attempt-r1.json").exists(), name)
+        self.assertEqual(self.calls, [])
+
+    def test_refusals(self):
+        with mock.patch.object(c3, "drained", lambda: False), self.assertRaises(SystemExit):
+            self.generate()
+        bad = {"realpath": "/x/codex", "files": {"codex": "other"}, "version": "codex-cli 0.162.0"}
+        with mock.patch.object(c3, "codex_fingerprint", lambda: bad), self.assertRaises(SystemExit):
+            self.generate()
+        self.assertEqual(self.calls, [])
+
+    def test_a_failed_attempt_is_never_rerun_but_may_be_relaunched_once(self):
+        (self.dir / "attempt-r1.json").write_text("{}\n")       # attempted, never completed
+        with self.assertRaises(SystemExit):
+            self.generate()
+        self.assertEqual(self.generate(relaunch=True)[-1]["decision"], "generated (scoring deferred)")
+        self.assertIn("r1-relaunch1", self.calls[0][self.calls[0].index("--out") + 1])
+        self.assertTrue((self.dir / "attempt-r1-relaunch1.json").exists())
+        self.assertTrue((self.dir / "bracket-r1-relaunch1.json").exists())
+        self.assertEqual(self.generate(relaunch=True)[-1]["decision"], "already generated")
+        self.assertEqual(self.generate()[-1]["decision"], "already generated")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_relaunch_needs_a_failed_first_attempt(self):
+        with self.assertRaises(SystemExit):
+            self.generate(relaunch=True)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":
