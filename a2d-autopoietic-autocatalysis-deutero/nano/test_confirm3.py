@@ -171,6 +171,13 @@ class Decide(unittest.TestCase):
         self.assertLessEqual(d["worst_case_void"]["D"]["ci_low"], 0.0)
         self.assertEqual(d["overall"], "INCONCLUSIVE (worst-case void imputation)")
 
+    def test_controller_classes_must_agree(self):
+        # A controller INCONCLUSIVE can never become a claim through the re-classification.
+        s = summary(claim="INCONCLUSIVE", classes=("Inconclusive", "Inconclusive"))
+        self.assertEqual(self.decide(s, self.tuples())["overall"], "INCONCLUSIVE")
+        r = summary(claim="INCONCLUSIVE", d=(0.0, -0.05, 0.08), classes=("Inconclusive", "Inconclusive"))
+        self.assertEqual(self.decide(r, self.tuples(x_pass=10))["overall"], "INCONCLUSIVE")
+
     def test_controller_verdicts_dominate(self):
         self.assertEqual(self.decide(summary(claim="IntegrityReview", integrity_ok=False), self.tuples())["overall"],
                          "IntegrityReview")
@@ -238,10 +245,10 @@ class Generate(unittest.TestCase):
                    "commit_day": lambda sha: datetime.date(2026, 10, 23), "now": lambda: self.DAY,
                    "today": lambda: self.DAY.date(), "drained": lambda: True, "isolation_ok": lambda: True,
                    "codex_fingerprint": lambda: dict(fp), "luna_today": lambda: 0,
-                   "probe_run": lambda model, effort, n, tag: ([5.0] * n, False, 0), "DIR": self.dir,
+                   "probe_run": lambda model, effort, n, tag, fd=None: ([5.0] * n, False, 0, n), "DIR": self.dir,
                    "A2D": str(root / "a2d"),
                    "out_dir": lambda rep, relaunch=False: self.runs / f"r{rep}{'-relaunch1' if relaunch else ''}",
-                   "C2_SEALED": root / "sealed.txt"}
+                   "C2_SEALED": root / "sealed.txt", "build_controller": lambda: "binsha"}
         (root / "sealed.txt").write_text("x\n")
         self.patchers = [mock.patch.object(c3, k, v) for k, v in patches.items()]
         self.patchers.append(mock.patch.object(c3.subprocess, "Popen", side_effect=self.fake_popen))
@@ -294,7 +301,7 @@ class Generate(unittest.TestCase):
                             ("now", lambda: datetime.datetime(2026, 10, 24, 0, 2, tzinfo=datetime.timezone.utc))):
             with mock.patch.object(c3, name, value):
                 self.assertTrue(self.generate()[-1]["decision"].startswith("deferred"), name)
-        with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag: ([90.0, 90.0, 5.0][:n], False, 0)):
+        with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag, fd=None: ([90.0, 90.0, 5.0][:n], False, 0, n)):
             self.assertEqual(self.generate()[-1]["decision"], "deferred (latency)")
         # The same day stays deferred even once latency is fine (next 00:05 UTC).
         self.assertTrue(self.generate()[-1]["decision"].startswith("deferred (a no-go today"))
@@ -306,7 +313,7 @@ class Generate(unittest.TestCase):
 
     def test_canary_leak_or_tool_event_stops_the_replicate(self):
         for result in (([5.0] * 3, True, 0), ([5.0] * 3, False, 1)):
-            with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag, r=result: (r[0][:n], r[1], r[2])), \
+            with mock.patch.object(c3, "probe_run", lambda model, effort, n, tag, fd=None, r=result: (r[0][:n], r[1], r[2], n)), \
                     self.assertRaises(SystemExit):
                 self.generate()
             # The failed preflight holds the day (a retry the same day is deferred, not run).
@@ -314,6 +321,13 @@ class Generate(unittest.TestCase):
             (self.dir / "probes.jsonl").unlink()
         self.assertFalse((self.dir / "attempt-r1.json").exists())
         self.assertEqual(self.calls, [])
+
+    def test_a_lane_without_audited_canary_evidence_is_a_no_go(self):
+        self.reg["lanes"] = {"judge": "codex/gpt-6.1-sol:medium"}
+        fake = lambda model, effort, n, tag, fd=None: ([5.0] * n, False, 0, 0 if "sol" in model else n)
+        with mock.patch.object(c3, "probe_run", fake):
+            self.assertEqual(self.generate()[-1]["decision"], "deferred (canary evidence missing on a lane)")
+        self.assertFalse((self.dir / "attempt-r1.json").exists())
 
     def test_an_interrupted_probe_group_holds_the_day(self):
         c3.record_probe(1, self.DAY.date(), "g1", "started")          # crashed before its go

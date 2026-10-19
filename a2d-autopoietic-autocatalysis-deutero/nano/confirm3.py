@@ -193,10 +193,11 @@ def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
         overall = "IntegrityReview"
     elif invalid:
         overall = "Invalid"
-    elif all(c == "Supported" for c in classes.values()):
+    elif all(c == "Supported" for c in classes.values()) and all(
+            (comparisons[comp] or {}).get("class") == "Supported" for comp in COMPARATORS):
         ok = all(lift >= MIN_EFFECT - EPS and lo > EPS for lift, lo, _ in worst.values())
         overall = "SUPPORTED" if ok else "INCONCLUSIVE (worst-case void imputation)"
-    elif classes["D"] == "RuledOut":
+    elif classes["D"] == "RuledOut" and (comparisons["D"] or {}).get("class") == "RuledOut":
         overall = "RULED OUT" if best_d[2] < MIN_EFFECT - EPS else "INCONCLUSIVE (best-case void imputation)"
     else:
         overall = "INCONCLUSIVE"
@@ -316,6 +317,17 @@ def registration(registered_at):
     return reg
 
 
+def build_controller():
+    """Build a2d from the checked, registration-bound tree (a no-op when current): a stale
+    binary from an older provider cannot run or score. Returns its sha256."""
+    with open(DIR / "build.log", "a") as log:
+        code = subprocess.run(["cargo", "build", "--locked", "--bin", "a2d"], cwd=ROOT, stdout=log,
+                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+    if code:
+        sys.exit(f"cargo build failed ({code})")
+    return sha256(A2D)
+
+
 def check_attempts(sha):
     """Every attempt so far ran under this registration."""
     for p in sorted(DIR.glob("attempt-r*.json")):
@@ -392,10 +404,12 @@ def probe_suite(d, secret_path, n):
         (t / "reference.rs").write_text("pub fn canary() -> String { String::new() }\n")
 
 
-def probe_run(model, effort, n, tag):
+def probe_run(model, effort, n, tag, lock_fd=None):
     """§0.10 preflight through the real provider (its exact flags, a holdout-local codex home):
     n canary tasks, arm D, k = 1, generation only. The run lives under holdout/runs/c2-*, so its
-    invocations count toward the daily cap from its ledger. Returns (secs, leak, tool_calls)."""
+    invocations count toward the daily cap from its ledger, and it inherits the runner lock.
+    Returns (secs, leak, tool_calls, audited): audited = calls that succeeded with a --json
+    transcript (failed or unaudited calls count as infinite latency)."""
     out = HOLDOUT / "runs" / f"c2-confirm3-probe-{tag}"
     suite = HOLDOUT / "runs" / f"c2-confirm3-probe-{tag}-suite"
     secret = f"C3-CANARY-{os.urandom(8).hex()}"
@@ -410,12 +424,15 @@ def probe_run(model, effort, n, tag):
            "--defer-scoring", "--max-invocations", str(n + 2), "--max-wall-clock-secs", "1800", "--out", str(out)]
     with open(str(out) + ".log", "w") as log:
         subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                       pass_fds=(lock_fd,) if lock_fd is not None else (),
                        env={**os.environ, "A2D_CODEX_HOME_ROOT": str(CODEX_HOMES)})
-    secs, leak, tools = [], False, 0
+    secs, leak, tools, audited = [], False, 0, 0
     recs = records(out) if (out / "ledger.jsonl").exists() else []
     for r in recs:
         if r.get("kind") == "invocation":
-            secs.append(r.get("duration_ms", 0) / 1000 if r.get("ok") else float("inf"))
+            good = bool(r.get("ok")) and transcript_ok(out, r.get("prompt_path", ""))
+            audited += good
+            secs.append(r.get("duration_ms", 0) / 1000 if good else float("inf"))
             parts = pathlib.PurePath(r.get("response_path", "")).parts
             if "invocations" in parts:
                 resp = out.joinpath(*parts[parts.index("invocations"):])
@@ -427,7 +444,7 @@ def probe_run(model, effort, n, tag):
             leak |= secret in sub_file.read_text(errors="replace")
     secs += [float("inf")] * max(0, n - len(secs))          # a missing probe call counts as failed
     secret_path.unlink()
-    return secs, leak, tools
+    return secs, leak, tools, audited
 
 
 def codex_fingerprint():
@@ -572,20 +589,25 @@ def cmd_generate(args):
         lanes = [(reg["model"], reg["effort"], LATENCY_PROBES)] + [(*lane(s), 1) for s in reg["lanes"].values()]
         results = []
         for i, (model, effort, n) in enumerate(lanes):
-            secs, leak, tools = probe_run(model, effort, n, f"r{rep}-{group}-{i}")
+            secs, leak, tools, audited = probe_run(model, effort, n, f"r{rep}-{group}-{i}", lock.f.fileno())
             results.append({"model": model, "effort": effort, "secs": [round(s, 1) if s != float("inf") else None
-                                                                       for s in secs], "leak": leak, "tool_calls": tools})
+                                                                       for s in secs], "leak": leak, "tool_calls": tools,
+                            "audited": audited})
         if any(r["leak"] or r["tool_calls"] for r in results):
             record_probe(rep, day, group, "isolation-failed", lanes=results)
             sys.exit("the canary or tool preflight failed: the replicate does not start (§0.10)")
-        go = latency_go([s if s is not None else float("inf") for s in results[0]["secs"]])
+        # Every lane needs canary evidence: at least one successful call with a --json transcript.
+        evidence = all(r["audited"] >= 1 for r in results)
+        go = evidence and latency_go([s if s is not None else float("inf") for s in results[0]["secs"]])
         record_probe(rep, day, group, "go" if go else "nogo", lanes=results)
         if not go:
-            record_deferral(rep, day, "latency", secs=results[0]["secs"])
-            emit(stage=stage, decision="deferred (latency)", secs=results[0]["secs"])
+            reason = "latency" if evidence else "canary evidence missing on a lane"
+            record_deferral(rep, day, reason, secs=results[0]["secs"])
+            emit(stage=stage, decision=f"deferred ({reason})", secs=results[0]["secs"])
             return
+        binary = build_controller()
         reserve(attempt, {"rep": rep, "relaunch": relaunch, "registered_at": sha, "pid": os.getpid(), "codex": before,
-                          "controller_binary_sha256": sha256(A2D), "started_utc": now().isoformat()})
+                          "controller_binary_sha256": binary, "started_utc": now().isoformat()})
         cmd = [A2D, "lift", "run", "--experiment", f"C2-CONFIRM3-R{rep}", "--registered-at", sha,
                "--expect-suite-hash", reg["suite_hash"], "--suite", str(SUITE), "--model", reg["model"],
                "--effort", reg["effort"], "--arms", ",".join(reg["arms"]), "--k", str(reg["k"]), "--replicates", "1",
@@ -609,6 +631,33 @@ def cmd_generate(args):
                 json.dumps({"rep": rep, "exit": code, "recorded_utc": now().isoformat()}) + "\n")
             sys.exit(f"generation failed ({code}); " + ("reported as failed" if relaunch else "relaunch once with --relaunch"))
         emit(stage=stage, decision="generated (scoring deferred)")
+
+
+def skipped_days(reg):
+    """Eligible UTC days before each replicate's launch with no recorded deferral (disclosed):
+    the runner did not run that day, so the launch day was not the first eligible one."""
+    deferred = set()
+    path = DIR / "deferrals.jsonl"
+    if path.exists():
+        deferred = {(json.loads(x)["rep"], json.loads(x)["utc_day"]) for x in path.read_text().splitlines() if x.strip()}
+    first = max(EARLIEST, commit_day(registration_commit()) + datetime.timedelta(days=1))
+    out = {}
+    for rep in (1, 2):
+        rec = DIR / f"attempt-r{rep}.json"
+        if not rec.exists():
+            continue
+        start = datetime.date.fromisoformat(json.loads(rec.read_text())["started_utc"][:10])
+        day = first if rep == 1 else max(first, start)
+        if rep == 2 and (DIR / "attempt-r1.json").exists():
+            day = datetime.date.fromisoformat(json.loads((DIR / "attempt-r1.json").read_text())["started_utc"][:10]) \
+                + datetime.timedelta(days=1)
+        missing = []
+        while day < start:
+            if (rep, str(day)) not in deferred:
+                missing.append(str(day))
+            day += datetime.timedelta(days=1)
+        out[str(rep)] = missing
+    return out
 
 
 def generated_out(rep):
@@ -646,6 +695,7 @@ def cmd_score(args):
         decision_path = DIR / "decision.json"
         if decision_path.exists():
             sys.exit("decision.json exists; the set is scored once")
+        binary = build_controller()
         outs = {}
         for rep in (1, 2):
             rel = f"runs/c2-confirm3/manifest-r{rep}.json"
@@ -673,13 +723,21 @@ def cmd_score(args):
         tuples, stats = {}, {}
         for rep, (out, relaunch) in outs.items():
             t, stats[rep] = replicate_tuples(out, rep, reg["arms"], reg["tasks"])
-            if not json.loads((DIR / f"bracket-r{rep}{suffix(relaunch)}.json").read_text())["match"]:
+            bracket = DIR / f"bracket-r{rep}{suffix(relaunch)}.json"
+            if not bracket.exists() or not json.loads(bracket.read_text())["match"]:
                 for v in t.values():
-                    v["void"] = True            # another codex ran during the replicate
+                    v["void"] = True            # another codex ran, or the bracket is missing
+            if relaunch and (out_dir(rep) / "ledger.jsonl").exists():
+                for r in records(out_dir(rep)):  # the failed first attempt's tool events count too
+                    if r.get("kind") == "submission":
+                        stats[rep]["invocations"] += r.get("invocations") or 0
+                        stats[rep]["tool_calls"] += r.get("tool_calls") or 0
             tuples.update(t)
         if len(tuples) != 2 * len(reg["arms"]) * len(reg["tasks"]):
             sys.exit("planned tuples do not match the registration")
         decision = decide(json.loads(pooled.read_text()), tuples, stats)
+        decision["controller_binary_sha256"] = binary
+        decision["skipped_eligible_days"] = skipped_days(reg)
         decision_path.write_text(json.dumps(decision, indent=1) + "\n")
         print(json.dumps(decision, indent=1))
 

@@ -119,6 +119,8 @@ def look2_result():
     snapshot_sha = c3.sha256(LOOK2_SNAPSHOT)
     if not (committed(LOOK2_GATE) and committed(LOOK2_MANIFEST) and committed(LOOK2_SNAPSHOT)):
         sys.exit("look 2's gate, manifest and snapshot must be committed and unmodified")
+    if len(c3.git("log", "--format=%H", "--", str(LOOK2_GATE.relative_to(ROOT)))[1].split()) != 1:
+        sys.exit("look 2's gate must have been committed exactly once")
     if manifest.get("registered_at") != LOOK2_REGISTERED_AT.read_text().strip():
         sys.exit("look 2 did not run at its registration commit")
     if not (manifest.get("incumbent_sha") == snapshot_sha == c3.sha256(ROOT / "runs" / f"c2-{keeps[0]}" / "candidate.py")):
@@ -259,10 +261,10 @@ def build(args, suite):
             "IntegrityReview": "any hidden-test name hit, tool events > 0.5% of a replicate's invocations, or the "
                                "controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
-                       "own Invalid, an aborted generation, or a missing comparison",
+                       "own Invalid, or a missing comparison (an aborted generation is a failed attempt: failure_policy)",
             "void tuple": "void or unscored submission, any tool event, any invocation without a transcript or "
                           "(legacy text transcripts) from another codex version; all tuples of a replicate whose codex "
-                          "fingerprint changed",
+                          "fingerprint changed or whose bracket record is missing",
             "otherwise": "INCONCLUSIVE",
         },
         "codex": fp,
@@ -299,6 +301,9 @@ def main():
     args = ap.parse_args()
     if args.suite != c3.SUITE and not args.dry_run:
         sys.exit("--suite is for dry runs only")
+    from c3lib import HOLDOUT as PIPELINE_HOLDOUT
+    if PIPELINE_HOLDOUT.resolve() != c3.HOLDOUT.resolve():
+        sys.exit("the pipeline's holdout dir (A2D_HOLDOUT_DIR) differs from the runner's")
     args.candidate_path, args.candidate_why = candidate(
         datetime.datetime.max.replace(tzinfo=datetime.timezone.utc) if args.dry_run else None)
     reg = build(args, args.suite)
