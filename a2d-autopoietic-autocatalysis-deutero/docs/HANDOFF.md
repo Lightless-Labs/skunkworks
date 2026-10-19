@@ -39,9 +39,8 @@
          - At the merge:
            - merge the `c2-web-provider` head (≥ 3ca9102b: the provider, main's tooling and the committed `controls.json`) and build. Do not re-pin `PROVIDER_COMMIT` (bc6922f7).
            - Re-run `c3_controls.py` only if the candidate's lanes differ from Luna low and Sol medium.
-         - **Audit (started early, 14:47 10-19) runs from the branch worktree** (`scratchpad/wt-web`; plan §0.13):
-           - when it exits, run `c3_adjudicate.py` from the worktree, then `c3_audit.py` again for round 2, then `c3_author.py --stop`;
-           - output: `~/.a2d-c3-drivers/*c3_audit.out`; wait on `_records/driver.pid` with `kill -0`, never `pgrep -f`.
+         - **Step 5 is done (10-19 15:54): the suite is certified.** Audit round 1 solved 139/144 (1 failure, 4 voids). The failure was adjudicated UNDERDETERMINED and repaired, requirements only. Round 2 solved all 5. `certified()` is True, and the pipeline is stopped and drained.
+         - Only the merge, the candidate (at T), the registration and its review, and the spend remain.
          - **Registration:** after T, `c3_registration.py` (dry-run first; it lists any unmet prerequisite), then a full review (Sol plus a fresh Claude) on the written `registration.json`, then commit. Spend ≥ 10-24 via `nano/confirm3.py generate` (queue lines).
          - **Early reviews:** 3 rounds; every blocker fixed (plan §0.13). Round 3: the fresh Claude said Yes (with fixes), Sol said No (7, all fixed). The next review is the full one on the registration.
        - **State (10-18 14:40 UTC):**
