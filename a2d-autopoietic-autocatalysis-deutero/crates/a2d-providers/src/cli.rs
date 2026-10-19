@@ -919,7 +919,10 @@ mod tests {
     #[test]
     #[ignore]
     fn live_codex_call_returns_text_with_zero_tool_events() {
-        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "medium")] {
+        let lanes = std::env::var("A2D_CONTROL_LANES")
+            .unwrap_or_else(|_| "codex/gpt-6-luna:low,codex/gpt-6.1-sol:medium".to_string());
+        for spec in lanes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (model, effort) = spec.trim_start_matches("codex/").split_once(':').unwrap_or((spec, "low"));
             let provider = CliProvider::codex(model, Some(effort));
             let request = InvocationRequest {
                 enzyme_id: a2d_core::types::EnzymeId::from("coder"),
@@ -959,27 +962,44 @@ mod tests {
         assert_eq!(codex_tool_calls_failed(&transcript), 0, "{transcript}");
     }
 
-    /// Live positive controls (confirmation-3 §0.4, step 3; Sol review 2026-10-19): on each
-    /// registered lane at its registered effort (Luna low = coder, Sol medium = E002's judge),
-    /// with one tool switched back on, a call asked to use it must SUCCEED and its transcript
-    /// must contain that tool's own item type, counted by `codex_tool_calls`. The negative
-    /// control is `live_codex_call_returns_text_with_zero_tool_events`. Kinds without a live
-    /// control here (MCP, image) are covered by the allowlist: any other item type counts.
+    /// Live positive controls (confirmation-3 §0.4, step 3; Sol reviews 2026-10-19). Inventory of
+    /// `codex exec --json` item types in 0.162 (from the binary): agent_message and reasoning
+    /// (allowed), command_execution, file_change, mcp_tool_call, web_search, todo_list,
+    /// collab_tool_call, error. On every lane in A2D_CONTROL_LANES (default: Luna low = coder,
+    /// Sol medium = E002's judge), with one capability switched back on, a call asked to use it
+    /// must SUCCEED and its transcript must contain that item type, counted by
+    /// `codex_tool_calls`. `error` is produced by disabling `code_mode_host`. `todo_list` could
+    /// not be triggered in exec mode even with every feature on (live, 2026-10-19), so the
+    /// allowlist alone covers it. The negative control is
+    /// `live_codex_call_returns_text_with_zero_tool_events`.
     /// Run alone: `cargo test -p a2d-providers live_codex_positive_controls -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn live_codex_positive_controls_count_each_tool_kind() {
-        let kinds: [(&str, &[&str], &str, &str); 3] = [
-            ("shell", &["shell_tool", "unified_exec"], "command_execution",
+        let mcp = format!("{}/tests/fixtures/mcp_echo.py", env!("CARGO_MANIFEST_DIR"));
+        let lanes = std::env::var("A2D_CONTROL_LANES")
+            .unwrap_or_else(|_| "codex/gpt-6-luna:low,codex/gpt-6.1-sol:medium".to_string());
+        // (kind, features switched back on, extra args, expected item, prompt)
+        let kinds: Vec<(&str, Vec<&str>, Vec<String>, &str, &str)> = vec![
+            ("shell", vec!["shell_tool", "unified_exec"], vec![], "command_execution",
              "Run the shell command `echo probe-ok` and then reply with its output."),
-            ("web", &[], "web_search",
+            ("web", vec![], vec!["-c".into(), "web_search=\"live\"".into()], "web_search",
              "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
-            ("file", &["shell_tool", "unified_exec"], "file_change",
+            ("file", vec!["shell_tool", "unified_exec"], vec!["--sandbox".into(), "workspace-write".into()], "file_change",
              "Create a file named probe.txt containing the single line ok, using your file-editing (apply_patch) tool, then reply done."),
+            ("mcp", vec![], vec!["-c".into(), "mcp_servers.probe.command=\"python3\"".into(),
+                                  "-c".into(), format!("mcp_servers.probe.args=[\"-I\", \"{mcp}\"]")], "mcp_tool_call",
+             "Call the MCP tool `echo` of the `probe` server with text probe-ok, then reply with its output."),
+            ("collab", vec!["multi_agent"], vec![], "collab_tool_call",
+             "Spawn one sub-agent to compute 2+2 and report its answer, then reply with it."),
+            ("error", vec![], vec!["--disable".into(), "code_mode_host".into()], "error",
+             "Reply with the single word PONG."),
         ];
-        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "medium")] {
-            for (kind, features, item, prompt) in kinds {
+        for spec in lanes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (model, effort) = spec.trim_start_matches("codex/").split_once(':').unwrap_or((spec, "low"));
+            for (kind, features, extra, item, prompt) in &kinds {
                 let base = CliProvider::codex(model, Some(effort));
+                let (features, extra) = (features.clone(), extra.clone());
                 let provider = CliProvider {
                     name: base.name.clone(),
                     command: base.command.clone(),
@@ -990,17 +1010,18 @@ mod tests {
                         while i + 1 < args.len() {
                             if args[i] == "--disable" && features.contains(&args[i + 1].as_str()) {
                                 args.drain(i..i + 2);
+                            } else if args[i] == "--sandbox" && extra.contains(&"--sandbox".to_string()) {
+                                args.drain(i..i + 2);
+                            } else if args[i] == "-c" && args[i + 1] == "web_search=\"disabled\""
+                                && extra.iter().any(|a| a.starts_with("web_search=")) {
+                                args.drain(i..i + 2);
                             } else {
                                 i += 1;
                             }
                         }
-                        for a in args.iter_mut() {
-                            if kind == "web" && a == "web_search=\"disabled\"" {
-                                *a = "web_search=\"live\"".to_string();
-                            }
-                            if kind == "file" && a == "read-only" {
-                                *a = "workspace-write".to_string();
-                            }
+                        let at = args.iter().position(|a| a == "--json").unwrap_or(args.len());
+                        for (k, a) in extra.iter().enumerate() {
+                            args.insert(at + k, a.clone());
                         }
                         args
                     }),
