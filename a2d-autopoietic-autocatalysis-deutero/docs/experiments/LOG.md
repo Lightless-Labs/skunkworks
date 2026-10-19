@@ -1661,4 +1661,4 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Step-3 positive and negative controls, live** (09:00 UTC, provider branch, now `#[ignore]` tests).
   - With one tool switched back on, a call asked to use it shows ≥ 1 tool event in the provider's detector: Luna shell 2, Luna web search 2, Sol shell 2, Sol web search 2.
   - The provider as configured shows 0 tool events on a PONG call on both lanes.
-  - So the detector works on both lanes, and a run with 0 events is informative. 6 calls (2 Luna, 4 incl. Sol). The branch head is in the commit below.
+  - So the detector works on both lanes, and a run with 0 events is informative. 6 live calls (3 Luna, 3 Sol); branch head f06dc9fb.
