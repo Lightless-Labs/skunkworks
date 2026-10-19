@@ -6,7 +6,7 @@ if [ "$1" = "--version" ]; then echo "${C3_TEST_VERSION:-codex-cli 0.162.0}"; ex
 here=$(dirname "$0")
 # codex 0.162 writes its bundled skills into CODEX_HOME on every run (seen 2026-10-19); a
 # retry or repair in the same workdir must start from a fresh home, not fail isolation.
-if [ -n "$CODEX_HOME" ]; then mkdir -p "$CODEX_HOME/skills/.system"; fi
+if [ -n "$CODEX_HOME" ]; then mkdir -p "$CODEX_HOME/skills/.system" "$CODEX_HOME/sessions/2026/10/19"; : > "$CODEX_HOME/sessions/2026/10/19/rollout-fake.jsonl"; fi
 echo '{"type":"thread.started"}'
 echo '{"type":"turn.started"}'
 if grep -q "choose and brief 40" INSTRUCTIONS.md; then
@@ -60,7 +60,7 @@ if grep -q "adjudicate failing hidden tests" INSTRUCTIONS.md; then
     if [ -n "$C3_TEST_ADJ_UNDER" ] && echo " $C3_TEST_ADJ_UNDER " | grep -q " $tid "; then v=UNDERDETERMINED; fi
     for n in $names; do printf '%s\t%s\t%s\n' "$tid" "$n" "$v" >> VERDICTS.tsv; done
     if [ "$v" = UNDERDETERMINED ] && grep -q "## Repair" INSTRUCTIONS.md; then
-      mkdir -p "out/$tid"; cp "$d/hidden_tests.rs" "out/$tid/hidden_tests.rs"; printf '\n// clarified\n' >> "out/$tid/hidden_tests.rs"
+      mkdir -p "out/$tid"; python3 -I -c 'import json,sys; t=json.load(open(sys.argv[1])); t["requirements"] += " (clarified)"; json.dump(t, open(sys.argv[2], "w"))' "$d/task.json" "out/$tid/task.json"
     fi
   done
 fi

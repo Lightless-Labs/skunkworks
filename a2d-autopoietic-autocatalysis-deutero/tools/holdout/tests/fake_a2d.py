@@ -19,7 +19,7 @@ out = Path(args[args.index("--out") + 1])
 fail = set(os.environ.get("C3_TEST_AUDIT_FAIL", "").split())
 void = set(os.environ.get("C3_TEST_AUDIT_VOID", "").split())
 out.mkdir(parents=True)
-lines = [{"kind": "registration"}]
+lines = [{"kind": "registration", "arms": ["D"], "tasks": tasks}]
 for t in tasks:
     d = out / "submissions" / "D" / t
     d.mkdir(parents=True)

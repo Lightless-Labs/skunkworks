@@ -872,7 +872,8 @@ def prereqs_ok():
     return bool(head) and bool(manifest)
 
 
-PROVIDER_COMMIT = "27757c6b"   # c2-web-provider: isolated CODEX_HOME, tools off, --json, tool events void
+PROVIDER_COMMIT = "bc6922f7"   # c2-web-provider, reviewed head (early reviews 2026-10-19): isolated CODEX_HOME,
+#                               tools off, --json allowlist, failed-call transcripts, A2D_CODEX_HOME_ROOT, controls
 
 
 def provider_merged():
@@ -920,8 +921,22 @@ def stop_requested():
     return os.path.lexists(C3 / "STOP")
 
 
+def relocation_evidenced():
+    """§0.10's positive check: every family that used an authoring attempt has session files
+    in its relocated CODEX_HOME (inside the holdout dir), so the relocation took effect.
+    ~/.codex is never read (the A² session also writes there)."""
+    for fid in (load_json(RECORDS / "active.json", {}).get("active") or []):
+        if load_json(RECORDS / f"author-{fid}" / "status.json", {"attempts": 0})["attempts"] < 1:
+            continue
+        sessions = C3 / fid / "_codex_home" / "sessions"
+        if not sessions.is_dir() or not any(p.is_file() for p in sessions.rglob("*")):
+            return False
+    return True
+
+
 def drained():
-    """§0.10 drain: STOP requested, no live driver, no live job process group."""
+    """§0.10 drain: STOP requested, no live driver, no live job process group, and the
+    relocated CODEX_HOMEs hold the authoring sessions."""
     if not stop_requested():
         return False
     try:
@@ -938,9 +953,11 @@ def drained():
     except ValueError:
         return False
     try:
-        return not any(job_members(t) for t in TAGS.glob("*.tag")) if TAGS.exists() else True
+        if TAGS.exists() and any(job_members(t) for t in TAGS.glob("*.tag")):
+            return False
     except OSError:
         return False
+    return relocation_evidenced()
 
 
 def _raise(e):

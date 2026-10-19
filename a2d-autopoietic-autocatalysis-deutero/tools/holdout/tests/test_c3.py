@@ -111,6 +111,15 @@ class Pipeline(unittest.TestCase):
         dead.wait()
         (self.c3 / "_records" / "pids.txt").write_text(f"{dead.pid} 1\n")
         self.assertEqual(self.lib(drained), "True")
+        # §0.10 positive check: a family that ran must show sessions in its relocated home.
+        (self.c3 / "_records" / "active.json").write_text(json.dumps({"active": ["c3-f01"]}))
+        (self.c3 / "_records" / "author-c3-f01").mkdir()
+        (self.c3 / "_records" / "author-c3-f01" / "status.json").write_text(json.dumps({"attempts": 1}))
+        self.assertEqual(self.lib(drained), "False")            # no sessions in the relocated home
+        sessions = self.c3 / "c3-f01" / "_codex_home" / "sessions" / "2026"
+        sessions.mkdir(parents=True)
+        (sessions / "rollout.jsonl").write_text("{}")
+        self.assertEqual(self.lib(drained), "True")
 
     def test_unregistered_launcher_exits_on_driver_death(self):
         """The handshake launcher never execs if the driver dies before saying go."""
@@ -202,19 +211,27 @@ class Pipeline(unittest.TestCase):
             "print(r)")
         self.assertEqual(out, "[True, True, False, False, False]")
 
-    def test_repair_changes_only_underdetermined_tests(self):
-        """Sol re-check B9: a repair may change or remove only the tests judged UNDERDETERMINED;
-        every other test and the preamble stay byte-identical, and no test is added."""
+    def test_audit_preflight_and_interrupted_reservations(self):
+        """§0.10 before audit jobs: a failed canary preflight refuses with nothing reserved; a
+        round reserved by an interrupted run becomes a void round, never a fresh call."""
         out = self.lib(
-            "from c3_adjudicate import repair_keeps_determined as k\n"
-            "old = 'use x;\\n#[test]\\nfn a() { assert!(f(1)); }\\n#[test]\\nfn b() { assert!(g(2)); }\\n'\n"
-            "loosened_b = old.replace('g(2)', 'g(2) || true')\n"
-            "dropped_b = old.split('#[test]\\nfn b')[0]\n"
-            "changed_a = old.replace('f(1)', 'f(0)')\n"
-            "added = old + '#[test]\\nfn c() {}\\n'\n"
-            "print([k(old, loosened_b, {'b'}), k(old, dropped_b, {'b'}), k(old, changed_a, {'b'}),\n"
-            "       k(old, added, {'b'}), k(old, loosened_b, set()), k(old, old.replace('use x', 'use y'), {'a', 'b'})])")
-        self.assertEqual(out, "[True, True, False, False, False, False]")
+            "from c3_audit import reconcile\n"
+            "a = {'t1': {'r1': {'reserved': True, 'run': 3, 'content': 'h'}},\n"
+            "     't2': {'r1': {'passed': True, 'void': False, 'run': 2, 'content': 'h'}}}\n"
+            "n = reconcile(a)\n"
+            "print(n, a['t1']['r1']['void'], a['t1']['r1']['passed'], 'reserved' in a['t1']['r1'], a['t2']['r1']['void'])")
+        self.assertEqual(out, "1 True False False False")
+        fake = str(HERE / "fake_a2d.py")
+        self.select()
+        f = (self.c3 / "FAMILIES.txt").read_text().split()[0]
+        self.run_script("c3_author.py", "--only", f)
+        self.run_script("c3_assemble.py")
+        self.assertEqual(self.run_script("c3_validate.py", "--binary", fake)[0], 0)
+        self.run_script("c3_similarity.py")
+        code, lines = self.run_script("c3_audit.py", "--binary", fake, env=dict(self.env, C3_TEST_PREFLIGHT="fail"))
+        self.assertEqual(code, 2)
+        self.assertIn("preflight-failed", [x.get("status") for x in lines])
+        self.assertFalse((self.c3 / "_records" / "audit.json").exists())
 
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
@@ -430,6 +447,7 @@ class Pipeline(unittest.TestCase):
         settle()
         out = self.c3 / f / "out" / f
         l3_before = (out / f"{f}-l3" / "hidden_tests.rs").read_bytes()
+        l2_before = (out / f"{f}-l2" / "hidden_tests.rs").read_bytes()
         env = dict(self.env, C3_TEST_AUDIT_FAIL=f"{f}-l2 {f}-l3", C3_TEST_AUDIT_VOID=f"{f}-l4")
         code, lines = self.run_script("c3_audit.py", "--binary", fake, env=env)
         self.assertEqual(code, 0, lines)
@@ -440,7 +458,8 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         adj = json.loads((self.c3 / "_records" / "adjudication.json").read_text())
         self.assertEqual((adj[f"{f}-l2"]["r1"]["repaired"], adj[f"{f}-l3"]["r1"]["repaired"]), (True, False))
-        self.assertIn("clarified", (out / f"{f}-l2" / "hidden_tests.rs").read_text())
+        self.assertIn("(clarified)", json.loads((out / f"{f}-l2" / "task.json").read_text())["requirements"])
+        self.assertEqual((out / f"{f}-l2" / "hidden_tests.rs").read_bytes(), l2_before)   # tests never edited
         self.assertEqual((out / f"{f}-l3" / "hidden_tests.rs").read_bytes(), l3_before)   # DETERMINED: unchanged
         code, lines = self.run_script("c3_audit.py", "--binary", fake, env=env)      # suite changed: not clean
         self.assertIn("suite-not-clean", [x.get("status") for x in lines])

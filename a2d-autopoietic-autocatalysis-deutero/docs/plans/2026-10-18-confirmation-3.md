@@ -325,7 +325,28 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - `todo_list` could not be triggered in exec mode even with every feature on; the allowlist covers it.
     - `c3_controls.py` records the run (`runs/c2-confirm3/controls.json`). The generator requires that record, complete, for the coder lane and every registered lane, at the registered provider commit and codex fingerprint.
   - **B8, registration text:** states the imputed CI guards.
-  - **B9, repairs.** A hidden-test repair may change or remove only the tests judged UNDERDETERMINED; the preamble and every other test stay byte-identical, and nothing is added. A whole-task (`*`) verdict allows only `task.json`.
+  - **B9, repairs.** A hidden-test repair may change or remove only the tests judged UNDERDETERMINED; the preamble and every other test stay byte-identical, and nothing is added. A whole-task (`*`) verdict allows only `task.json`. *(Superseded in round 3: repairs are requirements-only.)*
+- **Round 3 (11:50–12:20 UTC).** Sol: **No**, 7 blockers. Fresh Claude: **Yes** once 5 blockers are fixed. All fixed (provider branch bc6922f7, now the pinned `PROVIDER_COMMIT`):
+  - **Repairs are requirements-only** (Sol B1, Claude B1). The segment check could still drop or `#[ignore]` a DETERMINED test, so hidden tests are never edited. An UNDERDETERMINED test is repaired by stating its behaviour in the requirements. This tightens §0.12's step-5 choice before any adjudication ran.
+  - **The audit is bound to the instrument** (Sol B2):
+    - each run records its git head, binary sha and codex fingerprint with a bracket;
+    - certification requires the provider commit in that head, the registered codex and a held bracket;
+    - production refuses a binary override.
+  - **Audit isolation and integrity** (Sol B3, Claude B2): a canary preflight on the solver lane, holdout-local homes and the temp-root ancestry check; tool events, missing transcripts and count mismatches void a tuple.
+  - **Audit interruption** (Sol B4): each round is reserved durably before launch; an interrupted reservation becomes a void round, never a fresh call; the child inherits the driver lock.
+  - **Canary preflight** (Sol B5, B6): every lane needs at least one successful, transcript-audited call, else a day-long no-go; probe children inherit the runner lock.
+  - **Drain** (Sol B7): §0.10's positive check is added. Every family that used an attempt has session files in its relocated `CODEX_HOME` (real data: all present).
+  - **Controller classes must agree** (Claude B3): SUPPORTED needs the controller's Supported for D and B; RULED OUT needs its RuledOut for D.
+  - **Source build** (Claude B4): `a2d` is built with `cargo --locked` from the bound tree before any replicate call and before scoring.
+  - **Missing bracket** (Claude B5): it voids its replicate.
+  - **Claude's non-blocking points, all taken:**
+    - the aborted-generation wording matches the runner;
+    - the provider is pinned to the reviewed head, and the holdout dirs must agree;
+    - the look-2 gate must be committed exactly once (look 1's ledger has the summary record the on-time check reads);
+    - controls count the intended item in the event stream only;
+    - skipped eligible days are disclosed;
+    - a failed first attempt's tool events count.
+
 
 - *Answered by the early reviews (2026-10-19): yes; imputed CI guards adopted, see the dispositions above.* Original question: should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 

@@ -6,8 +6,8 @@ It classifies every failing hidden test as DETERMINED (the requirements imply it
 kept unchanged) or UNDERDETERMINED.
 
 - mode "repair" (a task's round-1 audit failed): UNDERDETERMINED tasks must come back
-  repaired under out/<id>/ (task.json with only `requirements` changed, and/or
-  hidden_tests.rs). The repair is applied to the family's verified author files the way
+  repaired under out/<id>/ as task.json with only `requirements` changed (hidden tests are
+  never edited: Sol re-check, 2026-10-19). The repair is applied to the family's verified author files the way
   c3_fix.py applies a repair (hashes must match, snapshot, verify, restore on failure). The
   task is then re-assembled, re-validated, re-checked for similarity and re-audited once
   (c3_audit.py round 2). A repair that is missing or malformed excludes the task.
@@ -43,13 +43,11 @@ TEST_NAME = re.compile(r"^(\*|[A-Za-z_][A-Za-z0-9_:]*)$")
 MODE_TEXT = {
     "repair": (
         "## Repair (only tasks with at least one UNDERDETERMINED line)\n"
-        "For each such task, write the repaired files under `out/<id>/`: `task.json` (only its `requirements` "
-        "text may change) and/or `hidden_tests.rs`. Prefer stating in the requirements the behaviour the test "
-        "checks. Change a hidden test only when it checks behaviour the task should not prescribe, and then "
-        "remove or loosen only that test. Never change a test to match the submission's output, and keep the "
-        "task as difficult as it was. Verify with `./check.sh tasks/<id>/reference.rs <hidden tests>` that the "
-        "reference passes every hidden test, and with each `tasks/<id>/mutants/mN.rs` that every mutant still "
-        "fails at least one. Write nothing under `out/` for tasks whose lines are all DETERMINED."),
+        "For each such task, write `out/<id>/task.json`: the same task with only its `requirements` text "
+        "changed, so that it states the behaviour each UNDERDETERMINED test checks. Do not write any other "
+        "file: hidden tests are never changed. Never word a requirement to match the submission's output, and "
+        "keep the task as difficult as it was. Write nothing under `out/` for tasks whose lines are all "
+        "DETERMINED."),
     "classify": (
         "## Classification only\n"
         "These tasks were already repaired once, or this is their only informative audit. Do not write `out/` "
@@ -115,35 +113,10 @@ def parse_verdicts(w, expected):
     return got if {t: sorted(v) for t, v in got.items()} == {t: sorted(v) for t, v in expected.items()} else None
 
 
-TEST_ATTR = re.compile(r"^[ \t]*#\[test\]", re.M)
-TEST_FN = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def test_segments(text):
-    """(preamble, {test name: its #[test] segment}) of a flat hidden_tests.rs, or None."""
-    starts = [m.start() for m in TEST_ATTR.finditer(text)]
-    segs = {}
-    for a, b in zip(starts, starts[1:] + [len(text)]):
-        m = TEST_FN.search(text, a, b)
-        if not m or m.group(1) in segs:
-            return None
-        segs[m.group(1)] = text[a:b].rstrip()
-    return text[:starts[0] if starts else len(text)].rstrip(), segs
-
-
-def repair_keeps_determined(old, new, under):
-    """The repaired hidden tests only change or remove tests judged UNDERDETERMINED: the
-    preamble and every other test stay byte-identical, and no test is added (Sol re-check B9)."""
-    a, b = test_segments(old), test_segments(new)
-    if a is None or b is None or a[0] != b[0] or not set(b[1]) <= set(a[1]):
-        return False
-    return all(b[1][name] == a[1][name] for name in b[1] if name not in under)
-
-
 def apply_repair(fid, tid, w, verdicts=None):
     """c3_fix pattern: verified author files, snapshot, copy the repair in, verify, else restore.
-    `verdicts` ({test: verdict}) limits a hidden-test repair to the UNDERDETERMINED tests; a
-    whole-task verdict (`*`, the submission did not compile) allows only task.json."""
+    A repair changes only the requirements (task.json): hidden tests are never edited, so a
+    DETERMINED test cannot be removed, loosened or disabled (Sol re-check rounds 2 and 3)."""
     from c3_author import complete
     status_path = RECORDS / f"author-{fid}" / "status.json"
     st = load_json(status_path, {})
@@ -153,13 +126,8 @@ def apply_repair(fid, tid, w, verdicts=None):
     src = w / "out" / tid
     try:
         names = sorted(p.name for p in src.iterdir()) if src.is_dir() and not src.is_symlink() else []
-        if not names or not set(names) <= {"task.json", "hidden_tests.rs"}:
+        if names != ["task.json"]:
             return False
-        under = {t.rsplit("::", 1)[-1] for t, v in (verdicts or {}).items() if v == "UNDERDETERMINED"}
-        if "hidden_tests.rs" in names:
-            if "*" in under or not repair_keeps_determined(safe_read_text(out / tid / "hidden_tests.rs", C3),
-                                                           safe_read_text(src / "hidden_tests.rs", w), under):
-                return False
         if "task.json" in names:
             old = json.loads(safe_read_text(out / tid / "task.json", C3))
             new = json.loads(safe_read_text(src / "task.json", w))
