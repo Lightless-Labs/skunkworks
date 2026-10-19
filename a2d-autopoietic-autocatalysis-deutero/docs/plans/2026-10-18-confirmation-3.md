@@ -249,6 +249,16 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Both records then scan 0. The rule's intent is unchanged: broker, network or outside-path commands still count, and the seatbelt profile and probes remain the boundary.
   - The two spent first attempts stay spent; both families keep their second.
   - Authoring was stopped by STOP, which lets in-flight jobs finish, and restarted on the fixed commit. Jobs before 08:00 ran under the earlier pipeline commit.
+- **Registration-step items from §7, status 2026-10-19:**
+  - **Interleaving: checked, no fix needed.** The controller runs arms interleaved, in completion order under parallel jobs.
+    - Confirmation-2's manifests (432 submissions each): every quarter holds 32–40 of each arm, and the longest same-arm run is 6–7.
+    - Dev runs (E005): the first half holds exactly half of each arm.
+  - **Latency go/no-go: defined in the runner** (`nano/confirm3.py`). Before each replicate, 3 PONG calls of the registered model run from empty dirs. Go if the median is ≤ 45 s, where a failed probe counts as infinite. Every probe is logged to `runs/c2-confirm3/latency.jsonl`. A no-go defers to the next 00:05 UTC and is not an attempt.
+  - **Runner** (`nano/confirm3.py generate | manifest | score`):
+    - spend-day gates; a drain check through the pipeline's own `--drained`; the codex fingerprint (sha256 of every file beside the resolved binary) checked against the registration and re-taken after generation;
+    - an attempt record before the first call; one relaunch with the same seed;
+    - scoring by §0.13.
+  - Still open for the registration: new seeds, the exposure-exclusion policy, and branch-specific call caps from the frozen candidate.
 - **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request
