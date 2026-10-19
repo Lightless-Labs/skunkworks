@@ -147,17 +147,25 @@ def candidate(at=None):
     return E002, (result[1] if result else "no look-2 result by T") + "; candidate E002"
 
 
-def certified(tasks):
+def certified(tasks, reg=None):
     """Step 5 is complete on exactly this suite (False on any error: fail closed)."""
     if not tasks:
         return False
     try:
-        return _certified(tasks)
-    except (OSError, ValueError, KeyError):
+        return _certified(tasks, reg or {})
+    except (OSError, ValueError, KeyError, TypeError):
         return False
 
 
-def _certified(tasks):
+def audit_instrument_ok(run, reg):
+    """The audit run behind a task's final round ran on the registered provider (its git head
+    contains the provider commit), with the registered codex, and its bracket held."""
+    return (bool(run) and run.get("bracket_ok") is True and bool(reg.get("provider_commit"))
+            and not c3.git("merge-base", "--is-ancestor", reg["provider_commit"], run.get("head") or "")[0]
+            and (run.get("codex") or {}).get("files") == reg.get("codex_files"))
+
+
+def _certified(tasks, reg):
     import c3_adjudicate
     import c3_audit
     from c3lib import RECORDS, load_json
@@ -171,10 +179,13 @@ def _certified(tasks):
     adj = load_json(RECORDS / "adjudication.json", {})
     excluded = set(load_json(RECORDS / "excluded.json", {"tasks": []})["tasks"])
     from c3lib import SUITE, hashes_digest, tree_hashes
+    runs = load_json(RECORDS / "audit-runs.json", {}).get("runs", {})
     for t in tasks:                     # the final informative audit round saw exactly the current task
         rounds = audit.get(t, {})
         final = rounds.get("r2") or rounds.get("r1") or {}
         if final.get("content") != hashes_digest(tree_hashes(SUITE / t)):
+            return False
+        if not audit_instrument_ok(runs.get(str(final.get("run"))), reg):
             return False
     return (c3_audit.clean_suite(tasks) and all("r1" in audit.get(t, {}) for t in tasks)
             and all(c3_audit.needs(audit, adj, t) is None for t in tasks)
@@ -318,7 +329,7 @@ def main():
         ("provider merge", not reg["provider_commit"]), ("lanes", not reg["lanes"]),
         (f">= {MIN_FAMILIES} families", reg["families"] < MIN_FAMILIES),
         ("4 tasks per family", len(reg["tasks"]) != 4 * reg["families"]),
-        ("certification", not certified(reg["tasks"])),
+        ("certification", not certified(reg["tasks"], reg)),
         ("live detector controls on every lane (c3_controls.py)", not controls_ok(reg)),
     ) if bad]
     if problems:
