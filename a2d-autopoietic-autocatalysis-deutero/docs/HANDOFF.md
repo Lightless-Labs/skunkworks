@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-18 14:40 UTC (session 145: **confirmation-3 pre-commitment fixed and reviewed** (plan §0). **Confirmation-2 is IntegrityReview** — replicate 1 (01:35–03:46 UTC, 1,486 Luna) audit found 2 web searches in arm B, so by the registered C2-WEB rule the set is spent with no claim; replicate 2 still runs (descriptive). A SUPPORTED claim now needs confirmation-3 (plan addendum 10-18). The queue runner was restarted on the owner's request at 01:35 UTC 10-18, pid 7116. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
+**Last updated:** 2026-10-19 06:05 UTC (session 145: **confirmation-2 replicate 2 generated** (00:06–05:53 UTC, 1,617 invocations, 0 voids). Its web audit shows 0 searches, with 11 invocations unaudited for lack of a transcript (9b5ca3c9). The manifests are committed (c6c61814), and **sealed `confirm-score` runs detached from 05:58 UTC** (wrapper `~/.a2d-c3-drivers/c2_score_sealed.sh`; done when `c2-score.rc` exists). The confirmation-3 prerequisites (web audit committed) are met, but selection still waits for a healthy-host compile timing: `fseventsd` is saturated, disk is 97% full and swap is 6.9 GB. Earlier: the confirmation-3 pre-commitment was fixed and reviewed (plan §0). **Confirmation-2 is IntegrityReview**: replicate 1's audit found 2 web searches in arm B. The queue runner is pid 7116.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -32,6 +32,9 @@
        - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
+       - **State (10-19 06:05 UTC):** L09 and L10 are done and `web-audit-r2.json` is committed, so prereqs (a) holds. Sealed scoring is running. After `c2-score.rc` appears:
+         - commit `runs/c2-confirm2/sealed-sha256.txt` (copied from `~/.a2d-c3-drivers/c2-score-sha256.txt`);
+         - then time a fresh-workdir `check.sh` under the profile on a quiet host (≤ ~90 s first run, ≤ 5 s second), then start selection.
        - **State (10-18 14:40 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.
          - Step 2 is done: the pipeline is in `tools/holdout/` (read its README first). Sol's 5th re-check (134393a2) says **Yes**. Plan §0.12 and the LOG (10-18) cover 4 rounds of fixes:
