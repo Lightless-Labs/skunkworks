@@ -43,12 +43,10 @@
          - **At the provider merge (≥ 10-22, after the batch's confirmation step AND after look 2 is done or T = 10-23 23:59 has passed; the look's controller is bound to 98672c36):**
            - merge `c2-web-provider` (f06dc9fb), bump `c3lib.PROVIDER_COMMIT` to it, rebuild, and run the live probes (incl. `cargo test -p a2d-providers live_codex -- --ignored`, run one at a time);
            - then `c3_audit.py` and `c3_adjudicate.py`.
-         - **Before registration:** write the generation runner in `nano/confirm3.py`. It needs:
-           - the spend-day rule, a drain check and launch isolation;
-           - an attempt record before any call;
-           - the codex realpath and sha256 bracket;
-           - one relaunch with the same seed;
-           - a CLI over `replicate_tuples` and `decide`.
+         - **Registration (after the candidate is fixed at T and the suite is certified and audited):**
+           - run `docs/experiments/analysis/c3_registration.py --candidate <frozen> --frozen-from … --gate … --claim-wording … [--disclosure …]`, first with `--dry-run`;
+           - it writes `runs/c2-confirm3/registration.json` and `frozen.py`;
+           - the runner is `nano/confirm3.py generate | manifest | score` (built, 17 tests).
          - Then run the registration review (Sol plus a fresh Claude), with "CI under imputation?" as an open question (§0.13).
        - **State (10-18 14:40 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.
