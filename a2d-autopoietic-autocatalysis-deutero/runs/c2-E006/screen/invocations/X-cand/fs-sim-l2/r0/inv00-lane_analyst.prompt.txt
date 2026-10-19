@@ -1,0 +1,97 @@
+SYSTEM:
+You are a senior reviewer helping a programmer before they write code.
+
+Below is a programming task exactly as the programmer will receive it: numbered requirements and the visible tests. Hidden acceptance tests check every numbered requirement.
+
+List every point where a careful programmer could still misread or under-implement the requirements: the exact order of checks, which error or result wins when several apply, boundary values (zero, empty, maximum), overflow, ties and ordering, exact formats, and behaviour the visible tests do not exercise. Cite the requirement number in each note and state the correct reading precisely.
+
+Do not write code. Reply with at most 12 short numbered notes and nothing else.
+
+PROMPT:
+R1. Implement an in-memory filesystem in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. All API items below must be pub; do not add inner attributes or inner doc comments. Implement these exact types and signatures (semicolon method declarations here are signatures, not bodies):
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Kind { Dir, File  }
+#[derive(Debug, Clone, PartialEq, Eq)] pub enum Error { InvalidPath(usize), Missing(String), NotDir(String), IsDir(String), Exists(String) }
+pub struct Fs { /* private storage */ }
+impl Fs {
+    pub fn new() -> Self;
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error>;
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error>;
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error>;
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error>;
+    pub fn cwd(&self) -> String;
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error>;
+}
+```
+
+R2. Fs::new() contains exactly the directory `/`. Filesystem instances are independent; there is no host filesystem access.
+
+R3. Path validation first scans for NUL: return InvalidPath(i) for the first NUL, where i is its zero-based UTF-8 byte offset, even if another format defect occurs earlier. Otherwise an empty path returns InvalidPath(0).
+
+R4. Accept absolute paths and paths relative to cwd. Normalize lexically before any lookup: split on `/`, discard empty and `.` components, and pop one accumulated component for `..` (at root, stay at root). Absolute input starts at root; relative input starts with the cwd components. Repeated/trailing slashes are accepted. The result is a canonical absolute path, with `/` for zero components.
+
+R5. Lookup walks canonical components from root. Missing(p) names the first absent canonical prefix; NotDir(p) names the first existing nondirectory prefix required to traverse further. These errors precede any final-entry type error.
+
+R6. Creation requires an existing directory parent; never create missing ancestors. If the immediate parent exists as a file, return NotDir(parent). Only write may create a missing final entry during a following lookup. mkdir checks its parent then its final entry.
+
+R7. mkdir creates one empty directory. If the final entry already exists, regardless of kind, return Exists(canonical_path).
+
+R8. write creates a file or replaces all bytes of an existing file. A directory at the final resolved path yields IsDir(path).
+
+R9. read returns an owned copy of all file bytes, including zero bytes and arbitrary non-UTF-8 bytes. A directory at the final resolved path yields IsDir(path).
+
+R10. ls requires a directory at the final resolved path, otherwise NotDir(path). An empty directory returns an empty vector.
+
+R11. ls returns (child basename, Kind) pairs sorted ascending by Rust String ordering (UTF-8 bytewise, case sensitive), independent of insertion order.
+
+R12. Every failed mutating operation preserves all entries, file contents, link targets (where available), and cwd (where available). No operation panics on any valid UTF-8 input or any byte data. Read-only results are owned; changing a returned vector/string cannot change filesystem state.
+
+R13. Empty byte data is a valid zero-length file; replacing a file with shorter or empty data truncates it. Data is copied at write time and at read time.
+
+R14. mkdir(`/`) returns Exists(`/`); write(`/`, data) and read(`/`) return IsDir(`/`); ls(`/`) lists the root children. Apply these rules to any path that normalizes or resolves to root as applicable.
+
+R15. ls includes only immediate children, never the directory itself or descendants. Entry kind reflects the stored entry.
+
+R16. All other nonempty components are allowed verbatim, including spaces, Unicode, backslashes, and strings containing dots. Names are case sensitive; do not trim, case-fold, or interpret a backslash as a separator.
+
+R17. mkdir does not succeed idempotently, and does not turn a file into a directory. write never turns a directory into a file. Existing unrelated entries survive successful operations.
+
+R18. For each one-path operation, validate/normalize its path before any filesystem lookup. Error path strings always use canonical absolute resolved prefixes, with no trailing slash except `/`. For ordinary entry lookups, parent traversal precedes final-entry existence/type checks.
+
+R19. cwd initially equals `/`; cwd() returns an owned canonical absolute path. Relative paths use cwd at operation entry, without changing cwd.
+
+R20. chdir normalizes and looks up its argument, then requires a directory, otherwise NotDir(final_path). On success set cwd to the resolved directory path; on failure leave it unchanged.
+
+R21. Dot and dot-dot are eliminated before lookup, even after nonexistent or file components: `/absent/../ok` addresses `/ok`. A trailing slash imposes no directory requirement; read(`/file/`) can read a file.
+
+R22. Normalization may yield root or an existing entry. mkdir then returns Exists; write at root returns IsDir. Any number of parent components above root stays at root. Relative `.` and `..` are valid.
+
+R23. Report errors using normalized paths, never raw input. Whitespace-only paths are ordinary names, while the empty string is invalid; NUL positions remain offsets in the original input.
+
+R24. read, ls, mkdir and write never alter cwd on success or failure. Failed chdir due to invalid path, missing prefix or nondirectory likewise preserves cwd.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test]
+fn public_file_roundtrip() {
+    let mut f=Fs::new(); f.mkdir("/docs").unwrap(); f.write("/docs/item", b"hello").unwrap(); assert_eq!(f.read("/docs/item"), Ok(b"hello".to_vec()));
+}
+
+#[test]
+fn public_relative_cwd() {
+    let mut f=Fs::new(); f.mkdir("/work").unwrap(); f.chdir("/work").unwrap(); f.write("note",b"n").unwrap(); assert_eq!(f.cwd(),"/work"); assert_eq!(f.read("./note"),Ok(b"n".to_vec()));
+}
+
+#[test]
+fn public_normalized_listing() {
+    let mut f=Fs::new(); f.mkdir("//data//").unwrap(); f.write("/data/./a",b"a").unwrap(); assert_eq!(f.ls("/data//"),Ok(vec![("a".into(),Kind::File)]));
+}
+
+#[test]
+fn public_chdir_parent() {
+    let mut f=Fs::new(); f.mkdir("/one").unwrap(); f.chdir("/one").unwrap(); f.chdir("..").unwrap(); assert_eq!(f.cwd(),"/");
+}
+```

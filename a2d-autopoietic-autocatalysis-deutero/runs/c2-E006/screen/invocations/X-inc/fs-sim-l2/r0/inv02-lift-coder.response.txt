@@ -1,0 +1,203 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+    cwd: Vec<String>,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+            cwd: Vec::new(),
+        }
+    }
+
+    fn canonical(components: &[String]) -> String {
+        if components.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", components.join("/"))
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<Vec<String>, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut components = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            self.cwd.clone()
+        };
+
+        for component in path.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                name => components.push(name.to_owned()),
+            }
+        }
+        Ok(components)
+    }
+
+    fn resolve<'a>(&'a self, components: &[String]) -> Result<&'a Entry, Error> {
+        let mut current = &self.root;
+        let mut prefix = Vec::new();
+
+        for (i, component) in components.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    prefix.push(component.clone());
+                    let path = Self::canonical(&prefix);
+                    current = children.get(component).ok_or(Error::Missing(path))?;
+                    if i + 1 < components.len() && !matches!(current, Entry::Dir(_)) {
+                        return Err(Error::NotDir(Self::canonical(&prefix)));
+                    }
+                }
+                Entry::File(_) => {
+                    return Err(Error::NotDir(Self::canonical(&prefix)));
+                }
+            }
+        }
+        Ok(current)
+    }
+
+    fn resolve_parent_mut<'a>(
+        &'a mut self,
+        components: &[String],
+    ) -> Result<(&'a mut BTreeMap<String, Entry>, String, String), Error> {
+        let name = components.last().expect("non-root path has a final component").clone();
+        let parent_components = &components[..components.len() - 1];
+        let parent_path = Self::canonical(parent_components);
+        let entry_path = Self::canonical(components);
+
+        let mut current = &mut self.root;
+        let mut prefix = Vec::new();
+
+        for component in parent_components {
+            match current {
+                Entry::Dir(children) => {
+                    prefix.push(component.clone());
+                    let path = Self::canonical(&prefix);
+                    current = children.get_mut(component).ok_or(Error::Missing(path))?;
+                    if !matches!(current, Entry::Dir(_)) {
+                        return Err(Error::NotDir(Self::canonical(&prefix)));
+                    }
+                }
+                Entry::File(_) => {
+                    return Err(Error::NotDir(Self::canonical(&prefix)));
+                }
+            }
+        }
+
+        match current {
+            Entry::Dir(children) => Ok((children, name, entry_path)),
+            Entry::File(_) => Err(Error::NotDir(parent_path)),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_owned()));
+        }
+
+        let (parent, name, entry_path) = self.resolve_parent_mut(&components)?;
+        if parent.contains_key(&name) {
+            return Err(Error::Exists(entry_path));
+        }
+        parent.insert(name, Entry::Dir(BTreeMap::new()));
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        if components.is_empty() {
+            return Err(Error::IsDir("/".to_owned()));
+        }
+
+        let (parent, name, entry_path) = self.resolve_parent_mut(&components)?;
+        match parent.get_mut(&name) {
+            Some(Entry::Dir(_)) => Err(Error::IsDir(entry_path)),
+            Some(Entry::File(contents)) => {
+                contents.clear();
+                contents.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                parent.insert(name, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = self.normalize(path)?;
+        match self.resolve(&components)? {
+            Entry::File(contents) => Ok(contents.clone()),
+            Entry::Dir(_) => Err(Error::IsDir(Self::canonical(&components))),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = self.normalize(path)?;
+        match self.resolve(&components)? {
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(&components))),
+        }
+    }
+
+    pub fn cwd(&self) -> String {
+        Self::canonical(&self.cwd)
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        match self.resolve(&components)? {
+            Entry::Dir(_) => {
+                self.cwd = components;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(&components))),
+        }
+    }
+}
+```

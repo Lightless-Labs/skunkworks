@@ -1,0 +1,301 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub priority: u8,
+    pub dependencies: Vec<String>,
+    pub max_attempts: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    Waiting { ready_at: u64 },
+    Running { attempt: u8 },
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ticket {
+    pub id: String,
+    pub attempt: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Config,
+    BadId(usize),
+    BadPriority(usize),
+    BadAttempts(usize),
+    Duplicate(usize),
+    DuplicateDependency(usize, usize),
+    MissingDependency(usize, usize),
+    Cycle,
+    TimeReversed,
+    Busy,
+    NoCycle,
+    Unknown,
+    NotRunning,
+}
+
+struct JobData {
+    job: Job,
+    dependencies: Vec<usize>,
+}
+
+pub struct Runner {
+    jobs: Vec<JobData>,
+    aging_ms: u64,
+    retry_base: u64,
+    retry_cap: u64,
+    states: Vec<State>,
+    attempts: Vec<u8>,
+    last_time: u64,
+    cycle_started: bool,
+}
+
+impl Runner {
+    pub fn new(
+        jobs: Vec<Job>,
+        aging_ms: u64,
+        retry_base: u64,
+        retry_cap: u64,
+    ) -> Result<Self, Error> {
+        if retry_base == 0 || retry_cap < retry_base {
+            return Err(Error::Config);
+        }
+
+        let mut ids = std::collections::HashMap::new();
+
+        for (index, job) in jobs.iter().enumerate() {
+            let valid_id = (1..=16).contains(&job.id.len())
+                && job
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !valid_id {
+                return Err(Error::BadId(index));
+            }
+            if job.priority > 9 {
+                return Err(Error::BadPriority(index));
+            }
+            if !(1..=32).contains(&job.max_attempts) {
+                return Err(Error::BadAttempts(index));
+            }
+            if ids.insert(job.id.as_str(), index).is_some() {
+                return Err(Error::Duplicate(index));
+            }
+        }
+
+        let mut resolved_dependencies = Vec::with_capacity(jobs.len());
+        for (job_index, job) in jobs.iter().enumerate() {
+            let mut seen = std::collections::HashSet::new();
+            let mut dependencies = Vec::with_capacity(job.dependencies.len());
+            for (dep_index, dependency) in job.dependencies.iter().enumerate() {
+                if !seen.insert(dependency.as_str()) {
+                    return Err(Error::DuplicateDependency(job_index, dep_index));
+                }
+                match ids.get(dependency.as_str()) {
+                    Some(&index) => dependencies.push(index),
+                    None => return Err(Error::MissingDependency(job_index, dep_index)),
+                }
+            }
+            resolved_dependencies.push(dependencies);
+        }
+
+        fn has_cycle(
+            node: usize,
+            dependencies: &[Vec<usize>],
+            marks: &mut [u8],
+        ) -> bool {
+            if marks[node] == 1 {
+                return true;
+            }
+            if marks[node] == 2 {
+                return false;
+            }
+            marks[node] = 1;
+            for &dependency in &dependencies[node] {
+                if has_cycle(dependency, dependencies, marks) {
+                    return true;
+                }
+            }
+            marks[node] = 2;
+            false
+        }
+
+        let mut marks = vec![0; jobs.len()];
+        for index in 0..jobs.len() {
+            if has_cycle(index, &resolved_dependencies, &mut marks) {
+                return Err(Error::Cycle);
+            }
+        }
+
+        let job_data = jobs
+            .into_iter()
+            .zip(resolved_dependencies)
+            .map(|(job, dependencies)| JobData { job, dependencies })
+            .collect::<Vec<_>>();
+        let count = job_data.len();
+
+        Ok(Self {
+            jobs: job_data,
+            aging_ms,
+            retry_base,
+            retry_cap,
+            states: vec![State::Waiting { ready_at: 0 }; count],
+            attempts: vec![0; count],
+            last_time: 0,
+            cycle_started: false,
+        })
+    }
+
+    pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if self.cycle_started
+            && self.states.iter().any(|state| {
+                matches!(state, State::Waiting { .. } | State::Running { .. })
+            })
+        {
+            return Err(Error::Busy);
+        }
+
+        self.states.fill(State::Waiting { ready_at: now });
+        self.attempts.fill(0);
+        self.last_time = now;
+        self.cycle_started = true;
+        Ok(())
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+
+        let mut selected: Option<(usize, u8)> = None;
+
+        for index in 0..self.jobs.len() {
+            let ready_at = match self.states[index] {
+                State::Waiting { ready_at } if ready_at <= now => ready_at,
+                _ => continue,
+            };
+
+            if !self.jobs[index]
+                .dependencies
+                .iter()
+                .all(|&dep| matches!(self.states[dep], State::Succeeded))
+            {
+                continue;
+            }
+
+            let base = self.jobs[index].job.priority;
+            let effective = if self.aging_ms == 0 {
+                base
+            } else {
+                let gain = (now - ready_at) / self.aging_ms;
+                (base as u64 + gain).min(9) as u8
+            };
+
+            if selected.is_none_or(|(_, best_priority)| effective > best_priority) {
+                selected = Some((index, effective));
+            }
+        }
+
+        self.last_time = now;
+        let Some((index, _)) = selected else {
+            return Ok(None);
+        };
+
+        self.attempts[index] += 1;
+        let attempt = self.attempts[index];
+        self.states[index] = State::Running { attempt };
+
+        Ok(Some(Ticket {
+            id: self.jobs[index].job.id.clone(),
+            attempt,
+        }))
+    }
+
+    pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+
+        let index = self
+            .jobs
+            .iter()
+            .position(|job| job.job.id == id)
+            .ok_or(Error::Unknown)?;
+
+        if !matches!(self.states[index], State::Running { .. }) {
+            return Err(Error::NotRunning);
+        }
+
+        self.last_time = now;
+
+        if success {
+            self.states[index] = State::Succeeded;
+            return Ok(());
+        }
+
+        let attempt = self.attempts[index];
+        if attempt == self.jobs[index].job.max_attempts {
+            self.states[index] = State::Failed;
+            self.propagate_blocked();
+        } else {
+            let shift = u32::from(attempt.saturating_sub(1));
+            let delay = self
+                .retry_base
+                .checked_shl(shift)
+                .unwrap_or(u64::MAX)
+                .min(self.retry_cap);
+            self.states[index] = State::Waiting {
+                ready_at: now.saturating_add(delay),
+            };
+        }
+
+        Ok(())
+    }
+
+    pub fn status(&self, id: &str) -> Result<State, Error> {
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+        let index = self
+            .jobs
+            .iter()
+            .position(|job| job.job.id == id)
+            .ok_or(Error::Unknown)?;
+        Ok(self.states[index].clone())
+    }
+
+    fn propagate_blocked(&mut self) {
+        loop {
+            let mut changed = false;
+            for index in 0..self.jobs.len() {
+                if !matches!(self.states[index], State::Waiting { .. }) {
+                    continue;
+                }
+                if self.jobs[index].dependencies.iter().any(|&dependency| {
+                    matches!(self.states[dependency], State::Failed | State::Blocked)
+                }) {
+                    self.states[index] = State::Blocked;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+}
+```

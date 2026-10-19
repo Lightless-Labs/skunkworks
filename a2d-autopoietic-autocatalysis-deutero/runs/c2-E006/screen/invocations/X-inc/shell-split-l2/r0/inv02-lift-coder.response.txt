@@ -1,0 +1,303 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single(usize),
+    Double(usize),
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+fn is_name_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_name_continue(c: char) -> bool {
+    is_name_start(c) || c.is_ascii_digit()
+}
+
+fn lookup<'a>(name: &str, env: &'a [(&str, &str)]) -> Option<&'a str> {
+    env.iter()
+        .find_map(|(key, value)| (*key == name).then_some(*value))
+}
+
+fn decode_default(text: &str) -> String {
+    let mut decoded = String::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((_, c)) = chars.next() {
+        if c == '\\' {
+            if let Some((_, next)) = chars.next() {
+                decoded.push(next);
+            } else {
+                decoded.push('\\');
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+
+    decoded
+}
+
+fn parse_braced(
+    input: &str,
+    dollar_pos: usize,
+    env: &[(&str, &str)],
+) -> Result<(String, usize), SplitError> {
+    let bytes = input.as_bytes();
+    let mut cursor = dollar_pos + 2;
+
+    // Locate the first unescaped closing brace. Backslash skips one scalar.
+    let close = loop {
+        if cursor >= bytes.len() {
+            return Err(SplitError::UnterminatedExpansion { pos: dollar_pos });
+        }
+
+        let c = input[cursor..].chars().next().expect("valid UTF-8 boundary");
+        if c == '}' {
+            break cursor;
+        }
+        if c == '\\' {
+            cursor += 1;
+            if cursor < bytes.len() {
+                let next = input[cursor..].chars().next().expect("valid UTF-8 boundary");
+                cursor += next.len_utf8();
+            }
+        } else {
+            cursor += c.len_utf8();
+        }
+    };
+
+    let contents = &input[dollar_pos + 2..close];
+    let mut name_end = 0;
+    let mut chars = contents.char_indices();
+
+    match chars.next() {
+        Some((_, c)) if is_name_start(c) => {
+            name_end = c.len_utf8();
+        }
+        _ => return Err(SplitError::InvalidExpansion { pos: dollar_pos }),
+    }
+
+    for (offset, c) in contents[name_end..].char_indices() {
+        if is_name_continue(c) {
+            name_end += c.len_utf8();
+        } else {
+            let _ = offset;
+            break;
+        }
+    }
+
+    let name = &contents[..name_end];
+    let remainder = &contents[name_end..];
+    let value = match remainder {
+        "" => lookup(name, env).unwrap_or("").to_string(),
+        _ if remainder.starts_with(":-") => {
+            let current = lookup(name, env).unwrap_or("");
+            if !current.is_empty() {
+                current.to_string()
+            } else {
+                decode_default(&remainder[2..])
+            }
+        }
+        _ => return Err(SplitError::InvalidExpansion { pos: dollar_pos }),
+    };
+
+    Ok((value, close + 1))
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let bytes = input.as_bytes();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut quote = Quote::None;
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        let c = input[cursor..].chars().next().expect("valid UTF-8 boundary");
+        let width = c.len_utf8();
+
+        match quote {
+            Quote::Single(_) => {
+                if c == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.push(c);
+                }
+                cursor += width;
+            }
+            Quote::Double(open_pos) => {
+                match c {
+                    '"' => {
+                        quote = Quote::None;
+                        cursor += width;
+                    }
+                    '\\' => {
+                        let escape_pos = cursor;
+                        cursor += 1;
+                        if cursor >= bytes.len() {
+                            return Err(SplitError::TrailingEscape { pos: escape_pos });
+                        }
+                        let next = input[cursor..].chars().next().expect("valid UTF-8 boundary");
+                        match next {
+                            '"' | '\\' | '$' => {
+                                word.push(next);
+                                cursor += next.len_utf8();
+                            }
+                            '\n' => cursor += 1,
+                            _ => word.push('\\'),
+                        }
+                    }
+                    '$' => {
+                        if cursor + 1 < bytes.len() && bytes[cursor + 1] == b'{' {
+                            let (value, next) = parse_braced(input, cursor, env)?;
+                            word.push_str(&value);
+                            active = true;
+                            cursor = next;
+                        } else if cursor + 1 < bytes.len() {
+                            let next = input[cursor + 1..]
+                                .chars()
+                                .next()
+                                .expect("valid UTF-8 boundary");
+                            if is_name_start(next) {
+                                let start = cursor + 1;
+                                let mut end = start + next.len_utf8();
+                                while end < bytes.len() {
+                                    let ch = input[end..].chars().next().expect("valid UTF-8 boundary");
+                                    if is_name_continue(ch) {
+                                        end += ch.len_utf8();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                let name = &input[start..end];
+                                word.push_str(lookup(name, env).unwrap_or(""));
+                                active = true;
+                                cursor = end;
+                            } else {
+                                word.push('$');
+                                cursor += 1;
+                            }
+                        } else {
+                            word.push('$');
+                            cursor += 1;
+                        }
+                    }
+                    _ => {
+                        word.push(c);
+                        cursor += width;
+                    }
+                }
+                let _ = open_pos;
+            }
+            Quote::None => {
+                match c {
+                    '\'' => {
+                        active = true;
+                        quote = Quote::Single(cursor);
+                        cursor += width;
+                    }
+                    '"' => {
+                        active = true;
+                        quote = Quote::Double(cursor);
+                        cursor += width;
+                    }
+                    '\\' => {
+                        let escape_pos = cursor;
+                        cursor += 1;
+                        if cursor >= bytes.len() {
+                            return Err(SplitError::TrailingEscape { pos: escape_pos });
+                        }
+                        let next = input[cursor..].chars().next().expect("valid UTF-8 boundary");
+                        if next == '\n' {
+                            cursor += 1;
+                        } else {
+                            word.push(next);
+                            active = true;
+                            cursor += next.len_utf8();
+                        }
+                    }
+                    '$' => {
+                        if cursor + 1 < bytes.len() && bytes[cursor + 1] == b'{' {
+                            let (value, next) = parse_braced(input, cursor, env)?;
+                            word.push_str(&value);
+                            active = true;
+                            cursor = next;
+                        } else if cursor + 1 < bytes.len() {
+                            let next = input[cursor + 1..]
+                                .chars()
+                                .next()
+                                .expect("valid UTF-8 boundary");
+                            if is_name_start(next) {
+                                let start = cursor + 1;
+                                let mut end = start + next.len_utf8();
+                                while end < bytes.len() {
+                                    let ch = input[end..].chars().next().expect("valid UTF-8 boundary");
+                                    if is_name_continue(ch) {
+                                        end += ch.len_utf8();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                let name = &input[start..end];
+                                word.push_str(lookup(name, env).unwrap_or(""));
+                                active = true;
+                                cursor = end;
+                            } else {
+                                word.push('$');
+                                active = true;
+                                cursor += 1;
+                            }
+                        } else {
+                            word.push('$');
+                            active = true;
+                            cursor += 1;
+                        }
+                    }
+                    _ if is_separator(c) => {
+                        if active {
+                            words.push(std::mem::take(&mut word));
+                            active = false;
+                        }
+                        cursor += width;
+                    }
+                    _ => {
+                        word.push(c);
+                        active = true;
+                        cursor += width;
+                    }
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single(pos) => return Err(SplitError::UnterminatedSingle { pos }),
+        Quote::Double(pos) => return Err(SplitError::UnterminatedDouble { pos }),
+        Quote::None => {}
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}
+```

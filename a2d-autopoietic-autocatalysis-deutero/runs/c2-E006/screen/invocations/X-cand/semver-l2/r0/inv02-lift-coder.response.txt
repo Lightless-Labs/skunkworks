@@ -1,0 +1,248 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub pre: Vec<String>,
+    pub build: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VersionError {
+    Empty,
+    MissingCore { at: usize },
+    LeadingZero { at: usize },
+    Overflow { at: usize },
+    EmptyIdentifier { at: usize },
+    InvalidChar { at: usize },
+}
+
+fn is_digit(b: u8) -> bool {
+    b.is_ascii_digit()
+}
+
+fn parse_core(s: &str, pos: &mut usize) -> Result<u64, VersionError> {
+    let bytes = s.as_bytes();
+    let start = *pos;
+
+    while *pos < bytes.len() && is_digit(bytes[*pos]) {
+        *pos += 1;
+    }
+    if *pos == start {
+        return match bytes.get(*pos).copied() {
+            None | Some(b'.' | b'-' | b'+') => Err(VersionError::MissingCore { at: *pos }),
+            _ => Err(VersionError::InvalidChar { at: *pos }),
+        };
+    }
+
+    if *pos - start > 1 && bytes[start] == b'0' {
+        return Err(VersionError::LeadingZero { at: start });
+    }
+    let value = s[start..*pos]
+        .parse::<u64>()
+        .map_err(|_| VersionError::Overflow { at: start })?;
+    Ok(value)
+}
+
+fn parse_identifiers(
+    s: &str,
+    start: usize,
+    end: usize,
+    prerelease: bool,
+) -> Result<Vec<String>, VersionError> {
+    let bytes = s.as_bytes();
+    let mut result = Vec::new();
+    let mut ident_start = start;
+
+    loop {
+        let mut i = ident_start;
+        while i < end && bytes[i] != b'.' {
+            let b = bytes[i];
+            if !(b.is_ascii_alphanumeric() || b == b'-') {
+                return Err(VersionError::InvalidChar { at: i });
+            }
+            i += 1;
+        }
+
+        if i == ident_start {
+            return Err(VersionError::EmptyIdentifier { at: ident_start });
+        }
+
+        let ident = &s[ident_start..i];
+        if prerelease
+            && ident.len() > 1
+            && ident.bytes().all(is_digit)
+            && ident.as_bytes()[0] == b'0'
+        {
+            return Err(VersionError::LeadingZero { at: ident_start });
+        }
+        result.push(ident.to_string());
+
+        if i == end {
+            break;
+        }
+        ident_start = i + 1;
+        if ident_start == end {
+            return Err(VersionError::EmptyIdentifier { at: ident_start });
+        }
+    }
+
+    Ok(result)
+}
+
+pub fn parse_version(s: &str) -> Result<Version, VersionError> {
+    if s.is_empty() {
+        return Err(VersionError::Empty);
+    }
+
+    let mut pos = 0;
+    let major = parse_core(s, &mut pos)?;
+    for required_dot in 0..2 {
+        if pos >= s.len() || s.as_bytes()[pos] != b'.' {
+            return match s.as_bytes().get(pos).copied() {
+                None | Some(b'-' | b'+') => Err(VersionError::MissingCore { at: pos }),
+                _ => Err(VersionError::InvalidChar { at: pos }),
+            };
+        }
+        pos += 1;
+        let n = parse_core(s, &mut pos)?;
+        if required_dot == 0 {
+            let minor = n;
+            let patch = {
+                if pos >= s.len() || s.as_bytes()[pos] != b'.' {
+                    return match s.as_bytes().get(pos).copied() {
+                        None | Some(b'-' | b'+') => {
+                            Err(VersionError::MissingCore { at: pos })
+                        }
+                        _ => Err(VersionError::InvalidChar { at: pos }),
+                    };
+                }
+                pos += 1;
+                parse_core(s, &mut pos)?
+            };
+
+            let mut pre = Vec::new();
+            let mut build = Vec::new();
+            if pos < s.len() {
+                match s.as_bytes()[pos] {
+                    b'-' => {
+                        let pre_start = pos + 1;
+                        let plus = s[pre_start..].find('+').map(|i| pre_start + i);
+                        let pre_end = plus.unwrap_or(s.len());
+                        pre = parse_identifiers(s, pre_start, pre_end, true)?;
+                        if let Some(plus_pos) = plus {
+                            let build_start = plus_pos + 1;
+                            build = parse_identifiers(s, build_start, s.len(), false)?;
+                        }
+                    }
+                    b'+' => {
+                        let build_start = pos + 1;
+                        build = parse_identifiers(s, build_start, s.len(), false)?;
+                    }
+                    _ => return Err(VersionError::InvalidChar { at: pos }),
+                }
+            }
+
+            return Ok(Version {
+                major,
+                minor,
+                patch,
+                pre,
+                build,
+            });
+        }
+    }
+
+    unreachable!()
+}
+
+fn is_numeric_identifier(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(is_digit)
+}
+
+fn compare_pre(a: &[String], b: &[String]) -> Ordering {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        _ => {}
+    }
+
+    for (x, y) in a.iter().zip(b.iter()) {
+        let xn = is_numeric_identifier(x);
+        let yn = is_numeric_identifier(y);
+        let ord = match (xn, yn) {
+            (true, true) => x.len().cmp(&y.len()).then_with(|| x.as_bytes().cmp(y.as_bytes())),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => x.as_bytes().cmp(y.as_bytes()),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+pub fn compare_versions(a: &Version, b: &Version) -> Ordering {
+    (a.major, a.minor, a.patch)
+        .cmp(&(b.major, b.minor, b.patch))
+        .then_with(|| compare_pre(&a.pre, &b.pre))
+}
+
+#[derive(Clone, Debug)]
+pub struct Range {
+    arms: Vec<Vec<Constraint>>,
+}
+
+#[derive(Clone, Debug)]
+struct Constraint {
+    op: Op,
+    version: Version,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    Lt,
+    Le,
+    Eq,
+    Ge,
+    Gt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RangeError {
+    Empty { at: usize },
+    Syntax { at: usize },
+    Version { at: usize, error: VersionError },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateError {
+    pub index: usize,
+    pub error: VersionError,
+}
+
+#[derive(Clone, Debug)]
+struct Arm {
+    constraints: Vec<Constraint>,
+    anchors: Vec<(u64, u64, u64)>,
+}
+
+#[derive(Clone, Debug)]
+enum Op {
+    Lt,
+    Le,
+    Eq,
+    Ge,
+    Gt,
+}
+
+#[derive(Clone, Debug)]
+pub struct Range {
+    arms: Vec<Arm>,
+}
+```

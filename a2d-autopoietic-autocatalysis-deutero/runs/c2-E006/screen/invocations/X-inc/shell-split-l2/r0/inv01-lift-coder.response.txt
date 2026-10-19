@@ -1,0 +1,308 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut parser = Parser {
+        input,
+        env,
+        pos: 0,
+        words: Vec::new(),
+        word: String::new(),
+        active: false,
+    };
+    parser.parse()?;
+    Ok(parser.words)
+}
+
+struct Parser<'a> {
+    input: &'a str,
+    env: &'a [(&'a str, &'a str)],
+    pos: usize,
+    words: Vec<String>,
+    word: String,
+    active: bool,
+}
+
+impl Parser<'_> {
+    fn parse(&mut self) -> Result<(), SplitError> {
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+
+            match ch {
+                ' ' | '\t' | '\r' | '\n' => {
+                    self.finish_word();
+                    self.pos += ch.len_utf8();
+                }
+                '\'' => self.parse_single()?,
+                '"' => self.parse_double()?,
+                '\\' => self.parse_outside_escape()?,
+                '$' => self.parse_expansion_or_dollar()?,
+                _ => {
+                    self.append_char(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+
+        self.finish_word();
+        Ok(())
+    }
+
+    fn parse_single(&mut self) -> Result<(), SplitError> {
+        let opening = self.pos;
+        self.activate();
+        self.pos += 1;
+
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+            if ch == '\'' {
+                self.pos += 1;
+                return Ok(());
+            }
+            self.append_char(ch);
+            self.pos += ch.len_utf8();
+        }
+
+        Err(SplitError::UnterminatedSingle { pos: opening })
+    }
+
+    fn parse_double(&mut self) -> Result<(), SplitError> {
+        let opening = self.pos;
+        self.activate();
+        self.pos += 1;
+
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+            match ch {
+                '"' => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                '\\' => self.parse_double_escape()?,
+                '$' => self.parse_expansion_or_dollar()?,
+                _ => {
+                    self.append_char(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+
+        Err(SplitError::UnterminatedDouble { pos: opening })
+    }
+
+    fn parse_outside_escape(&mut self) -> Result<(), SplitError> {
+        let slash = self.pos;
+        self.pos += 1;
+
+        if self.pos == self.input.len() {
+            return Err(SplitError::TrailingEscape { pos: slash });
+        }
+
+        let ch = self.peek().expect("position is within input");
+        self.pos += ch.len_utf8();
+        if ch != '\n' {
+            self.activate();
+            self.word.push(ch);
+        }
+        Ok(())
+    }
+
+    fn parse_double_escape(&mut self) -> Result<(), SplitError> {
+        let slash = self.pos;
+        self.pos += 1;
+
+        if self.pos == self.input.len() {
+            return Err(SplitError::TrailingEscape { pos: slash });
+        }
+
+        let ch = self.peek().expect("position is within input");
+        match ch {
+            '"' | '\\' | '$' => {
+                self.word.push(ch);
+                self.pos += ch.len_utf8();
+            }
+            '\n' => {
+                self.pos += 1;
+            }
+            _ => self.word.push('\\'),
+        }
+        Ok(())
+    }
+
+    fn parse_expansion_or_dollar(&mut self) -> Result<(), SplitError> {
+        let dollar = self.pos;
+        let after_dollar = dollar + 1;
+
+        let Some(next) = self.input.get(after_dollar..).and_then(|s| s.chars().next()) else {
+            self.append_char('$');
+            self.pos += 1;
+            return Ok(());
+        };
+
+        if next == '{' {
+            return self.parse_braced_expansion(dollar);
+        }
+
+        if !is_name_start(next) {
+            self.append_char('$');
+            self.pos += 1;
+            return Ok(());
+        }
+
+        let mut end = after_dollar;
+        while let Some(ch) = self.input.get(end..).and_then(|s| s.chars().next()) {
+            if !is_name_continue(ch) {
+                break;
+            }
+            end += ch.len_utf8();
+        }
+
+        let name = &self.input[after_dollar..end];
+        self.activate();
+        if let Some(value) = self.lookup(name) {
+            self.word.push_str(value);
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    fn parse_braced_expansion(&mut self, dollar: usize) -> Result<(), SplitError> {
+        let content_start = dollar + 2;
+        let mut cursor = content_start;
+
+        let close = loop {
+            if cursor >= self.input.len() {
+                return Err(SplitError::UnterminatedExpansion { pos: dollar });
+            }
+
+            let ch = self.input[cursor..]
+                .chars()
+                .next()
+                .expect("cursor is within input");
+
+            if ch == '\\' {
+                cursor += 1;
+                if cursor < self.input.len() {
+                    let escaped = self.input[cursor..]
+                        .chars()
+                        .next()
+                        .expect("cursor is within input");
+                    cursor += escaped.len_utf8();
+                }
+            } else if ch == '}' {
+                break cursor;
+            } else {
+                cursor += ch.len_utf8();
+            }
+        };
+
+        let contents = &self.input[content_start..close];
+        let (name, default) = parse_braced_contents(contents)
+            .ok_or(SplitError::InvalidExpansion { pos: dollar })?;
+
+        self.activate();
+        let value = match self.lookup(name) {
+            Some(value) if default.is_none() || !value.is_empty() => value.to_owned(),
+            _ => default.map(decode_default).unwrap_or_default(),
+        };
+        self.word.push_str(&value);
+        self.pos = close + 1;
+        Ok(())
+    }
+
+    fn lookup(&self, name: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find_map(|(key, value)| (*key == name).then_some(*value))
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input.get(self.pos..)?.chars().next()
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+    }
+
+    fn append_char(&mut self, ch: char) {
+        self.activate();
+        self.word.push(ch);
+    }
+
+    fn finish_word(&mut self) {
+        if self.active {
+            self.words.push(std::mem::take(&mut self.word));
+            self.active = false;
+        }
+    }
+}
+
+fn is_name_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_name_continue(ch: char) -> bool {
+    is_name_start(ch) || ch.is_ascii_digit()
+}
+
+fn parse_braced_contents(contents: &str) -> Option<(&str, Option<&str>)> {
+    let bytes = contents.as_bytes();
+    let mut name_end = 0;
+
+    let first = contents.chars().next()?;
+    if !is_name_start(first) {
+        return None;
+    }
+    name_end += first.len_utf8();
+
+    while name_end < contents.len() {
+        let ch = contents[name_end..].chars().next()?;
+        if !is_name_continue(ch) {
+            break;
+        }
+        name_end += ch.len_utf8();
+    }
+
+    let name = &contents[..name_end];
+    if name_end == contents.len() {
+        return Some((name, None));
+    }
+
+    if bytes.get(name_end..name_end + 2) != Some(b":-") {
+        return None;
+    }
+
+    Some((name, Some(&contents[name_end + 2..])))
+}
+
+fn decode_default(text: &str) -> String {
+    let mut decoded = String::with_capacity(text.len());
+    let mut chars = text.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(escaped) = chars.next() {
+                decoded.push(escaped);
+            } else {
+                decoded.push('\\');
+            }
+        } else {
+            decoded.push(ch);
+        }
+    }
+
+    decoded
+}
+```
