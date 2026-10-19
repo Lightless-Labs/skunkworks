@@ -1695,3 +1695,14 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Sol's "38 briefs" blocker was my LOG error, now corrected.
   - **Round 2:** Sol re-check launched at 10:13 on a packet that includes the pipeline code.
 - **Authoring, 10:13 UTC:** 21 families verified. c3-f27's first attempt failed for the same notes-file reason, which the fixed check accepts. Retries pending for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27.
+- **Sol re-check (round 2): No, 9 blockers. All fixed** (10:40–11:50 UTC; dispositions in plan §0.13).
+  - Candidate provenance per §0.1, unresolved before T; the suite must equal the final active families.
+  - Audit rounds bound to task content; repairs change only UNDERDETERMINED tests.
+  - The generation child inherits the runner lock.
+  - The preflight is a canary `a2d lift run` through the real provider on every lane, with holdout-local codex homes (`A2D_CODEX_HOME_ROOT`). Probe groups are recorded before launch. Live: 15.9 s, no leak.
+  - Live controls for every inventoried exec item type on configurable lanes (shell, web, file, MCP via a stdio echo server, sub-agent, error): complete on Luna low and Sol medium. `todo_list` cannot be triggered in exec mode and is covered by the allowlist.
+  - The generator requires the committed controls record.
+  - Provider branch 70be19ac.
+  - **Round 3** (combined Sol and fresh-Claude re-review) launched at 11:50.
+- **Authoring:** pass 2 finished at 11:43 with **31 of 36 families verified**. The retry pass for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27 started at 11:44 on HEAD, which carries the codex-home and mutants-check fixes.
+- **E006** is discarded (above). E008's screen is at 55 of 68 tasks per arm.
