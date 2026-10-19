@@ -42,6 +42,20 @@ pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "view_image",
     "goals",
     "hooks",
+    // Also default-on in 0.162 and not needed for text-only calls (confirmation-3
+    // §0.13, live check 2026-10-19: a PONG call with all of these off emits only
+    // thread/turn events and one agent_message). Not `code_mode_host`: disabling it
+    // makes codex emit an `error` item at startup on every call.
+    "sleep_tool",
+    "workspace_dependencies",
+    "worktrees",
+    "unified_exec_tty",
+    "shell_snapshot",
+    "realtime_conversation",
+    "tool_call_mcp_elicitation",
+    "write_stdin_approval",
+    "in_app_local_automation",
+    "daemon_auto_start",
 ];
 
 /// `--json` event item types a no-tools Codex call may produce. Anything else
