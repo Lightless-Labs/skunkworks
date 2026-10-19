@@ -249,6 +249,10 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Both records then scan 0. The rule's intent is unchanged: broker, network or outside-path commands still count, and the seatbelt profile and probes remain the boundary.
   - The two spent first attempts stay spent; both families keep their second.
   - Authoring was stopped by STOP, which lets in-flight jobs finish, and restarted on the fixed commit. Jobs before 08:00 ran under the earlier pipeline commit.
+- **Retry isolation fix (2026-10-19 ~08:40 UTC).** After the restart, both retry families (c3-f01, c3-f06) were refused by the isolation check before any attempt was reserved, so nothing was spent.
+  - Cause: codex 0.162 writes its bundled `skills/` into `CODEX_HOME` on every run. The check runs before `run_codex` recreates the job's home, so it saw the previous run's `skills/`. A fixed-vocabulary diagnostic confirmed it: only `skills` was present, and in every workdir that has run.
+  - Every re-author and every `c3_fix` repair, which uses the same family workdir, would have been refused the same way.
+  - Fix: `c3_author.prepare` and `c3_fix` reset the job's codex home before the isolation check. The fake codex now writes `skills/` like the real one, and the suite passes 21/21.
 - **Registration-step items from §7, status 2026-10-19:**
   - **Interleaving: checked, no fix needed.** The controller runs arms interleaved, in completion order under parallel jobs.
     - Confirmation-2's manifests (432 submissions each): every quarter holds 32–40 of each arm, and the longest same-arm run is 6–7.

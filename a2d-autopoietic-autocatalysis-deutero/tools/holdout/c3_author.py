@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, StopRequested, drained,  # noqa: E402
-                   emit, gateway, isolation_check, load_json, prereqs_ok, request_stop, run_codex, safe_copy,
+                   emit, gateway, isolation_check, job_codex_home, load_json, prereqs_ok, request_stop, run_codex, safe_copy,
                    safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands,
                    tree_hashes)
 
@@ -68,6 +68,7 @@ def status(fid):
 def prepare(fid, reauthor=False):
     w = C3 / fid
     w.mkdir(parents=True, exist_ok=True)
+    job_codex_home(w)       # an earlier run's codex left skills/ there; isolation checks a fresh home
     for f in ("SPEC.md", "check.sh", "api_check.sh"):
         safe_copy(AUTHORING_FILES / f, w / f, AUTHORING_FILES, mode=0o755 if f.endswith(".sh") else None)
     safe_copy(C3 / "_select" / "families" / fid / "FAMILY.md", w / "FAMILY.md", C3)

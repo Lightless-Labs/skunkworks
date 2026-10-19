@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import shutil
 
 from c3lib import (AUTHORING_FILES, C3, RECORDS, DriverLock, StopRequested, emit, gateway,  # noqa: E402
-                   isolation_check, load_json, prereqs_ok, run_codex, safe_write_text, save_json,
+                   isolation_check, job_codex_home, load_json, prereqs_ok, run_codex, safe_write_text, save_json,
                    stop_requested, suspicious_commands, tree_hashes)
 
 MAX_ROUNDS = 2
@@ -41,6 +41,7 @@ def one(fam, stamp):
             return
     w = C3 / fam
     safe_write_text(w / "INSTRUCTIONS.md", (AUTHORING_FILES / "FIX.md").read_text())
+    job_codex_home(w)       # the authoring run's codex left skills/ there; isolation checks a fresh home
     if not isolation_check(w):
         with _lock:
             emit(stage="fix-isolation", id=fam, ok=False)

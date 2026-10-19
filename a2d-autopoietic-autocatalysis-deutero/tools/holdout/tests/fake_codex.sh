@@ -4,6 +4,9 @@
 # and writes fixture outputs for the job type it recognises.
 if [ "$1" = "--version" ]; then echo "${C3_TEST_VERSION:-codex-cli 0.162.0}"; exit 0; fi
 here=$(dirname "$0")
+# codex 0.162 writes its bundled skills into CODEX_HOME on every run (seen 2026-10-19); a
+# retry or repair in the same workdir must start from a fresh home, not fail isolation.
+if [ -n "$CODEX_HOME" ]; then mkdir -p "$CODEX_HOME/skills/.system"; fi
 echo '{"type":"thread.started"}'
 echo '{"type":"turn.started"}'
 if grep -q "choose and brief 40" INSTRUCTIONS.md; then
