@@ -5,6 +5,7 @@
 **Reviewed:** 2026-10-18, draft design review by Codex `gpt-6.1-sol` high (no tools, web disabled, everything inline; 0 search events) and a fresh Claude subagent (copies only). Dispositions in §7.
 **Parent:** `docs/plans/2026-10-15-cycle2-nanoharness.md`, addendum 2026-10-18.
 **Addendum:** 2026-10-18 ~12:00 UTC — §0.12. Sol's second pipeline re-check found 5 startup blockers. A live probe then showed that a *copied* `open` launched an app outside the sandbox. All 5 are closed in code, and one gap in the frozen rules is filled: an authoring-exhausted family is replaced. Still before any selection call.
+**Addendum:** 2026-10-19 ~07:00 UTC — §0.13: the scoring shape (imputation binds the point threshold, as in confirmation-2; a best-case guard on RULED OUT). A failed call has no transcript and so voids its tuple; this is fixed on the provider branch before registration. Written during selection, before any authored content.
 **Why:** confirmation-2 ended in IntegrityReview (LOG, 10-18 03:59 UTC: 2 web searches in arm B, replicate 1). Confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs both D and B on its confirmation set) needs a new blind set in the same regime.
 
 ## 0. Pre-commitment (fixed 2026-10-18; binds the registration)
@@ -209,6 +210,29 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - a repair may change only `requirements` and/or `hidden_tests.rs`, and must then pass validation (the reference passes, the mutants fail) and similarity again;
   - a missing or malformed repair, or 2 failed adjudication jobs for a family and mode, excludes the task.
 - **Gap filled in §0.11** (it named no outcome for an authoring-exhausted family): a family whose 2 authoring attempts are used up without verified output is **replaced by the next spare, or dropped** at assembly. This is the same rule as the other exhaustion paths.
+
+### 0.13 Addendum: scoring shape and failed-call transcripts (2026-10-19 ~07:00 UTC, during selection, before any authored content)
+- **Scoring shape** (`nano/confirm3.py`, bound by sha256 in the registration). It mirrors confirmation-2's reviewed `confirm-score` and needs no crate change.
+  - The controller's pooled claim is computed on complete `(task, replicate)` tuples: whole-family bootstrap, ci_low > 0 and lift ≥ +10 pp vs both D and B, ≥ 10 families, discordance guard.
+  - §0.4's imputation applies to the **point** threshold. **SUPPORTED** also needs the worst-case imputed all-pass lift ≥ +10 pp vs both D and B (a void X tuple counts as a fail, a void D or B tuple as a pass), over **every planned** `(task, replicate)`. A missing score counts as void.
+  - **RULED OUT** (X vs D RuledOut on complete tuples) also needs the *best-case* imputed lift X − D < +10 pp (void X as a pass, void D as a fail). Otherwise it is INCONCLUSIVE.
+  - Imputation lowers X, which makes a null easier to reach. This guard keeps the null claim as conservative as the positive one. It only tightens §0.4.
+  - A tuple, per §0.10, is `(task, arm, replicate)`. It is void if:
+    - its submission has a `void_reason`;
+    - it has no score;
+    - its `tool_calls` > 0;
+    - any of its invocations lacks a transcript;
+    - any transcript is not the pinned codex version.
+  - Run-level rules, any of which dominates (IntegrityReview or Invalid; no claim):
+    - any hidden-test name hit;
+    - per replicate, Σ `tool_calls` / Σ invocations > 0.5%. This counts events rather than invocations with an event, so it can only overcount;
+    - void tuples > 5% of the 2 × 3 × 144 pooled `(task, arm, replicate)` tuples;
+    - the controller's own Invalid or IntegrityReview.
+- **Gap found: failed calls have no transcript.** `a2d-lift`'s meter writes `<inv>.transcript.txt` only for a successful call. A provider error writes the prompt and an `ERROR:` response, and nothing else.
+  - Confirmation-2's replicate 2 had 11 such calls (X 8, B 2, D 1) during the host stall. Under §0.4 each one voids its tuple, so transient provider errors would cost X through imputation and could cross the 5% gate. Such a call is still unaudited: a timed-out call may have run a tool before failing.
+  - **Instrument fix (step 3, on the provider branch, merged ≥ 10-22 with `c2-web-provider`):** the Codex provider returns its captured stderr with the error, and the meter writes the transcript for failed calls too. The scoring counts them like any other transcript.
+  - "Missing transcript" then means a recording failure. The §0.4 rule is unchanged, and the fix only adds audit coverage.
+- **Question for the registration review:** should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.
