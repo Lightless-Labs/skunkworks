@@ -1631,3 +1631,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Authoring uses Sol only, and the host compile is healthy again.
   - Waiting for idle windows would push the audit, which can only run after the provider merge (≥ 10-22), past the registration date.
   - Parallelism is 2, not 3, as a hedge on shared-account load. The queue's provider timeout rate is watched: dev baseline 0.47% of calls.
+- **Failed-call transcripts (plan §0.13), fixed on `c2-web-provider`** (2ffb2e01, f765c67d; pushed, not merged).
+  - **Problem:** a failed Codex call returned only an error, and the meter wrote no transcript for it. All 34 failed calls in the dev ledgers (0.47% of 7,177) are timeouts. Under §0.4, each would void its tuple and, by worst-case imputation, cost X.
+  - **Fix:**
+    - Codex runs in its own process group. A timeout kills the group, then joins the pipes within 5 s (fail closed).
+    - The partial transcript passes to the meter through a thread-local slot.
+    - The meter writes it and counts tool events with the same allowlist, minus the missing-`turn.completed` penalty and a cut-off last line.
+  - **Verification:**
+    - A unit test showed that a plain kill leaves a grandchild holding the pipes, which is why the group kill is needed.
+    - A live Luna call forced to time out (12 s) left a transcript with 0 tool events in 3 of 3 runs. One was killed before its first event.
+    - `a2d-lift` 68/68 and `a2d-providers` 27/27.
+  - Also fixed: the nano-vs-native prompt parity test flaked on libtest durations (0.30 s vs 0.00 s under load).
+  - At merge (≥ 10-22), bump `c3lib.PROVIDER_COMMIT` to f765c67d.
+- **Version pin under `--json`:** codex 0.162 prints no version banner in `--json` mode (1-call probe). `nano/confirm3.py` therefore accepts `--json` transcripts without one, and the confirmation-3 runner will bracket each replicate with the codex binary's realpath and sha256 (§0.13).
+- **Authoring progress** (07:46 UTC): 4 of the first 5 families verified. c3-f01's first attempt was rejected by the command scan (2 flagged commands). Possible false-positive classes are heredoc lines that start with a listed word, or toolchain exploration, but sealed content cannot be inspected. The rate is watched, and families have 2 attempts plus replacement.
