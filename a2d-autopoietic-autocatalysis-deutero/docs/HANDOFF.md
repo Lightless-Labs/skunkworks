@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-19 13:20 UTC (session 145: **confirmation-3 authored: 36/36 families**. Assembled to 144 tasks; similarity clean (max 0.04, 0 conflicts); **validation running** (`~/.a2d-c3-drivers/20261019T125356Z-c3_validate.out`). The runner, generator, audit and provider were hardened through **3 early review rounds** (Sol plus a fresh Claude; plan §0.13). The provider branch head is **bc6922f7** (= `c3lib.PROVIDER_COMMIT`). Batch: E006 discard (full), E008 discard (screen); E009 and E010 deferred by the cap until 00:05 10-20. Confirmation-2 is sealed. Queue runner pid 7116.)
+**Last updated:** 2026-10-20 07:10 UTC (session 145, cont.: **batch done to full**: E009 discarded at screen (−2.9 pp), **E010 provisional keep (+5.0 pp, SE 2.6)**; E007's confirmation (`confirm_best`, L21) was cap-deferred to 10-21 (L28). Confirmation-3: a cwd-collision bug in the provider found and fixed before registration (plan §0.14; branch ≥ 73bc99ee); the registration predicates are all true on the merged branch.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -23,6 +23,18 @@
 - **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
+0. **State, 10-20 07:10 UTC (read first):**
+   - **Batch E005–E010 vs E002 is complete to full.** Provisional keeps: E007 +7.1 (SE 3.2), E010 +5.0 (SE 2.6), E005 +5.0 (SE 2.8). Discards: E006 (full), E008 and E009 (screen).
+   - **Queue (runner pid 7116, alive):** waits at L22 until 00:05 UTC 10-21.
+     - L23–L27 are no-op resumes. L28 `confirm_best` runs E007's confirmation (worst case 1,400 Luna; deferred on 10-20 at 1,673 + 1,400 > 3,000).
+     - If E007 is discarded, L29 confirms E010 (tie with E005 broken by the smaller SE). At most 2 confirmations.
+     - L36 and L37 (10-22) repeat as needed. L38 and L40: `look_if_promoted` runs look 2 by T = 10-23 23:59 UTC if a keep was promoted.
+   - **After a promotion:** `python3 -I nano/eval.py aa-from-replicates --id <id>`, then phase B from that incumbent (`c2_phaseb.py`, by hand). The 3-keep trigger has fired; phase B still waits for the confirmation step.
+   - **Confirmation-3:**
+     - The provider branch head is ≥ 73bc99ee. It holds the cwd fix (36bea1e1) and controls re-run complete at that head, and main was merged into it at ecbb9611.
+     - On the merged tree all registration predicates are true (LOG 10-20 01:15).
+     - What remains: the merge into main (after L37, and after look 2 or T), the candidate at T, `c3_registration.py`, the review, the commit, then the spend ≥ 10-24 on the day after registration.
+   - **Luna:** 11,206 ledgered plus about 40 for controls at 10-20 01:20; 1,673 today at 07:00.
 1. **Confirmation-2 (C2-CONFIRM2):** registered at `78727f29e53743dc5d989c62e1de23ab1a81e6c6`. The spec is `runs/c2-confirm2/registration.json`; the LOG entry holds the review dispositions and the power exception.
    - **Outcome fixed: IntegrityReview, no claim** (LOG 10-18 03:59 UTC). The replicate-1 web audit (`runs/c2-confirm2/web-audit-r1.json`) shows B 2 / 720, D 0 / 185 and X 0 / 713.
      - Don't narrow the rule, and don't look at what was searched: no transcripts, task ids or file order.
