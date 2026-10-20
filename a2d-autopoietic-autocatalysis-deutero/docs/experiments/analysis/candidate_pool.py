@@ -12,6 +12,23 @@ def extract(text):
     m = re.search(r"```rust(.*?)```", text, re.S)
     return m.group(1).strip() if m else None
 
+def _sb(path):
+    return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+def run_profile(binary, workdir):
+    """The oracle's run-step seatbelt profile (crates/a2d-core/src/sandbox.rs): no network,
+    no file access under HOME, TMPDIR or the temp roots except this step's own directory,
+    and no process spawning, Mach lookups or Apple Events beyond the binary itself."""
+    import os
+    denied = ["/private/tmp", "/private/var/folders", "/private/var/tmp"]
+    denied += [os.path.realpath(os.environ[n]) for n in ("HOME", "TMPDIR") if os.environ.get(n)]
+    binary = os.path.realpath(binary)
+    return ("(version 1)(allow default)(deny network*)(deny file-read* file-write* "
+            + " ".join(f"(subpath {_sb(d)})" for d in denied) + ")"
+            + f"(deny process-fork process-exec* mach-lookup appleevent-send)"
+            + f"(allow process-exec (literal {_sb(binary)}))(allow file-read* (literal {_sb(binary)}))"
+            + f"(allow file-read* file-write* (subpath {_sb(os.path.realpath(workdir))}))")
+
 def score(code, tests, timeout):
     with tempfile.TemporaryDirectory() as d:
         d = pathlib.Path(d); lines = code.splitlines(); attrs = []
@@ -22,7 +39,9 @@ def score(code, tests, timeout):
         if subprocess.run([RUSTC, "--test", "--edition", "2024", str(d / "c.rs"), "-o", str(d / "b")], capture_output=True).returncode:
             return {"compiled": False, "passed": 0, "ok": False}
         try:
-            r = subprocess.run([str(d / "b"), "oracle::"], capture_output=True, timeout=timeout, text=True)
+            # Model-written code runs only under the oracle's run-step sandbox (C2-ISO2).
+            r = subprocess.run(["/usr/bin/sandbox-exec", "-p", run_profile(d / "b", d), str(d / "b"), "oracle::"],
+                               capture_output=True, timeout=timeout, text=True, cwd=d, env={})
         except subprocess.TimeoutExpired:
             return {"compiled": True, "passed": 0, "ok": False, "timed_out": True}
         m = re.findall(r"test result: \w+\. (\d+) passed", r.stdout)
