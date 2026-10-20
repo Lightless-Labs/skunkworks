@@ -1772,3 +1772,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - 675 invocations: X:cand 273 Luna + 65 Sol, X:inc 274 Luna + 63 Sol.
   - The first prompts were read before the result and are as designed (above). The first-wave timeout asymmetry (4 vs 2) cannot explain a negative delta of this size.
   - Reading: a generic checklist does not move Luna's misreadings. C2-FA2 found most failures to be a shared, task-specific misreading, and a checklist of generic failure classes doesn't touch that.
+- **E010 first prompts read** (screen, X:cand, csv-quote-l1, r0, inv00; L20 from 03:21 UTC).
+  - The prompt has E002's system line plus the per-request note "two complete files … (Solution A, then Solution B)", then the task's requirements, then the public tests, then the "Answer format: two complete files" section (≤ 6 reading bullets, `### Solution A`, `### Solution B`, no other code blocks). No hidden-test text.
+  - The first response follows it: 6 bullets naming its readings, then two fenced Rust files. **As designed.**
