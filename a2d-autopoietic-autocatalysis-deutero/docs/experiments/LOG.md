@@ -1775,3 +1775,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **E010 first prompts read** (screen, X:cand, csv-quote-l1, r0, inv00; L20 from 03:21 UTC).
   - The prompt has E002's system line plus the per-request note "two complete files … (Solution A, then Solution B)", then the task's requirements, then the public tests, then the "Answer format: two complete files" section (≤ 6 reading bullets, `### Solution A`, `### Solution B`, no other code blocks). No hidden-test text.
   - The first response follows it: 6 bullets naming its readings, then two fenced Rust files. **As designed.**
+- **E010 (two readings per Luna call, A = most likely, B = hedge), screen: PASS** (L20, 03:21–05:45 UTC 10-20). All-pass 60/68 vs E002's 57/68 (+4.4 pp; discordant 6 vs 3); hidden fraction +0.4 pp. 0 void, integrity OK. 673 invocations: X:cand 272 Luna + 65 Sol, X:inc 274 Luna + 62 Sol.
+  - DIAG, first 11 tasks: almost every call returned 2 files ([2,2,2,2]; one call returned 1), with 3–8 distinct public-green files per task, so the judge ran on every task. The pick came from a B (hedge) slot in 5 of 11.
+  - The rest stage started at about 05:45. Luna today: 1,177 of 3,000.
