@@ -1760,3 +1760,10 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Fixed** on c2-web-provider (36bea1e1): a per-process sequence in the name, plus `create_dir` (fails closed). The regression test failed before the fix and passes after. Controls re-run complete on both lanes at that head (73bc99ee).
   - `PROVIDER_COMMIT` and certification are unchanged (both check ancestry). Main merges the branch at the scheduled point; the merge target is now ≥ 73bc99ee.
   - *Learning:* a "no information" void is worth classifying (by fixed labels) before it is re-run away. Here, the re-audit hid an instrument fault that would have voided tuples at random in the spend.
+- **Registration pre-check** (01:25 UTC). main was merged into c2-web-provider again (ecbb9611; main had changed only `c3_wording.json` and docs since the last merge). On that tree, every "not registrable" predicate of `c3_registration.py` is true:
+  - suite hash; codex fingerprint; provider merge (bc6922f7 in history);
+  - 36 families, 144 tasks;
+  - certification on the live records;
+  - controls at the fixed head.
+
+  It was evaluated without writing, printing booleans only. The candidate resolves to E002's frozen file when look 2 has no result (lanes: Sol judge, medium). At T, what remains is the candidate's wording, the generator, the review and the commit.
