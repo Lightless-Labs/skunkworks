@@ -1796,3 +1796,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Unsolved by all: semver l3 and l4.
 - **Reading:** reading diversity and defect-directed repair act on different failure classes. E007 and E010 together cover 8 of the 11.
 - **Next proposal (mine, for after phase B; not registered):** E007's three drafts written in E010's two-file format (A plus a hedge), then E007's Sol pick and defect list and one Luna repair. Same 5-call budget. It cannot enter confirmation-3, whose candidate is fixed at T. Phase B's informed brief reads `results.tsv` and the failure stats, not this LOG, so the proposer comparison is unaffected.
+- **Phase-B prep for an E007 incumbent** (07:30–07:55 UTC, offline, dev only, no Luna):
+  - `c2_phaseb.py` stats now name a promoted incumbent's own DIAG branches (ee9453ff; plan addendum, before any phase-B proposal). For E002 nothing changes.
+  - `candidate_pool.py` now runs model-written test binaries under the oracle's run-step sandbox (8035ebc2). Parity 55/55 against the 10-16 E002 pool; a negative probe is blocked from reading HOME, using the network and spawning.
+  - E007's screen and rest pools were scored (`runs/2026-10-20-c2-e007-pool/`; 493 + 548 candidates). The confirm-run pool follows on 10-21.
+  - Stats dry run (screen + rest, X:cand): 130/140; branches review-keep 90 and review-repair 50.
+    - Every review-keep task passed.
+    - All 10 failures are tasks where no draft passed hidden tests (9 review-repair, 1 without a green draft).
+    - So E007 fails only when the right reading never enters the draft pool, which is the failure class E010's hedges target (C2-FA3).
