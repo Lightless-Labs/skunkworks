@@ -1,0 +1,517 @@
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict { expected: Expected, actual: Option<u64> },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub account: Account,
+    pub tag: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotError {
+    ZeroInterval,
+    InvalidVersion,
+    InvalidState,
+    TagMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreError {
+    Snapshot(SnapshotError),
+    Tail(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    pub position: u64,
+    pub stream: String,
+    pub version: u64,
+    pub event: Event,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Totals {
+    pub streams: u64,
+    pub open: u64,
+    pub closed: u64,
+    pub balance: i128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectionError {
+    InvalidId { index: usize, byte: usize },
+    ZeroPosition { index: usize },
+    DuplicateMismatch { index: usize, position: u64 },
+    Gap { index: usize, expected: u64, got: u64 },
+    StreamVersion { index: usize, expected: u64, got: u64 },
+    Rejected { index: usize, kind: ApplyError },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Projection {
+    journal: Vec<Record>,
+    accounts: BTreeMap<String, Account>,
+    position: u64,
+}
+
+fn initial_account() -> Account {
+    Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    }
+}
+
+fn validate_id(id: &str) -> Result<(), usize> {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() {
+        return Err(0);
+    }
+
+    for (i, &b) in bytes.iter().take(24).enumerate() {
+        let valid = if i == 0 {
+            b.is_ascii_lowercase()
+        } else {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+        };
+        if !valid {
+            return Err(i);
+        }
+    }
+
+    if bytes.len() > 24 {
+        return Err(24);
+    }
+    Ok(())
+}
+
+fn apply(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    if account.version == u64::MAX {
+        return Err(ApplyError::VersionOverflow);
+    }
+
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version += 1;
+    Ok(())
+}
+
+fn replay_from(mut account: Account, events: &[Event]) -> Result<Account, ReplayError> {
+    for (index, event) in events.iter().enumerate() {
+        if let Err(kind) = apply(&mut account, event) {
+            return Err(ReplayError { index, kind });
+        }
+    }
+    Ok(account)
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    replay_from(initial_account(), events)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    account: Account,
+    events: Vec<Event>,
+    snapshot: Option<Snapshot>,
+    snapshot_version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    snapshot_every: u64,
+    streams: BTreeMap<String, Stream>,
+    records: Vec<Record>,
+}
+
+impl Store {
+    pub fn new(snapshot_every: u64) -> Result<Self, SnapshotError> {
+        if snapshot_every == 0 {
+            return Err(SnapshotError::ZeroInterval);
+        }
+        Ok(Self {
+            snapshot_every,
+            streams: BTreeMap::new(),
+            records: Vec::new(),
+        })
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+
+        let existing = self.streams.get(id);
+        let actual = existing.map(|s| s.account.version);
+        let matches = match expected {
+            Expected::Any => true,
+            Expected::Missing => actual.is_none(),
+            Expected::Exact(v) => actual == Some(v),
+        };
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let base = existing
+            .map(|s| s.account.clone())
+            .unwrap_or_else(initial_account);
+        let mut account = base;
+        let mut intermediate = Vec::with_capacity(events.len());
+        for (index, event) in events.iter().enumerate() {
+            if let Err(kind) = apply(&mut account, event) {
+                return Err(StoreError::Rejected(ReplayError { index, kind }));
+            }
+            intermediate.push(account.clone());
+        }
+
+        if events.is_empty() {
+            return Ok(account);
+        }
+
+        let start_version = existing.map(|s| s.account.version).unwrap_or(0);
+        let mut latest_snapshot = existing.and_then(|s| s.snapshot.clone());
+        let mut latest_snapshot_version = existing.map(|s| s.snapshot_version).unwrap_or(0);
+
+        for (offset, state) in intermediate.iter().enumerate() {
+            if state.version % self.snapshot_every == 0 {
+                latest_snapshot = Some(Snapshot {
+                    account: state.clone(),
+                    tag: snapshot_tag(state),
+                });
+                latest_snapshot_version = state.version;
+            }
+
+            let position = (self.records.len() as u64) + 1;
+            let version = start_version + offset as u64 + 1;
+            self.records.push(Record {
+                position,
+                stream: id.to_owned(),
+                version,
+                event: events[offset].clone(),
+            });
+        }
+
+        let stream = self.streams.entry(id.to_owned()).or_insert_with(|| Stream {
+            account: initial_account(),
+            events: Vec::new(),
+            snapshot: None,
+            snapshot_version: 0,
+        });
+        stream.events.extend_from_slice(events);
+        stream.account = account.clone();
+        stream.snapshot = latest_snapshot;
+        stream.snapshot_version = latest_snapshot_version;
+        Ok(account)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+        Ok(self.streams.get(id).map(|s| s.account.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+        Ok(self.streams.get(id).map(|s| {
+            s.events
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (*i as u64) + 1 > after)
+                .map(|(_, e)| e.clone())
+                .collect()
+        }))
+    }
+
+    pub fn snapshot(&self, id: &str) -> Result<Option<Snapshot>, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+        Ok(self.streams.get(id).and_then(|s| s.snapshot.clone()))
+    }
+
+    pub fn tail(&self, id: &str) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+        Ok(self.streams.get(id).map(|s| {
+            s.events
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (*i as u64) + 1 > s.snapshot_version)
+                .map(|(_, e)| e.clone())
+                .collect()
+        }))
+    }
+
+    pub fn records(&self, after: u64) -> Vec<Record> {
+        self.records
+            .iter()
+            .filter(|r| r.position > after)
+            .cloned()
+            .collect()
+    }
+}
+
+pub fn snapshot_tag(account: &Account) -> u64 {
+    let status_code = match account.status {
+        Status::New => 0,
+        Status::Open => 0xA5,
+        Status::Closed => 0x5A,
+    };
+    account.version.rotate_left(7)
+        ^ (account.limit as u64).wrapping_mul(31)
+        ^ (account.balance as u64).rotate_left(17)
+        ^ status_code
+}
+
+fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotError> {
+    let a = &snapshot.account;
+    if a.version == 0 {
+        return Err(SnapshotError::InvalidVersion);
+    }
+    if a.status == Status::New
+        || !(1..=1_000_000_000).contains(&a.limit)
+        || a.balance < 0
+        || a.balance > a.limit
+        || (a.status == Status::Closed && (a.balance != 0 || a.version < 2))
+    {
+        return Err(SnapshotError::InvalidState);
+    }
+    if snapshot.tag != snapshot_tag(a) {
+        return Err(SnapshotError::TagMismatch);
+    }
+    Ok(())
+}
+
+pub fn rebuild(snapshot: Option<&Snapshot>, tail: &[Event]) -> Result<Account, RestoreError> {
+    let account = match snapshot {
+        None => initial_account(),
+        Some(snapshot) => {
+            validate_snapshot(snapshot).map_err(RestoreError::Snapshot)?;
+            snapshot.account.clone()
+        }
+    };
+    replay_from(account, tail).map_err(RestoreError::Tail)
+}
+
+impl Projection {
+    pub fn new() -> Self {
+        Self {
+            journal: Vec::new(),
+            accounts: BTreeMap::new(),
+            position: 0,
+        }
+    }
+
+    pub fn ingest(&mut self, records: &[Record]) -> Result<usize, ProjectionError> {
+        let mut provisional = self.clone();
+        let mut accepted = 0usize;
+
+        for (index, record) in records.iter().enumerate() {
+            validate_id(&record.stream)
+                .map_err(|byte| ProjectionError::InvalidId { index, byte })?;
+            if record.position == 0 {
+                return Err(ProjectionError::ZeroPosition { index });
+            }
+
+            if record.position <= provisional.position {
+                let stored = &provisional.journal[(record.position - 1) as usize];
+                if stored != record {
+                    return Err(ProjectionError::DuplicateMismatch {
+                        index,
+                        position: record.position,
+                    });
+                }
+                continue;
+            }
+
+            let expected_position = provisional.position + 1;
+            if record.position != expected_position {
+                return Err(ProjectionError::Gap {
+                    index,
+                    expected: expected_position,
+                    got: record.position,
+                });
+            }
+
+            let current = provisional
+                .accounts
+                .get(&record.stream)
+                .cloned()
+                .unwrap_or_else(initial_account);
+            let expected_version = current.version + 1;
+            if record.version != expected_version {
+                return Err(ProjectionError::StreamVersion {
+                    index,
+                    expected: expected_version,
+                    got: record.version,
+                });
+            }
+
+            let mut updated = current;
+            if let Err(kind) = apply(&mut updated, &record.event) {
+                return Err(ProjectionError::Rejected { index, kind });
+            }
+
+            provisional.journal.push(record.clone());
+            provisional.position = record.position;
+            provisional.accounts.insert(record.stream.clone(), updated);
+            accepted += 1;
+        }
+
+        *self = provisional;
+        Ok(accepted)
+    }
+
+    pub fn account(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id).map_err(|byte| StoreError::InvalidId { byte })?;
+        Ok(self.accounts.get(id).cloned())
+    }
+
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
+    pub fn totals(&self) -> Totals {
+        let mut totals = Totals {
+            streams: self.accounts.len() as u64,
+            open: 0,
+            closed: 0,
+            balance: 0,
+        };
+        for account in self.accounts.values() {
+            match account.status {
+                Status::New => {}
+                Status::Open => totals.open += 1,
+                Status::Closed => totals.closed += 1,
+            }
+            totals.balance += account.balance as i128;
+        }
+        totals
+    }
+}
+
+impl Default for Projection {
+    fn default() -> Self {
+        Self::new()
+    }
+}

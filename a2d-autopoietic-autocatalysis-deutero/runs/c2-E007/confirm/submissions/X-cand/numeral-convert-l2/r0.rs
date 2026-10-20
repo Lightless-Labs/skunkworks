@@ -1,0 +1,222 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_radix(value: u8, which: usize) -> Result<(), BaseError> {
+    if !(2..=36).contains(&value) {
+        Err(BaseError::BadBase { which, value })
+    } else {
+        Ok(())
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_operand(input: &str, radix: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    if input.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let bytes = input.as_bytes();
+    let payload_start = if let Some(hash) = bytes.iter().position(|&b| b == b'#') {
+        let tag = &bytes[..hash];
+        let expected = radix.to_string();
+        if tag != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        hash + 1
+    } else {
+        0
+    };
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+
+    // Invalid digits have priority over separator and leading-zero errors.
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        match digit_value(byte) {
+            Some(value) if value < radix => {}
+            _ => {
+                return Err(BaseError::InvalidDigit {
+                    operand,
+                    index: payload_start + offset,
+                });
+            }
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (offset == 0
+                || offset + 1 == payload.len()
+                || payload[offset - 1] == b'_'
+                || payload[offset + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: payload_start + offset,
+            });
+        }
+    }
+
+    let digits: Vec<u8> = payload
+        .iter()
+        .filter_map(|&byte| if byte == b'_' { None } else { digit_value(byte) })
+        .collect();
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(digits)
+}
+
+// Stores a nonnegative integer as little-endian base-1,000,000,000 limbs.
+fn from_digits(digits: &[u8], radix: u8) -> Vec<u32> {
+    let mut limbs = Vec::<u32>::new();
+    for &digit in digits {
+        let mut carry = digit as u64;
+        for limb in &mut limbs {
+            let value = (*limb as u64) * (radix as u64) + carry;
+            *limb = (value % 1_000_000_000) as u32;
+            carry = value / 1_000_000_000;
+        }
+        if carry != 0 {
+            limbs.push(carry as u32);
+        }
+    }
+    limbs
+}
+
+fn add_limbs(left: &[u32], right: &[u32]) -> Vec<u32> {
+    let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut carry = 0u64;
+    for index in 0..left.len().max(right.len()) {
+        let a = left.get(index).copied().unwrap_or(0) as u64;
+        let b = right.get(index).copied().unwrap_or(0) as u64;
+        let sum = a + b + carry;
+        result.push((sum % 1_000_000_000) as u32);
+        carry = sum / 1_000_000_000;
+    }
+    if carry != 0 {
+        result.push(carry as u32);
+    }
+    result
+}
+
+fn limbs_to_digits(mut limbs: Vec<u32>, radix: u8) -> Vec<u8> {
+    if limbs.is_empty() {
+        return vec![0];
+    }
+
+    let mut digits = Vec::new();
+    while !limbs.is_empty() {
+        let mut remainder = 0u64;
+        for limb in limbs.iter_mut().rev() {
+            let value = remainder * 1_000_000_000 + *limb as u64;
+            *limb = (value / radix as u64) as u32;
+            remainder = value % radix as u64;
+        }
+        digits.push(remainder as u8);
+        while limbs.last() == Some(&0) {
+            limbs.pop();
+        }
+    }
+    digits.reverse();
+    digits
+}
+
+fn render(digits: &[u8], style: BaseStyle) -> String {
+    let padding = style.min_width.saturating_sub(digits.len());
+    let total = padding + digits.len();
+    let group = style.group;
+
+    let mut output = String::with_capacity(total + if group == 0 { 0 } else { total / group });
+    for index in 0..total {
+        if group != 0 && index != 0 && (total - index) % group == 0 {
+            output.push('_');
+        }
+
+        let digit = if index < padding {
+            0
+        } else {
+            digits[index - padding]
+        };
+
+        let byte = match digit {
+            0..=9 => b'0' + digit,
+            _ if style.upper => b'A' + (digit - 10),
+            _ => b'a' + (digit - 10),
+        };
+        output.push(byte as char);
+    }
+    output
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_radix(from, 0)?;
+    validate_radix(to, 1)?;
+    if style.group > 8 || style.min_width > 256 {
+        return Err(BaseError::BadStyle);
+    }
+
+    let digits = parse_operand(input, from, 0)?;
+    let limbs = from_digits(&digits, from);
+    let result = limbs_to_digits(limbs, to);
+    Ok(render(&result, style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_radix(base, 0)?;
+    if style.group > 8 || style.min_width > 256 {
+        return Err(BaseError::BadStyle);
+    }
+
+    let left_digits = parse_operand(left, base, 0)?;
+    let right_digits = parse_operand(right, base, 1)?;
+    let left_value = from_digits(&left_digits, base);
+    let right_value = from_digits(&right_digits, base);
+    let sum = add_limbs(&left_value, &right_value);
+    let result = limbs_to_digits(sum, base);
+    Ok(render(&result, style))
+}

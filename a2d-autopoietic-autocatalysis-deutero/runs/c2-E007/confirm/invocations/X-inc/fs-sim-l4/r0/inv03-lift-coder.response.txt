@@ -1,0 +1,528 @@
+```rust
+use std::collections::{BTreeMap, HashSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+    Link,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+    Root,
+    Busy(String),
+    Cycle(String),
+    NotEmpty(String),
+    InvalidTarget(usize),
+    Loop(String),
+    Depth(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+    Link(String),
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let canonical = self.normalize_path(path)?;
+        let (parent, name) = split_parent(&canonical);
+        let resolved_parent = self.resolve_full(&parent)?;
+        self.require_dir(&resolved_parent)?;
+
+        let destination = join_child(&resolved_parent, &name);
+        if self.entries.contains_key(&destination) {
+            return Err(Error::Exists(destination));
+        }
+        self.entries.insert(destination, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let canonical = self.normalize_path(path)?;
+        let resolved = self.resolve_write(&canonical)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::Dir) => Err(Error::IsDir(resolved)),
+            Some(Entry::File(_)) => {
+                self.entries
+                    .insert(resolved, Entry::File(data.to_vec()));
+                Ok(())
+            }
+            Some(Entry::Link(_)) => unreachable!(),
+            None => {
+                let (parent, _) = split_parent(&resolved);
+                self.require_dir(&parent)?;
+                self.entries.insert(resolved, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let canonical = self.normalize_path(path)?;
+        let resolved = self.resolve_full(&canonical)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::File(data)) => Ok(data.clone()),
+            Some(Entry::Dir) => Err(Error::IsDir(resolved)),
+            Some(Entry::Link(_)) => unreachable!(),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let canonical = self.normalize_path(path)?;
+        let resolved = self.resolve_full(&canonical)?;
+        self.require_dir(&resolved)?;
+
+        let mut rows = Vec::new();
+        for (entry_path, entry) in &self.entries {
+            if entry_path == "/" {
+                continue;
+            }
+            let (parent, name) = split_parent(entry_path);
+            if parent == resolved {
+                let kind = match entry {
+                    Entry::Dir => Kind::Dir,
+                    Entry::File(_) => Kind::File,
+                    Entry::Link(_) => Kind::Link,
+                };
+                rows.push((name, kind));
+            }
+        }
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(rows)
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let canonical = self.normalize_path(path)?;
+        let resolved = self.resolve_full(&canonical)?;
+        self.require_dir(&resolved)?;
+        self.cwd = resolved;
+        Ok(())
+    }
+
+    pub fn rename(
+        &mut self,
+        from: &str,
+        to: &str,
+        overwrite: bool,
+    ) -> Result<(), Error> {
+        let source = self.normalize_path(from)?;
+        let destination = self.normalize_path(to)?;
+
+        if source == "/" || destination == "/" {
+            return Err(Error::Root);
+        }
+
+        let (source_parent, source_name) = split_parent(&source);
+        let resolved_source_parent = self.resolve_full(&source_parent)?;
+        self.require_dir(&resolved_source_parent)?;
+        let resolved_source = join_child(&resolved_source_parent, &source_name);
+        let source_entry = self
+            .entries
+            .get(&resolved_source)
+            .cloned()
+            .ok_or_else(|| Error::Missing(resolved_source.clone()))?;
+
+        if matches!(source_entry, Entry::Dir) && is_within(&self.cwd, &resolved_source) {
+            return Err(Error::Busy(resolved_source));
+        }
+
+        let (destination_parent, destination_name) = split_parent(&destination);
+        let resolved_destination_parent = self.resolve_full(&destination_parent)?;
+        self.require_dir(&resolved_destination_parent)?;
+        let resolved_destination = join_child(&resolved_destination_parent, &destination_name);
+
+        if matches!(self.entries.get(&resolved_destination), Some(Entry::Dir))
+            && is_within(&self.cwd, &resolved_destination)
+        {
+            return Err(Error::Busy(resolved_destination));
+        }
+
+        if resolved_source == resolved_destination {
+            return Ok(());
+        }
+
+        if matches!(source_entry, Entry::Dir)
+            && is_within(&resolved_destination, &resolved_source)
+            && resolved_destination != resolved_source
+        {
+            return Err(Error::Cycle(resolved_destination));
+        }
+
+        let destination_entry = self.entries.get(&resolved_destination).cloned();
+        if destination_entry.is_some() && !overwrite {
+            return Err(Error::Exists(resolved_destination));
+        }
+
+        if let Some(ref destination_entry) = destination_entry {
+            match (&source_entry, destination_entry) {
+                (Entry::Dir, Entry::Dir) => {
+                    if self.has_children(&resolved_destination) {
+                        return Err(Error::NotEmpty(resolved_destination));
+                    }
+                }
+                (Entry::Dir, _) => return Err(Error::NotDir(resolved_destination)),
+                (_, Entry::Dir) => return Err(Error::IsDir(resolved_destination)),
+                _ => {}
+            }
+        }
+
+        let mut moved = Vec::new();
+        let source_prefix = if resolved_source == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", resolved_source)
+        };
+        for (path, entry) in &self.entries {
+            if path == &resolved_source || path.starts_with(&source_prefix) {
+                let suffix = &path[resolved_source.len()..];
+                let new_path = format!("{}{}", resolved_destination, suffix);
+                moved.push((path.clone(), new_path, entry.clone()));
+            }
+        }
+
+        if let Some(destination_entry) = destination_entry {
+            if matches!(destination_entry, Entry::Dir) {
+                self.entries.remove(&resolved_destination);
+            } else {
+                self.entries.remove(&resolved_destination);
+            }
+        }
+
+        for (old_path, _, _) in &moved {
+            self.entries.remove(old_path);
+        }
+        for (_, new_path, entry) in moved {
+            self.entries.insert(new_path, entry);
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error> {
+        let canonical = self.normalize_path(path)?;
+        if canonical == "/" {
+            return Err(Error::Root);
+        }
+
+        let (parent, name) = split_parent(&canonical);
+        let resolved_parent = self.resolve_full(&parent)?;
+        self.require_dir(&resolved_parent)?;
+        let resolved = join_child(&resolved_parent, &name);
+        let entry = self
+            .entries
+            .get(&resolved)
+            .cloned()
+            .ok_or_else(|| Error::Missing(resolved.clone()))?;
+
+        if matches!(entry, Entry::Dir) && is_within(&self.cwd, &resolved) {
+            return Err(Error::Busy(resolved));
+        }
+        if matches!(entry, Entry::Dir) && self.has_children(&resolved) && !recursive {
+            return Err(Error::NotEmpty(resolved));
+        }
+
+        let prefix = format!("{}/", resolved);
+        let descendants: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|p| p.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for descendant in descendants {
+            self.entries.remove(&descendant);
+        }
+        self.entries.remove(&resolved);
+        Ok(())
+    }
+
+    pub fn symlink(&mut self, target: &str, link: &str) -> Result<(), Error> {
+        let canonical_link = self.normalize_path(link)?;
+        validate_target(target)?;
+
+        let (parent, name) = split_parent(&canonical_link);
+        let resolved_parent = self.resolve_full(&parent)?;
+        self.require_dir(&resolved_parent)?;
+        let resolved_link = join_child(&resolved_parent, &name);
+
+        if self.entries.contains_key(&resolved_link) {
+            return Err(Error::Exists(resolved_link));
+        }
+        self.entries
+            .insert(resolved_link, Entry::Link(target.to_string()));
+        Ok(())
+    }
+
+    pub fn read_link(&self, path: &str) -> Result<String, Error> {
+        let canonical = self.normalize_path(path)?;
+        let (parent, name) = split_parent(&canonical);
+        let resolved_parent = self.resolve_full(&parent)?;
+        self.require_dir(&resolved_parent)?;
+        let resolved = join_child(&resolved_parent, &name);
+
+        match self.entries.get(&resolved) {
+            Some(Entry::Link(target)) => Ok(target.clone()),
+            Some(Entry::Dir) | Some(Entry::File(_)) => Err(Error::InvalidTarget(0)),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn du(&self, path: &str) -> Result<Vec<(String, u64)>, Error> {
+        let canonical = self.normalize_path(path)?;
+        let resolved = self.resolve_full(&canonical)?;
+        if !self.entries.contains_key(&resolved) {
+            return Err(Error::Missing(resolved));
+        }
+
+        let mut paths = Vec::new();
+        let prefix = if resolved == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", resolved)
+        };
+        for entry_path in self.entries.keys() {
+            if entry_path == &resolved || entry_path.starts_with(&prefix) {
+                paths.push(entry_path.clone());
+            }
+        }
+        paths.sort();
+
+        let mut sizes = BTreeMap::new();
+        for entry_path in &paths {
+            let size = match self.entries.get(entry_path).unwrap() {
+                Entry::File(data) => data.len() as u64,
+                Entry::Link(target) => target.len() as u64,
+                Entry::Dir => {
+                    let descendant_prefix = if entry_path == "/" {
+                        "/".to_string()
+                    } else {
+                        format!("{}/", entry_path)
+                    };
+                    let mut total = 0u64;
+                    for (candidate, entry) in &self.entries {
+                        if candidate.starts_with(&descendant_prefix) {
+                            match entry {
+                                Entry::File(data) => total += data.len() as u64,
+                                Entry::Link(target) => total += target.len() as u64,
+                                Entry::Dir => {}
+                            }
+                        }
+                    }
+                    total
+                }
+            };
+            sizes.insert(entry_path.clone(), size);
+        }
+
+        Ok(paths
+            .into_iter()
+            .map(|entry_path| {
+                let size = *sizes.get(&entry_path).unwrap_or(&0);
+                (entry_path, size)
+            })
+            .collect())
+    }
+
+    fn normalize_path(&self, path: &str) -> Result<String, Error> {
+        if let Some(index) = path.as_bytes().iter().position(|byte| *byte == 0) {
+            return Err(Error::InvalidPath(index));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+        Ok(normalize(path, &self.cwd))
+    }
+
+    fn require_dir(&self, path: &str) -> Result<(), Error> {
+        match self.entries.get(path) {
+            Some(Entry::Dir) => Ok(()),
+            Some(_) => Err(Error::NotDir(path.to_string())),
+            None => Err(Error::Missing(path.to_string())),
+        }
+    }
+
+    fn has_children(&self, path: &str) -> bool {
+        let prefix = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", path)
+        };
+        self.entries
+            .keys()
+            .any(|candidate| candidate != path && candidate.starts_with(&prefix))
+    }
+
+    fn resolve_full(&self, path: &str) -> Result<String, Error> {
+        self.resolve(path, false)
+    }
+
+    fn resolve_write(&self, path: &str) -> Result<String, Error> {
+        self.resolve(path, true)
+    }
+
+    fn resolve(&self, path: &str, allow_missing_final: bool) -> Result<String, Error> {
+        let mut current = String::from("/");
+        let mut components = components(path);
+        let mut index = 0usize;
+        let mut visited = HashSet::new();
+        let mut expansions = 0usize;
+
+        while index < components.len() {
+            let component = components[index].clone();
+            let candidate = join_child(&current, &component);
+
+            match self.entries.get(&current) {
+                Some(Entry::Dir) => {}
+                Some(_) => return Err(Error::NotDir(current)),
+                None => return Err(Error::Missing(current)),
+            }
+
+            match self.entries.get(&candidate) {
+                Some(Entry::Link(target)) => {
+                    if !visited.insert(candidate.clone()) {
+                        return Err(Error::Loop(candidate));
+                    }
+                    if expansions >= 8 {
+                        return Err(Error::Depth(candidate));
+                    }
+                    expansions += 1;
+
+                    let target_base = if target.starts_with('/') {
+                        String::from("/")
+                    } else {
+                        current.clone()
+                    };
+                    let normalized_target = normalize(target, &target_base);
+                    let suffix = &components[index + 1..];
+                    let mut combined = components(&normalized_target);
+                    combined.extend_from_slice(suffix);
+                    let expanded_path = from_components(&combined);
+                    components = components(&expanded_path);
+                    current = String::from("/");
+                    index = 0;
+                }
+                Some(entry) => {
+                    current = candidate;
+                    index += 1;
+                    if !matches!(entry, Entry::Dir) && index < components.len() {
+                        return Err(Error::NotDir(current));
+                    }
+                }
+                None if allow_missing_final && index + 1 == components.len() => {
+                    return Ok(candidate);
+                }
+                None => return Err(Error::Missing(candidate)),
+            }
+        }
+
+        match self.entries.get(&current) {
+            Some(_) => Ok(current),
+            None => Err(Error::Missing(current)),
+        }
+    }
+}
+
+fn validate_target(target: &str) -> Result<(), Error> {
+    if target.is_empty() {
+        return Err(Error::InvalidTarget(0));
+    }
+    if let Some(index) = target.as_bytes().iter().position(|byte| *byte == 0) {
+        return Err(Error::InvalidTarget(index));
+    }
+    Ok(())
+}
+
+fn normalize(path: &str, base: &str) -> String {
+    let mut parts = if path.starts_with('/') {
+        Vec::new()
+    } else {
+        components(base)
+    };
+
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            value => parts.push(value.to_string()),
+        }
+    }
+    from_components(&parts)
+}
+
+fn components(path: &str) -> Vec<String> {
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn from_components(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", parts.join("/"))
+    }
+}
+
+fn split_parent(path: &str) -> (String, String) {
+    if path == "/" {
+        return ("/".to_string(), String::new());
+    }
+    match path.rfind('/') {
+        Some(0) => ("/".to_string(), path[1..].to_string()),
+        Some(index) => (path[..index].to_string(), path[index + 1..].to_string()),
+        None => ("/".to_string(), path.to_string()),
+    }
+}
+
+fn join_child(parent: &str, child: &str) -> String {
+    if parent == "/" {
+        format!("/{}", child)
+    } else {
+        format!("{}/{}", parent, child)
+    }
+}
+
+fn is_within(path: &str, directory: &str) -> bool {
+    path == directory
+        || (directory == "/" && path.starts_with('/'))
+        || path
+            .strip_prefix(directory)
+            .map(|suffix| suffix.starts_with('/'))
+            .unwrap_or(false)
+}
+```

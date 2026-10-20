@@ -1,0 +1,195 @@
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BackwardTime { last: u64, now: u64 },
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: u64,
+    used: u64,
+    clock: u64,
+    entries: BTreeMap<u64, Entry>,
+    order: VecDeque<u64>,
+}
+
+impl Cache {
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            used: 0,
+            clock: 0,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.order
+            .iter()
+            .map(|key| self.entries[key].clone())
+            .collect()
+    }
+
+    fn validate_time(&self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::BackwardTime {
+                last: self.clock,
+                now,
+            });
+        }
+        Ok(())
+    }
+
+    fn make_deadline(ttl: Option<u64>, now: u64) -> Result<Option<u64>, Error> {
+        match ttl {
+            None => Ok(None),
+            Some(duration) => now
+                .checked_add(duration)
+                .map(Some)
+                .ok_or(Error::DeadlineOverflow),
+        }
+    }
+
+    fn validate_weight(&self, weight: u64) -> Result<(), Error> {
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > self.capacity {
+            return Err(Error::TooHeavy {
+                weight,
+                capacity: self.capacity,
+            });
+        }
+        Ok(())
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.used -= entry.weight;
+        self.order.retain(|&k| k != key);
+        Some(entry)
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.order.retain(|&k| k != key);
+        self.order.push_back(key);
+    }
+
+    fn expire(&mut self, now: u64) -> Vec<u64> {
+        let expired: Vec<u64> = self
+            .entries
+            .iter()
+            .filter_map(|(&key, entry)| {
+                entry
+                    .expires_at
+                    .is_some_and(|deadline| deadline <= now)
+                    .then_some(key)
+            })
+            .collect();
+
+        for &key in &expired {
+            self.erase(key);
+        }
+        self.clock = now;
+        expired
+    }
+
+    pub fn advance(&mut self, now: u64) -> Result<Vec<u64>, Error> {
+        self.validate_time(now)?;
+        Ok(self.expire(now))
+    }
+
+    pub fn get(&mut self, key: u64, now: u64) -> Result<Option<i64>, Error> {
+        self.validate_time(now)?;
+        self.expire(now);
+        let value = self.entries.get(&key).map(|entry| entry.value);
+        if value.is_some() {
+            self.touch(key);
+        }
+        Ok(value)
+    }
+
+    pub fn remove(&mut self, key: u64, now: u64) -> Result<Option<i64>, Error> {
+        self.validate_time(now)?;
+        self.expire(now);
+        Ok(self.erase(key).map(|entry| entry.value))
+    }
+
+    pub fn insert(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        ttl: Option<u64>,
+        now: u64,
+    ) -> Result<Vec<u64>, Error> {
+        self.validate_time(now)?;
+        self.validate_weight(weight)?;
+        let expires_at = Self::make_deadline(ttl, now)?;
+
+        let mut removed = self.expire(now);
+        self.erase(key);
+
+        if ttl == Some(0) {
+            return Ok(removed);
+        }
+
+        while self.used > self.capacity - weight {
+            let victim = self.order.front().copied().expect("used weight requires an entry");
+            self.erase(victim);
+            removed.push(victim);
+        }
+
+        self.used += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                expires_at,
+            },
+        );
+        self.touch(key);
+        Ok(removed)
+    }
+
+    pub fn resize(&mut self, capacity: u64, now: u64) -> Result<Vec<u64>, Error> {
+        self.validate_time(now)?;
+        let mut removed = self.expire(now);
+        self.capacity = capacity;
+
+        while self.used > self.capacity {
+            let key = self.order.front().copied().expect("used weight requires an entry");
+            self.erase(key);
+            removed.push(key);
+        }
+
+        Ok(removed)
+    }
+}

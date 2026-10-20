@@ -1,0 +1,431 @@
+SYSTEM:
+You are selecting and reviewing Rust solutions.
+
+TASK is exactly the programmer's task. Hidden acceptance tests check every
+numbered requirement. Candidate files are fallible even when public-green.
+
+Choose the candidate most likely to become fully correct with a small,
+well-founded repair. If public-green candidates are supplied, select among
+them. Audit the chosen file against the full task, including required API
+compatibility and algorithmic scaling.
+
+Identify only concrete defects supported by the task and the actual code.
+For each defect, name the relevant requirement, explain how the code
+violates it, and describe a triggering input or input class when possible.
+Do not invent requirements. Do not request stylistic changes.
+Do not write Rust code, replacement functions, patches, or pseudocode.
+
+Return exactly one JSON object:
+{"pick":"<letter>","fixes":["<concrete defect and required correction>", ...]}
+
+Use an empty fixes list if you cannot establish a concrete defect.
+Selection and feedback must refer to the same candidate.
+
+PROMPT:
+TASK:
+Implement the following cumulative checksum contract.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (#![...]) or inner doc comments (//!).
+
+R2. All API items below are pub. Span, Hashes and all error enums must implement Debug, Clone, Copy, PartialEq, Eq. Define pub struct Span { pub start: usize, pub end: usize }, pub struct Hashes { pub crc32: u32, pub adler32: u32 }, and pub enum SpanError { Reversed { span: usize }, OutOfBounds { span: usize, offset: usize }, Overlap { span: usize } }. Indices in errors are zero based.
+
+R3. Provide pub fn crc32(data: &[u8]) -> u32. CRC-32 is reflected IEEE: initialize the internal register to 0xffffffff, xor each byte into its low bits, perform eight right shifts per byte, xoring 0xedb88320 after each shift whose old low bit was 1, then xor the final register with 0xffffffff.
+
+R4. CRC-32 of an empty slice is 0. Every byte including zero and bytes >=128 is processed as an unsigned byte; there is no text decoding or terminator.
+
+R5. Provide pub fn adler32(data: &[u8]) -> u32. Start a=1,b=0; for each byte x set a=(a+x)%65521 and then b=(b+a)%65521. Return (b<<16)|a.
+
+R6. Adler-32 of an empty slice is 1. Reductions must be mathematically exact even for long slices; machine integer overflow must not change the result.
+
+R7. Provide pub fn checksums(data: &[u8]) -> Hashes, returning exactly the results of crc32 and adler32 on that slice. All checksum outputs are numeric integers, independent of host byte order.
+
+R8. Provide pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError>. A span selects data[start..end], with end exclusive. Successful results hash the concatenation of the selected bytes in supplied order, excluding gaps, with a single initialization for the entire concatenation.
+
+R9. Validate spans in supplied order. The first failing span wins, regardless of which error categories occur in later spans. Do not sort or coalesce spans.
+
+R10. Within each span, check start>end first and return Reversed { span: its_index }. This takes precedence even when an endpoint is out of bounds.
+
+R11. After the reversed check, check start>data.len(), then end>data.len(). Return OutOfBounds { span: its_index, offset: the_offending_endpoint }. Endpoints equal to data.len() are valid.
+
+R12. After endpoint checks, for every span after the first require start>=the immediately preceding span's end, otherwise return Overlap { span: its_index }. Thus bounds errors outrank overlap at the same span.
+
+R13. Empty spans (start==end) are valid, contribute no bytes, and still participate in BOTH sides of the ordering comparison. An empty span strictly inside the preceding span is an overlap. An empty span in a gap advances the ordering boundary to its own end.
+
+R14. Adjacent spans and repeated empty spans at the same position are valid. Spans must be ordered even when they select identical byte contents.
+
+R15. No spans, or a valid collection containing only empty spans, yields Hashes { crc32: 0, adler32: 1 }, regardless of unselected data.
+
+R16. All slice APIs accept arbitrary binary data. CRC and Adler accumulation crosses span boundaries without resetting either algorithm.
+
+R17. All errors are returned as specified, never panics for malformed spans. Calls have no externally observable state and must not modify input slices.
+
+R18. Compute in time linear in selected byte count plus span count and bounded auxiliary space; do not allocate a copy of the concatenated selected bytes.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Checks R1-R4.
+#[test]
+fn public_crc_vector() {
+assert_eq!(crc32(b"123456789"), 0xcbf43926);
+}
+
+// Checks R5-R7.
+#[test]
+fn public_adler_vector() {
+assert_eq!(adler32(b"Wikipedia"), 0x11e60398);
+assert_eq!(checksums(b""), Hashes { crc32: 0, adler32: 1 });
+}
+
+// Checks R8,R14,R16.
+#[test]
+fn public_selected_ranges() {
+assert_eq!(checksums_spans(b"abc--def", &[Span { start: 0, end: 3 },Span { start: 5, end: 8 }]), Ok(Hashes { crc32: 0x4b8e39ef, adler32: 0x081e0256 }));
+}
+
+// Checks R9-R11,R17.
+#[test]
+fn public_reversed_range() {
+assert_eq!(checksums_spans(b"1234", &[Span { start: 3, end: 1 }]), Err(SpanError::Reversed { span: 0 }));
+}
+```
+
+
+CANDIDATES:
+All supplied files pass the public tests.
+
+### A.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+struct ChecksumState {
+    crc: u32,
+    a: u32,
+    b: u32,
+}
+
+impl ChecksumState {
+    fn new() -> Self {
+        Self {
+            crc: 0xffff_ffff,
+            a: 1,
+            b: 0,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        const ADLER_MOD: u32 = 65_521;
+
+        for &byte in data {
+            self.crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let low_bit = self.crc & 1;
+                self.crc >>= 1;
+                if low_bit != 0 {
+                    self.crc ^= 0xedb8_8320;
+                }
+            }
+
+            self.a = (self.a + u32::from(byte)) % ADLER_MOD;
+            self.b = (self.b + self.a) % ADLER_MOD;
+        }
+    }
+
+    fn finish(self) -> Hashes {
+        Hashes {
+            crc32: self.crc ^ 0xffff_ffff,
+            adler32: (self.b << 16) | self.a,
+        }
+    }
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut state = ChecksumState::new();
+    state.update(data);
+    state.finish().crc32
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut state = ChecksumState::new();
+    state.update(data);
+    state.finish().adler32
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    let mut state = ChecksumState::new();
+    state.update(data);
+    state.finish()
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let mut state = ChecksumState::new();
+    let mut previous_end = 0;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+
+        state.update(&data[span.start..span.end]);
+        previous_end = span.end;
+    }
+
+    Ok(state.finish())
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let low_bit = crc & 1;
+            crc >>= 1;
+            if low_bit != 0 {
+                crc ^= 0xedb88320;
+            }
+        }
+    }
+    crc
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    crc32_update(0xffff_ffff, data) ^ 0xffff_ffff
+}
+
+fn adler32_update(a: &mut u32, b: &mut u32, data: &[u8]) {
+    const MOD_ADLER: u32 = 65_521;
+
+    for &byte in data {
+        *a = (*a + u32::from(byte)) % MOD_ADLER;
+        *b = (*b + *a) % MOD_ADLER;
+    }
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut a = 1;
+    let mut b = 0;
+    adler32_update(&mut a, &mut b, data);
+    (b << 16) | a
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    Hashes {
+        crc32: crc32(data),
+        adler32: adler32(data),
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let mut crc = 0xffff_ffff;
+    let mut a = 1;
+    let mut b = 0;
+    let mut previous_end = 0;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+
+        let selected = &data[span.start..span.end];
+        crc = crc32_update(crc, selected);
+        adler32_update(&mut a, &mut b, selected);
+        previous_end = span.end;
+    }
+
+    Ok(Hashes {
+        crc32: crc ^ 0xffff_ffff,
+        adler32: (b << 16) | a,
+    })
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let low_bit = crc & 1;
+            crc >>= 1;
+            if low_bit != 0 {
+                crc ^= 0xedb8_8320;
+            }
+        }
+    }
+    crc ^ 0xffff_ffff
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    const MODULUS: u64 = 65_521;
+    let (mut a, mut b) = (1u64, 0u64);
+
+    for &byte in data {
+        a = (a + u64::from(byte)) % MODULUS;
+        b = (b + a) % MODULUS;
+    }
+
+    ((b as u32) << 16) | (a as u32)
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    let mut crc = 0xffff_ffffu32;
+    let (mut a, mut b) = (1u64, 0u64);
+
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let low_bit = crc & 1;
+            crc >>= 1;
+            if low_bit != 0 {
+                crc ^= 0xedb8_8320;
+            }
+        }
+
+        a = (a + u64::from(byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+
+    Hashes {
+        crc32: crc ^ 0xffff_ffff,
+        adler32: ((b as u32) << 16) | (a as u32),
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let mut crc = 0xffff_ffffu32;
+    let (mut a, mut b) = (1u64, 0u64);
+    let mut previous_end = 0usize;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+
+        for &byte in &data[span.start..span.end] {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let low_bit = crc & 1;
+                crc >>= 1;
+                if low_bit != 0 {
+                    crc ^= 0xedb8_8320;
+                }
+            }
+
+            a = (a + u64::from(byte)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+
+        previous_end = span.end;
+    }
+
+    Ok(Hashes {
+        crc32: crc ^ 0xffff_ffff,
+        adler32: ((b as u32) << 16) | (a as u32),
+    })
+}
+```

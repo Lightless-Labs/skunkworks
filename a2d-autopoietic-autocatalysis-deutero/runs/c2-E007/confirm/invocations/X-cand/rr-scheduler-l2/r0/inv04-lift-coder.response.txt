@@ -1,0 +1,187 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut events: Vec<usize> = (0..jobs.len()).collect();
+    events.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut next_event = 0;
+    let mut ready: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion_times: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut runs = Vec::new();
+    let mut idle: Vec<(u64, u64)> = Vec::new();
+    let mut time = 0u64;
+    let mut last_dispatched_id: Option<u32> = None;
+    let mut completed = 0usize;
+
+    fn admit(
+        jobs: &[Job],
+        events: &[usize],
+        next_event: &mut usize,
+        ready: &mut std::collections::VecDeque<usize>,
+        completion_times: &mut [Option<u64>],
+        completed: &mut usize,
+        through: u64,
+    ) {
+        while *next_event < events.len() {
+            let index = events[*next_event];
+            let job = &jobs[index];
+            if u64::from(job.arrival) > through {
+                break;
+            }
+            *next_event += 1;
+
+            if job.ticks == 0 {
+                completion_times[index] = Some(u64::from(job.arrival));
+                *completed += 1;
+            } else {
+                ready.push_back(index);
+            }
+        }
+    }
+
+    while completed < jobs.len() {
+        admit(
+            jobs,
+            &events,
+            &mut next_event,
+            &mut ready,
+            &mut completion_times,
+            &mut completed,
+            time,
+        );
+
+        if let Some(index) = ready.pop_front() {
+            let id = jobs[index].id;
+
+            if last_dispatched_id.is_some_and(|last_id| last_id != id) {
+                time += u64::from(switch_cost);
+            }
+
+            admit(
+                jobs,
+                &events,
+                &mut next_event,
+                &mut ready,
+                &mut completion_times,
+                &mut completed,
+                time,
+            );
+
+            let start = time;
+            let consumed = remaining[index].min(quantum);
+            time += u64::from(consumed);
+            remaining[index] -= consumed;
+            let finished = remaining[index] == 0;
+
+            runs.push(Run {
+                id,
+                start,
+                end: time,
+                finished,
+            });
+
+            admit(
+                jobs,
+                &events,
+                &mut next_event,
+                &mut ready,
+                &mut completion_times,
+                &mut completed,
+                time,
+            );
+
+            if finished {
+                completion_times[index] = Some(time);
+                completed += 1;
+            } else {
+                ready.push_back(index);
+            }
+
+            last_dispatched_id = Some(id);
+        } else if next_event < events.len() {
+            let next_time = u64::from(jobs[events[next_event]].arrival);
+            if next_time > time {
+                if let Some(last_idle) = idle.last_mut() {
+                    if last_idle.1 == time {
+                        last_idle.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatched_id = None;
+            }
+        }
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion_times[index].unwrap()))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+```

@@ -1,0 +1,166 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.bytes().position(|b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path.bytes().position(|b| (1..=31).contains(&b) || b == 127) {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn has_directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn append_component(components: &mut Vec<String>, component: &str, absolute: bool, at: usize) -> Result<(), PathError> {
+    match component {
+        "" | "." => Ok(()),
+        ".." => {
+            if components.last().is_some_and(|last| last != "..") {
+                components.pop();
+                Ok(())
+            } else if absolute {
+                Err(PathError::Escape { at })
+            } else {
+                components.push("..".to_owned());
+                Ok(())
+            }
+        }
+        _ => {
+            components.push(component.to_owned());
+            Ok(())
+        }
+    }
+}
+
+fn normalized_components(path: &str, absolute: bool) -> Result<Vec<String>, PathError> {
+    let mut components = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        if !component.is_empty() {
+            append_component(&mut components, component, absolute, offset)?;
+        }
+        offset += component.len() + 1;
+    }
+
+    Ok(components)
+}
+
+fn join_absolute(components: &[String], directory_intent: bool) -> String {
+    if components.is_empty() {
+        return "/".to_owned();
+    }
+
+    let mut result = format!("/{}", components.join("/"));
+    if directory_intent {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let directory_intent = has_directory_intent(path);
+    let components = normalized_components(path, absolute)?;
+
+    if absolute {
+        Ok(join_absolute(&components, directory_intent))
+    } else if components.is_empty() {
+        Ok(".".to_owned())
+    } else {
+        let mut result = components.join("/");
+        if directory_intent {
+            result.push('/');
+        }
+        Ok(result)
+    }
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, ()> {
+    if !path.starts_with('/') || validate_raw(path).is_err() {
+        return Err(());
+    }
+    normalized_components(path, true).map_err(|_| ())
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd_components = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_components = match home {
+        Some(value) => Some(validate_context(value).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let tilde_expansion = if path.starts_with('~') {
+        if path == "~" || path.starts_with("~/") {
+            Some(true)
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+    } else {
+        None
+    };
+
+    let directory_intent = has_directory_intent(path);
+    let mut components = match tilde_expansion {
+        Some(_) => home_components.clone().ok_or(PathError::MissingHome)?,
+        None if path.starts_with('/') => Vec::new(),
+        None => cwd_components,
+    };
+
+    let (remainder, offset_base) = match tilde_expansion {
+        Some(_) if path == "~" => ("", path.len()),
+        Some(_) if path.starts_with("~/") => (&path[2..], 2),
+        _ => (path, 0),
+    };
+
+    let mut offset = offset_base;
+    for component in remainder.split('/') {
+        if !component.is_empty() {
+            match component {
+                "." => {}
+                ".." => {
+                    if components.pop().is_none() {
+                        return Err(PathError::Escape { at: offset });
+                    }
+                }
+                _ => components.push(component.to_owned()),
+            }
+        }
+        offset += component.len() + 1;
+    }
+
+    Ok(join_absolute(&components, directory_intent))
+}
+```

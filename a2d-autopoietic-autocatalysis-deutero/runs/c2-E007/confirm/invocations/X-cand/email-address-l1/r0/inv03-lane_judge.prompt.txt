@@ -1,0 +1,638 @@
+SYSTEM:
+You are selecting and reviewing Rust solutions.
+
+TASK is exactly the programmer's task. Hidden acceptance tests check every
+numbered requirement. Candidate files are fallible even when public-green.
+
+Choose the candidate most likely to become fully correct with a small,
+well-founded repair. If public-green candidates are supplied, select among
+them. Audit the chosen file against the full task, including required API
+compatibility and algorithmic scaling.
+
+Identify only concrete defects supported by the task and the actual code.
+For each defect, name the relevant requirement, explain how the code
+violates it, and describe a triggering input or input class when possible.
+Do not invent requirements. Do not request stylistic changes.
+Do not write Rust code, replacement functions, patches, or pseudocode.
+
+Return exactly one JSON object:
+{"pick":"<letter>","fixes":["<concrete defect and required correction>", ...]}
+
+Use an empty fixes list if you cannot establish a concrete defect.
+Selection and feedback must refer to the same candidate.
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. Provide exactly the following public data types and function signatures (function bodies are yours to implement). The shown derives are required; all listed fields and API items are public. Helper items may be private.
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError>;
+```
+
+R3. All at fields are zero-based BYTE offsets in the original input, never character counts. After any stripping, the position of a retained byte is its original position. Whenever an error refers to a position at the end of the cleaned input with no byte there, use input.len(). A removed terminal domain dot still supplies its original position for errors at that position.
+
+R4. Check raw empty input first: EmptyInput. Then reject the first byte >= 128 with NonAscii { at }, before ANY syntax checks, including comments or quotes. Do not trim or accept Unicode.
+
+R5. There is no trimming, whitespace stripping or comment handling. Every byte is significant. Quotes, spaces, tabs and parentheses are ordinary invalid local/domain characters, subject to the stage precedence below.
+
+R6. The local part is dot-atom only. Address separator detection examines all @ bytes, including any inside unsupported quotes or parentheses.
+
+R7. Find @ separators over the whole input. No separator yields MissingAt. Two or more yield MultipleAt at the SECOND separator, before local or domain validation. Exactly one divides local and domain. An empty local yields EmptyLocal at that separator, before any domain checks.
+
+R8. For an unquoted local, check length before its contents. More than 64 bytes yields LocalTooLong at its 65th byte. Otherwise validate left-to-right. The only permitted non-dot bytes are ASCII letters/digits and the bytes in the Rust byte string b"!#$%&'*+-/=?^_`{|}~". This includes no whitespace. Any other byte yields LocalChar at that byte.
+
+R9. For an unquoted local a dot may not be first, last, or immediately preceded by another dot. When scanning left-to-right, a dot violating any of those conditions yields LocalDot at that dot. Adjacency is detected at the SECOND dot, but an earlier invalid byte (including a leading dot) wins. Preserve the exact local spelling and case in Address.local and set Address.quoted to false.
+
+R10. Validate the domain only after the local succeeds. Remove exactly ONE final dot from the raw cleaned domain if present. This is a root marker, not an empty label. A domain empty after removal yields EmptyDomain at the domain start (position after @; input.len() if no retained byte is there). Do not remove any other dots.
+
+R11. The domain AFTER removal of that root marker must have at most 253 bytes. Otherwise return DomainTooLong at its 254th byte, before any label checks. The removed dot does not count towards length.
+
+R12. Split the domain on dots, preserving empty labels; process labels left-to-right. An empty label yields EmptyLabel at its start: the leading dot for a leading empty label, the second dot for an interior empty label, or the removed root dot for an empty last label after root removal.
+
+R13. For each nonempty label, length > 63 bytes yields LabelTooLong at its 64th byte before any character or hyphen checks. Earlier labels are validated completely before later labels.
+
+R14. For each label of valid length, check a leading hyphen first (LabelHyphen at its first byte), then a trailing hyphen (LabelHyphen at its last byte), THEN scan for character errors. Thus a label starting and ending with hyphen reports the leading one, even if another bad character exists inside.
+
+R15. Label content may contain only ASCII letters, digits, and hyphens; the first disallowed byte yields DomainChar at its byte. Underscores, brackets, spaces, quotes, domain literals, and IP literals in brackets are unsupported.
+
+R16. After all labels succeed, require at least TWO labels; otherwise DomainNeedsDot at the domain start. This precedes the final-label numeric check. There are no exceptions for localhost.
+
+R17. After the label-count check, if every byte of the last label is an ASCII digit return NumericTld at that label's start. Mixed letters/digits and hyphens in the final label are permitted. Otherwise return Address with domain ASCII-lowercased and without the root marker; local case is preserved.
+
+R18. Overall address error precedence is exactly: raw empty, non-ASCII, separator count, empty local, local validation, empty domain, total domain length, each label in order (empty, length, leading hyphen, trailing hyphen, character), label count, numeric last label. There is no total address length limit beyond the local/domain limits. No DNS lookup, IDNA conversion or Unicode processing.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Clauses: R9.
+#[test]
+fn public_atom_address() {
+    assert_eq!(parse_email("Ada.Lovelace@Mail.Example"), Ok(Address { local: "Ada.Lovelace".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R15.
+#[test]
+fn public_domain_label() {
+    assert_eq!(parse_email("info@post-box.example"), Ok(Address { local: "info".into(), domain: "post-box.example".into(), quoted: false }));
+}
+// Clauses: R7.
+#[test]
+fn public_separator_error() {
+    assert_eq!(parse_email("missing.example"), Err(EmailError::MissingAt));
+}
+```
+
+
+CANDIDATES:
+All supplied files pass the public tests.
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    if let Some(at) = bytes.iter().position(|&byte| byte >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let separators: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &byte)| (byte == b'@').then_some(index))
+        .collect();
+
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() > 1 {
+        return Err(EmailError::MultipleAt {
+            at: separators[1],
+        });
+    }
+
+    let separator = separators[0];
+    if separator == 0 {
+        return Err(EmailError::EmptyLocal { at: separator });
+    }
+
+    let local = &bytes[..separator];
+    if local.len() > 64 {
+        return Err(EmailError::LocalTooLong { at: 64 });
+    }
+
+    for (index, &byte) in local.iter().enumerate() {
+        if byte == b'.' {
+            if index == 0 || index + 1 == local.len() || local[index - 1] == b'.' {
+                return Err(EmailError::LocalDot { at: index });
+            }
+        } else if !byte.is_ascii_alphanumeric()
+            && !b"!#$%&'*+-/=?^_`{|}~".contains(&byte)
+        {
+            return Err(EmailError::LocalChar { at: index });
+        }
+    }
+
+    let domain_start = separator + 1;
+    let raw_domain = &bytes[domain_start..];
+    let removed_root_dot = raw_domain.last() == Some(&b'.');
+    let domain_end = if removed_root_dot {
+        input.len() - 1
+    } else {
+        input.len()
+    };
+    let domain = &bytes[domain_start..domain_end];
+
+    if domain.is_empty() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+
+    if domain.len() > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: domain_start + 253,
+        });
+    }
+
+    let mut labels: Vec<(usize, &[u8])> = Vec::new();
+    let mut label_start = domain_start;
+
+    for (offset, &byte) in domain.iter().enumerate() {
+        if byte == b'.' {
+            labels.push((label_start, &domain[label_start - domain_start..offset]));
+            label_start = domain_start + offset + 1;
+        }
+    }
+    labels.push((label_start, &domain[label_start - domain_start..]));
+
+    for (index, (start, label)) in labels.iter().enumerate() {
+        if label.is_empty() {
+            let at = if index + 1 == labels.len() && removed_root_dot {
+                input.len() - 1
+            } else {
+                *start
+            };
+            return Err(EmailError::EmptyLabel { at });
+        }
+
+        if label.len() > 63 {
+            return Err(EmailError::LabelTooLong { at: start + 63 });
+        }
+
+        if label[0] == b'-' {
+            return Err(EmailError::LabelHyphen { at: *start });
+        }
+        if label[label.len() - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: start + label.len() - 1,
+            });
+        }
+
+        for (offset, &byte) in label.iter().enumerate() {
+            if !byte.is_ascii_alphanumeric() && byte != b'-' {
+                return Err(EmailError::DomainChar { at: start + offset });
+            }
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+
+    let (last_start, last_label) = labels[labels.len() - 1];
+    if last_label.iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld { at: last_start });
+    }
+
+    let local = String::from_utf8(local.to_vec()).expect("ASCII local part");
+    let domain = String::from_utf8(domain.to_vec())
+        .expect("ASCII domain")
+        .to_ascii_lowercase();
+
+    Ok(Address {
+        local,
+        domain,
+        quoted: false,
+    })
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    if let Some(at) = bytes.iter().position(|&byte| byte >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let mut separators = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &byte)| (byte == b'@').then_some(index));
+
+    let separator = match separators.next() {
+        Some(at) => at,
+        None => return Err(EmailError::MissingAt),
+    };
+
+    if let Some(at) = separators.next() {
+        return Err(EmailError::MultipleAt { at });
+    }
+
+    if separator == 0 {
+        return Err(EmailError::EmptyLocal { at: separator });
+    }
+
+    let local = &bytes[..separator];
+    if local.len() > 64 {
+        return Err(EmailError::LocalTooLong { at: 64 });
+    }
+
+    for (index, &byte) in local.iter().enumerate() {
+        if byte == b'.' {
+            if index == 0 || index + 1 == local.len() || local[index - 1] == b'.' {
+                return Err(EmailError::LocalDot { at: index });
+            }
+        } else if !byte.is_ascii_alphanumeric()
+            && !b"!#$%&'*+-/=?^_`{|}~".contains(&byte)
+        {
+            return Err(EmailError::LocalChar { at: index });
+        }
+    }
+
+    let domain_start = separator + 1;
+    let raw_domain = &bytes[domain_start..];
+    let has_root_dot = raw_domain.last() == Some(&b'.');
+    let domain = if has_root_dot {
+        &raw_domain[..raw_domain.len() - 1]
+    } else {
+        raw_domain
+    };
+    let removed_dot_at = input.len() - 1;
+
+    if domain.is_empty() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+
+    if domain.len() > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: domain_start + 253,
+        });
+    }
+
+    let mut labels = Vec::new();
+    let mut label_start = 0;
+
+    for index in 0..=domain.len() {
+        if index == domain.len() || domain[index] == b'.' {
+            let label = &domain[label_start..index];
+            let absolute_start = domain_start + label_start;
+
+            if label.is_empty() {
+                let at = if index == domain.len() && has_root_dot {
+                    removed_dot_at
+                } else {
+                    absolute_start
+                };
+                return Err(EmailError::EmptyLabel { at });
+            }
+
+            if label.len() > 63 {
+                return Err(EmailError::LabelTooLong {
+                    at: absolute_start + 63,
+                });
+            }
+
+            if label[0] == b'-' {
+                return Err(EmailError::LabelHyphen { at: absolute_start });
+            }
+
+            if label[label.len() - 1] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: absolute_start + label.len() - 1,
+                });
+            }
+
+            for (offset, &byte) in label.iter().enumerate() {
+                if !byte.is_ascii_alphanumeric() && byte != b'-' {
+                    return Err(EmailError::DomainChar {
+                        at: absolute_start + offset,
+                    });
+                }
+            }
+
+            labels.push((label_start, index));
+            label_start = index + 1;
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+
+    let (last_start, last_end) = labels[labels.len() - 1];
+    let last_label = &domain[last_start..last_end];
+    if last_label.iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: domain_start + last_start,
+        });
+    }
+
+    let normalized_domain: Vec<u8> = domain.iter().map(u8::to_ascii_lowercase).collect();
+    Ok(Address {
+        local: String::from_utf8(local.to_vec()).expect("ASCII local part"),
+        domain: String::from_utf8(normalized_domain).expect("ASCII domain"),
+        quoted: false,
+    })
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    if let Some(at) = bytes.iter().position(|&byte| byte >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let separators: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &byte)| (byte == b'@').then_some(index))
+        .collect();
+
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() > 1 {
+        return Err(EmailError::MultipleAt { at: separators[1] });
+    }
+
+    let separator = separators[0];
+    if separator == 0 {
+        return Err(EmailError::EmptyLocal { at: separator });
+    }
+
+    let local_bytes = &bytes[..separator];
+    if local_bytes.len() > 64 {
+        return Err(EmailError::LocalTooLong { at: 64 });
+    }
+
+    for (index, &byte) in local_bytes.iter().enumerate() {
+        if byte == b'.' {
+            if index == 0
+                || index + 1 == local_bytes.len()
+                || local_bytes[index - 1] == b'.'
+            {
+                return Err(EmailError::LocalDot { at: index });
+            }
+        } else if !byte.is_ascii_alphanumeric()
+            && !b"!#$%&'*+-/=?^_`{|}~".contains(&byte)
+        {
+            return Err(EmailError::LocalChar { at: index });
+        }
+    }
+
+    let domain_start = separator + 1;
+    let raw_domain = &bytes[domain_start..];
+    let has_root_dot = raw_domain.last() == Some(&b'.');
+    let domain_bytes = if has_root_dot {
+        &raw_domain[..raw_domain.len() - 1]
+    } else {
+        raw_domain
+    };
+    let domain_len = domain_bytes.len();
+
+    if domain_bytes.is_empty() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+    if domain_len > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: domain_start + 253,
+        });
+    }
+
+    let mut labels: Vec<(usize, &[u8])> = Vec::new();
+    let mut label_start = 0;
+
+    for index in 0..=domain_len {
+        if index == domain_len || domain_bytes[index] == b'.' {
+            if label_start == index {
+                let at = if index == domain_len && has_root_dot {
+                    input.len() - 1
+                } else {
+                    domain_start + label_start
+                };
+                return Err(EmailError::EmptyLabel { at });
+            }
+
+            let label = &domain_bytes[label_start..index];
+            let absolute_start = domain_start + label_start;
+
+            if label.len() > 63 {
+                return Err(EmailError::LabelTooLong {
+                    at: absolute_start + 63,
+                });
+            }
+            if label[0] == b'-' {
+                return Err(EmailError::LabelHyphen { at: absolute_start });
+            }
+            if label[label.len() - 1] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: absolute_start + label.len() - 1,
+                });
+            }
+            if let Some(offset) = label
+                .iter()
+                .position(|&byte| !byte.is_ascii_alphanumeric() && byte != b'-')
+            {
+                return Err(EmailError::DomainChar {
+                    at: absolute_start + offset,
+                });
+            }
+
+            labels.push((absolute_start, label));
+            label_start = index + 1;
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+
+    let (last_start, last_label) = labels[labels.len() - 1];
+    if last_label.iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld { at: last_start });
+    }
+
+    let local = String::from_utf8(local_bytes.to_vec()).expect("ASCII input");
+    let domain = String::from_utf8(domain_bytes.to_vec())
+        .expect("ASCII input")
+        .to_ascii_lowercase();
+
+    Ok(Address {
+        local,
+        domain,
+        quoted: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_atom_address() {
+        assert_eq!(
+            parse_email("Ada.Lovelace@Mail.Example"),
+            Ok(Address {
+                local: "Ada.Lovelace".into(),
+                domain: "mail.example".into(),
+                quoted: false
+            })
+        );
+    }
+
+    #[test]
+    fn public_domain_label() {
+        assert_eq!(
+            parse_email("info@post-box.example"),
+            Ok(Address {
+                local: "info".into(),
+                domain: "post-box.example".into(),
+                quoted: false
+            })
+        );
+    }
+
+    #[test]
+    fn public_separator_error() {
+        assert_eq!(
+            parse_email("missing.example"),
+            Err(EmailError::MissingAt)
+        );
+    }
+}
+```

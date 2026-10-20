@@ -1812,3 +1812,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - E007's full stage on the same 140 tasks used 1,041 Luna (470 candidate, 571 incumbent), and 1,327 remained today. The owner chose expected cost over the worst-case guard.
   - The command is exactly `confirm_best`'s, plus `--daily-cap 3073` (the override covers this one stage's worst case only): 1,673 + 1,041 ≈ 2,714 is expected, and 73 over 3,000 is the bound.
   - Sequencing is unchanged: this is the stage `confirm_best` picked. At 00:05 10-21, L28 reads the cached result. If E007 is discarded, L29 confirms E010 then.
+- **E007 confirmation: KEEP, promoted** (12:38–15:56 UTC 10-20; fresh replicate on all 140 dev tasks, seed + 2).
+  - All-pass: X:cand **137/140 (97.9%)** vs X:inc (E002) 113/140 (80.7%), **Δ +17.1 pp (SE 4.0)**. Discordant pairs 24 vs 0. Δhidden fraction +6.3 pp (SE 2.4). 0 void, integrity OK.
+  - The rule was Δ > thr/2 = 1.8 pp.
+  - E002's arm drew low this time (113, against 116–120 in its earlier replicates). Across E007's two replicates the Δ is +7.1 and +17.1.
+  - Calls: X:cand 466 Luna + 140 Sol; X:inc 566 Luna + 124 Sol. Luna today ≈ 2,705 of 3,000.
+  - `nano/harness.py` = `runs/c2-E007/candidate.py` (sha c1e3e897…); `nano/history/before-E007.py` = E002.
+  - **The batch's confirmation step is done** (at most 2 confirmations; the first promoted). E005 and E010 stay provisional keeps vs E002 and are not confirmed.
+  - **Next:** `aa-from-replicates --id E007`; then **look 2 (C2-LOOK2) at 00:05 UTC 10-21**, armed detached (its 2,000 worst case does not fit today). If look 2 passes, E007 is the confirmation-3 candidate; otherwise E002.

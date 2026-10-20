@@ -1,0 +1,167 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    InvalidControl { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+
+    for (index, ch) in input.char_indices() {
+        if ch.is_control() && ch != '\t' && ch != '\r' && ch != '\n' {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let mut normalized = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(ch);
+        }
+    }
+
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut output = Vec::new();
+    let mut segment_start = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let run_start = i;
+            while i < chars.len() && chars[i] == '\n' {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            if run_len >= 2 {
+                wrap_segment(&chars[segment_start..run_start], options, &mut output);
+                output.extend(std::iter::repeat_n(String::new(), run_len - 1));
+                segment_start = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    wrap_segment(&chars[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn is_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn wrap_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let words: Vec<Vec<char>> = segment
+        .split(|ch| is_separator(*ch))
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_vec())
+        .collect();
+
+    if words.is_empty() {
+        return;
+    }
+
+    let mut first_line = true;
+    let mut line_indent = options.first_indent;
+    let mut content = Vec::<char>::new();
+
+    for word in words {
+        let mut offset = 0;
+        while offset < word.len() {
+            let capacity = options.width - line_indent;
+            let remaining = word.len() - offset;
+
+            if remaining <= capacity {
+                if content.is_empty() {
+                    content.extend_from_slice(&word[offset..]);
+                    offset = word.len();
+                } else {
+                    let needed = 1 + remaining;
+                    if content.len() + needed <= capacity {
+                        content.push(' ');
+                        content.extend_from_slice(&word[offset..]);
+                        offset = word.len();
+                    } else {
+                        emit_line(line_indent, &content, output);
+                        content.clear();
+                        first_line = false;
+                        line_indent = options.rest_indent;
+                    }
+                }
+                continue;
+            }
+
+            if content.is_empty() {
+                content.extend_from_slice(&word[offset..offset + capacity]);
+                offset += capacity;
+                emit_line(line_indent, &content, output);
+                content.clear();
+                first_line = false;
+                line_indent = options.rest_indent;
+            } else {
+                let available = capacity - content.len() - 1;
+                if available >= 2 {
+                    content.push(' ');
+                    content.extend_from_slice(&word[offset..offset + available]);
+                    offset += available;
+                }
+                emit_line(line_indent, &content, output);
+                content.clear();
+                first_line = false;
+                line_indent = options.rest_indent;
+            }
+        }
+
+        // Paragraph lines use the first indent only until the first line is emitted.
+        // A word that fits an empty line leaves it as the current first line.
+        if first_line {
+            line_indent = options.first_indent;
+        }
+    }
+
+    if !content.is_empty() {
+        emit_line(line_indent, &content, output);
+    }
+}
+
+fn emit_line(indent: usize, content: &[char], output: &mut Vec<String>) {
+    let mut line = String::with_capacity(indent + content.len());
+    line.extend(std::iter::repeat_n(' ', indent));
+    line.extend(content);
+    output.push(line);
+}
+```

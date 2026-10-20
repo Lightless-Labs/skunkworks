@@ -1,0 +1,157 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub ready_at: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub id: String,
+    pub effective_priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Unknown,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Status {
+    Queued,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    job: Job,
+    sequence: u128,
+    status: Status,
+}
+
+pub struct Scheduler {
+    aging_ms: u64,
+    last_time: u64,
+    next_sequence: u128,
+    entries: Vec<Entry>,
+}
+
+impl Scheduler {
+    pub fn new(aging_ms: u64) -> Self {
+        Self {
+            aging_ms,
+            last_time: 0,
+            next_sequence: 0,
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !valid_id(&job.id) {
+            return Err(Error::BadId);
+        }
+        if job.priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.entries.iter().any(|entry| entry.job.id == job.id) {
+            return Err(Error::Duplicate);
+        }
+
+        self.entries.push(Entry {
+            job,
+            sequence: self.next_sequence,
+            status: Status::Queued,
+        });
+        self.next_sequence += 1;
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.job.id == id) else {
+            return Err(Error::Unknown);
+        };
+
+        match entry.status {
+            Status::Queued => entry.status = Status::Cancelled,
+            Status::Cancelled => return Err(Error::Cancelled),
+            Status::Completed => return Err(Error::Completed),
+        }
+
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+
+        let mut selected: Option<(usize, u8, u128)> = None;
+        for (index, entry) in self.entries.iter().enumerate() {
+            if entry.status != Status::Queued || entry.job.ready_at > now {
+                continue;
+            }
+
+            let effective = effective_priority(&entry.job, now, self.aging_ms);
+            match selected {
+                None => selected = Some((index, effective, entry.sequence)),
+                Some((_, best_priority, best_sequence))
+                    if effective > best_priority
+                        || (effective == best_priority && entry.sequence < best_sequence) =>
+                {
+                    selected = Some((index, effective, entry.sequence));
+                }
+                _ => {}
+            }
+        }
+
+        self.last_time = now;
+        if let Some((index, effective_priority, _)) = selected {
+            let entry = &mut self.entries[index];
+            entry.status = Status::Completed;
+            Ok(Some(Dispatch {
+                id: entry.job.id.clone(),
+                effective_priority,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=16).contains(&bytes.len())
+        && bytes.iter().all(|&byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+        })
+}
+
+fn effective_priority(job: &Job, now: u64, aging_ms: u64) -> u8 {
+    if aging_ms == 0 {
+        return job.priority;
+    }
+
+    let gained = (now - job.ready_at) / aging_ms;
+    let remaining = 9u64 - u64::from(job.priority);
+    if gained >= remaining {
+        9
+    } else {
+        job.priority + gained as u8
+    }
+}

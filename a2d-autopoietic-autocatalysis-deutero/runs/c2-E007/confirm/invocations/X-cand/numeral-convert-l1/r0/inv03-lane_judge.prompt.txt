@@ -1,0 +1,539 @@
+SYSTEM:
+You are selecting and reviewing Rust solutions.
+
+TASK is exactly the programmer's task. Hidden acceptance tests check every
+numbered requirement. Candidate files are fallible even when public-green.
+
+Choose the candidate most likely to become fully correct with a small,
+well-founded repair. If public-green candidates are supplied, select among
+them. Audit the chosen file against the full task, including required API
+compatibility and algorithmic scaling.
+
+Identify only concrete defects supported by the task and the actual code.
+For each defect, name the relevant requirement, explain how the code
+violates it, and describe a triggering input or input class when possible.
+Do not invent requirements. Do not request stylistic changes.
+Do not write Rust code, replacement functions, patches, or pseudocode.
+
+Return exactly one JSON object:
+{"pick":"<letter>","fixes":["<concrete defect and required correction>", ...]}
+
+Use an empty fixes list if you cannot establish a concrete defect.
+Selection and feedback must refer to the same candidate.
+
+PROMPT:
+TASK:
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items must be pub. Do not use inner attributes or inner documentation comments. 
+
+Exact public API (derive Debug, Clone, PartialEq, Eq on the enums/structs):
+pub enum RomanCase { Upper, Lower }
+pub enum RomanError { Empty, InvalidByte { index: usize }, MixedCase { index: usize }, NonCanonical { index: usize }, Range }
+pub fn roman_encode(value: u32, case: RomanCase) -> Result<String, RomanError>;
+pub fn roman_decode(input: &str) -> Result<u32, RomanError>;
+
+R1. roman_encode accepts 0 through 3999 inclusive; larger values return Range.
+R2. Zero encodes as N in Upper case and n in Lower case.
+R3. Positive values use the descending greedy tokens M=1000, CM=900, D=500, CD=400, C=100, XC=90, L=50, XL=40, X=10, IX=9, V=5, IV=4, I=1.
+R4. Upper produces uppercase tokens; Lower produces their ASCII lowercase equivalents.
+R5. roman_decode accepts both cases but never a mixture. Its input is not trimmed.
+R6. Empty input returns Empty.
+R7. All positions are zero-based UTF-8 byte offsets, including positions in non-ASCII input.
+R8. Allowed bytes are exactly IVXLCDMNivxlcdmn. Scan the entire input first; the first other byte returns InvalidByte.
+R9. After the allowed-byte scan, the first alphabetic byte determines the case. The first byte of the other case returns MixedCase.
+R10. InvalidByte takes precedence over MixedCase regardless of where those problems occur.
+R11. Exactly N or n decodes to zero.
+R12. Any other input containing N or n returns NonCanonical { index: 0 }, after lexical and case checks.
+R13. For N-free input compute a provisional value left to right: if the next symbol is larger, consume those two symbols and add next-current; otherwise consume one and add its value. Repeat until exhausted.
+R14. If the provisional value exceeds 3999, return Range before checking canonical spelling. Saturating the provisional sum at 4000 is equivalent and permitted.
+R15. For a provisional value within range, encode it using R3 and the input case. The input must equal that spelling exactly.
+R16. Non-equal spelling returns NonCanonical at the first differing byte, or at the shorter length if one string is a prefix of the other.
+R17. Consequently only IV, IX, XL, XC, CD and CM are canonical subtractive pairs; I, X and C repeat at most three times, M at most three times, and V, L and D never repeat.
+R18. All error precedence is Empty, InvalidByte, MixedCase, N-combination, Range, canonical comparison. Both functions are deterministic and keep no state.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1-R4
+#[test]
+fn public_roman_encode() {
+assert_eq!(roman_encode(1984, RomanCase::Upper), Ok("MCMLXXXIV".into()));
+}
+
+// R5, R15
+#[test]
+fn public_roman_decode() {
+assert_eq!(roman_decode("cdxliv"), Ok(444));
+}
+
+// R2, R11
+#[test]
+fn public_roman_zero() {
+assert_eq!(roman_encode(0, RomanCase::Lower), Ok("n".into())); assert_eq!(roman_decode("N"), Ok(0));
+}
+```
+
+
+CANDIDATES:
+All supplied files pass the public tests.
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanCase {
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanError {
+    Empty,
+    InvalidByte { index: usize },
+    MixedCase { index: usize },
+    NonCanonical { index: usize },
+    Range,
+}
+
+pub fn roman_encode(value: u32, case: RomanCase) -> Result<String, RomanError> {
+    if value > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    if value == 0 {
+        return Ok(match case {
+            RomanCase::Upper => "N".to_owned(),
+            RomanCase::Lower => "n".to_owned(),
+        });
+    }
+
+    const TOKENS: &[(u32, &str)] = &[
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+
+    let mut remaining = value;
+    let mut output = String::new();
+
+    for &(token_value, token) in TOKENS {
+        while remaining >= token_value {
+            remaining -= token_value;
+            output.push_str(token);
+        }
+    }
+
+    if case == RomanCase::Lower {
+        output.make_ascii_lowercase();
+    }
+
+    Ok(output)
+}
+
+pub fn roman_decode(input: &str) -> Result<u32, RomanError> {
+    if input.is_empty() {
+        return Err(RomanError::Empty);
+    }
+
+    for (index, byte) in input.bytes().enumerate() {
+        if !matches!(
+            byte,
+            b'I' | b'V' | b'X' | b'L' | b'C' | b'D' | b'M' | b'N'
+                | b'i' | b'v' | b'x' | b'l' | b'c' | b'd' | b'm' | b'n'
+        ) {
+            return Err(RomanError::InvalidByte { index });
+        }
+    }
+
+    let mut case = None;
+    for (index, byte) in input.bytes().enumerate() {
+        let byte_case = if byte.is_ascii_uppercase() {
+            Some(RomanCase::Upper)
+        } else {
+            Some(RomanCase::Lower)
+        };
+
+        if let Some(first_case) = &case {
+            if first_case != &byte_case.unwrap() {
+                return Err(RomanError::MixedCase { index });
+            }
+        } else {
+            case = byte_case;
+        }
+    }
+
+    let bytes = input.as_bytes();
+
+    if bytes.len() == 1 && (bytes[0] == b'N' || bytes[0] == b'n') {
+        return Ok(0);
+    }
+
+    if let Some(index) = bytes.iter().position(|&byte| byte == b'N' || byte == b'n') {
+        let _ = index;
+        return Err(RomanError::NonCanonical { index: 0 });
+    }
+
+    let symbol_value = |byte: u8| -> u32 {
+        match byte.to_ascii_uppercase() {
+            b'I' => 1,
+            b'V' => 5,
+            b'X' => 10,
+            b'L' => 50,
+            b'C' => 100,
+            b'D' => 500,
+            b'M' => 1000,
+            _ => 0,
+        }
+    };
+
+    let mut provisional = 0u32;
+    let mut position = 0;
+
+    while position < bytes.len() {
+        let current = symbol_value(bytes[position]);
+        if position + 1 < bytes.len() {
+            let next = symbol_value(bytes[position + 1]);
+            if next > current {
+                provisional = provisional.saturating_add(next - current).min(4000);
+                position += 2;
+                continue;
+            }
+        }
+        provisional = provisional.saturating_add(current).min(4000);
+        position += 1;
+    }
+
+    if provisional > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    let input_case = case.unwrap_or(RomanCase::Upper);
+    let canonical = roman_encode(provisional, input_case)?;
+    if input == canonical {
+        return Ok(provisional);
+    }
+
+    let differing_index = input
+        .bytes()
+        .zip(canonical.bytes())
+        .position(|(actual, expected)| actual != expected)
+        .unwrap_or_else(|| input.len().min(canonical.len()));
+
+    Err(RomanError::NonCanonical {
+        index: differing_index,
+    })
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanCase {
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanError {
+    Empty,
+    InvalidByte { index: usize },
+    MixedCase { index: usize },
+    NonCanonical { index: usize },
+    Range,
+}
+
+pub fn roman_encode(value: u32, case: RomanCase) -> Result<String, RomanError> {
+    if value > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    if value == 0 {
+        return Ok(match case {
+            RomanCase::Upper => "N",
+            RomanCase::Lower => "n",
+        }
+        .to_string());
+    }
+
+    const TOKENS: &[(u32, &str)] = &[
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+
+    let mut remaining = value;
+    let mut output = String::new();
+
+    for &(amount, token) in TOKENS {
+        while remaining >= amount {
+            output.push_str(token);
+            remaining -= amount;
+        }
+    }
+
+    if matches!(case, RomanCase::Lower) {
+        output.make_ascii_lowercase();
+    }
+
+    Ok(output)
+}
+
+pub fn roman_decode(input: &str) -> Result<u32, RomanError> {
+    if input.is_empty() {
+        return Err(RomanError::Empty);
+    }
+
+    for (index, byte) in input.bytes().enumerate() {
+        if !matches!(
+            byte,
+            b'I' | b'V' | b'X' | b'L' | b'C' | b'D' | b'M' | b'N'
+                | b'i' | b'v' | b'x' | b'l' | b'c' | b'd' | b'm' | b'n'
+        ) {
+            return Err(RomanError::InvalidByte { index });
+        }
+    }
+
+    let mut case = None;
+    for (index, byte) in input.bytes().enumerate() {
+        let current = if byte.is_ascii_uppercase() {
+            RomanCase::Upper
+        } else {
+            RomanCase::Lower
+        };
+
+        if let Some(first_case) = &case {
+            if *first_case != current {
+                return Err(RomanError::MixedCase { index });
+            }
+        } else {
+            case = Some(current);
+        }
+    }
+
+    if input == "N" || input == "n" {
+        return Ok(0);
+    }
+
+    if let Some(index) = input.bytes().position(|byte| byte == b'N' || byte == b'n') {
+        return Err(RomanError::NonCanonical { index: 0 });
+    }
+
+    fn symbol_value(byte: u8) -> u32 {
+        match byte.to_ascii_uppercase() {
+            b'I' => 1,
+            b'V' => 5,
+            b'X' => 10,
+            b'L' => 50,
+            b'C' => 100,
+            b'D' => 500,
+            b'M' => 1000,
+            _ => 0,
+        }
+    }
+
+    let bytes = input.as_bytes();
+    let mut provisional = 0u32;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let current = symbol_value(bytes[index]);
+        if index + 1 < bytes.len() {
+            let next = symbol_value(bytes[index + 1]);
+            if next > current {
+                provisional = provisional.saturating_add(next - current).min(4000);
+                index += 2;
+                continue;
+            }
+        }
+        provisional = provisional.saturating_add(current).min(4000);
+        index += 1;
+    }
+
+    if provisional > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    let expected = roman_encode(provisional, case.unwrap())?;
+    if input == expected {
+        return Ok(provisional);
+    }
+
+    let differing_index = input
+        .bytes()
+        .zip(expected.bytes())
+        .position(|(actual, expected)| actual != expected)
+        .unwrap_or_else(|| input.len().min(expected.len()));
+
+    Err(RomanError::NonCanonical {
+        index: differing_index,
+    })
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanCase {
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanError {
+    Empty,
+    InvalidByte { index: usize },
+    MixedCase { index: usize },
+    NonCanonical { index: usize },
+    Range,
+}
+
+pub fn roman_encode(value: u32, case: RomanCase) -> Result<String, RomanError> {
+    if value > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    let lower = matches!(case, RomanCase::Lower);
+    if value == 0 {
+        return Ok(if lower { "n" } else { "N" }.to_string());
+    }
+
+    const TOKENS: &[(u32, &str)] = &[
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+
+    let mut remainder = value;
+    let mut result = String::new();
+
+    for &(amount, token) in TOKENS {
+        while remainder >= amount {
+            if lower {
+                result.push_str(&token.to_ascii_lowercase());
+            } else {
+                result.push_str(token);
+            }
+            remainder -= amount;
+        }
+    }
+
+    Ok(result)
+}
+
+pub fn roman_decode(input: &str) -> Result<u32, RomanError> {
+    if input.is_empty() {
+        return Err(RomanError::Empty);
+    }
+
+    for (index, byte) in input.bytes().enumerate() {
+        if !matches!(
+            byte,
+            b'I' | b'V' | b'X' | b'L' | b'C' | b'D' | b'M' | b'N'
+                | b'i' | b'v' | b'x' | b'l' | b'c' | b'd' | b'm' | b'n'
+        ) {
+            return Err(RomanError::InvalidByte { index });
+        }
+    }
+
+    let bytes = input.as_bytes();
+    let first_case = bytes[0].is_ascii_lowercase();
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte.is_ascii_alphabetic() && byte.is_ascii_lowercase() != first_case {
+            return Err(RomanError::MixedCase { index });
+        }
+    }
+
+    if bytes == b"N" || bytes == b"n" {
+        return Ok(0);
+    }
+
+    if bytes.contains(&b'N') || bytes.contains(&b'n') {
+        return Err(RomanError::NonCanonical { index: 0 });
+    }
+
+    fn symbol_value(byte: u8) -> u32 {
+        match byte.to_ascii_uppercase() {
+            b'I' => 1,
+            b'V' => 5,
+            b'X' => 10,
+            b'L' => 50,
+            b'C' => 100,
+            b'D' => 500,
+            b'M' => 1000,
+            _ => 0,
+        }
+    }
+
+    let mut provisional = 0u32;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let current = symbol_value(bytes[index]);
+        if index + 1 < bytes.len() {
+            let next = symbol_value(bytes[index + 1]);
+            if next > current {
+                provisional = provisional.saturating_add(next - current).min(4000);
+                index += 2;
+                continue;
+            }
+        }
+        provisional = provisional.saturating_add(current).min(4000);
+        index += 1;
+    }
+
+    if provisional > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    let case = if first_case {
+        RomanCase::Lower
+    } else {
+        RomanCase::Upper
+    };
+    let canonical = roman_encode(provisional, case).unwrap();
+
+    let canonical_bytes = canonical.as_bytes();
+    let mismatch = bytes
+        .iter()
+        .zip(canonical_bytes.iter())
+        .position(|(left, right)| left != right)
+        .unwrap_or_else(|| bytes.len().min(canonical_bytes.len()));
+
+    if mismatch != bytes.len() || mismatch != canonical_bytes.len() {
+        return Err(RomanError::NonCanonical { index: mismatch });
+    }
+
+    Ok(provisional)
+}
+```

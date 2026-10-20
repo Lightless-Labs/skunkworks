@@ -1,0 +1,181 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'}' => return Err(Error::UnexpectedClose { pos: i }),
+            b'{' => {
+                let open = i;
+                let close = match bytes[i + 1..].iter().position(|&b| b == b'}') {
+                    Some(offset) => i + 1 + offset,
+                    None => return Err(Error::Unclosed { pos: open }),
+                };
+
+                if let Some(offset) = bytes[i + 1..close].iter().position(|&b| b == b'{') {
+                    return Err(Error::NestedOpen { pos: i + 1 + offset });
+                }
+
+                let mut content_start = open + 1;
+                let mut operator = None;
+                if content_start < close
+                    && matches!(bytes[content_start], b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&')
+                {
+                    let op_pos = content_start;
+                    let op = bytes[content_start];
+                    if op != b' ' {
+                        return Err(Error::UnsupportedOperator { pos: op_pos });
+                    }
+                    operator = Some(op);
+                    content_start += 1;
+                }
+
+                if content_start == close {
+                    return Err(Error::EmptyExpression { pos: close });
+                }
+
+                let mut seen: Vec<&str> = Vec::new();
+                let mut spec_start = content_start;
+                loop {
+                    let spec_end = bytes[spec_start..close]
+                        .iter()
+                        .position(|&b| b == b',')
+                        .map(|offset| spec_start + offset)
+                        .unwrap_or(close);
+
+                    if spec_start == spec_end {
+                        return Err(Error::EmptyVariable { pos: spec_start });
+                    }
+
+                    let name = &template[spec_start..spec_end];
+                    let name_bytes = name.as_bytes();
+
+                    if name_bytes.is_empty()
+                        || !(name_bytes[0].is_ascii_alphabetic() || name_bytes[0] == b'_')
+                    {
+                        return Err(Error::InvalidName { pos: spec_start });
+                    }
+
+                    let mut invalid = None;
+                    for (offset, &b) in name_bytes.iter().enumerate().skip(1) {
+                        if !(b.is_ascii_alphanumeric() || b == b'_') {
+                            invalid = Some(offset);
+                            break;
+                        }
+                    }
+                    if let Some(offset) = invalid {
+                        return Err(Error::InvalidName {
+                            pos: spec_start + offset,
+                        });
+                    }
+
+                    if seen.contains(&name) {
+                        return Err(Error::DuplicateVariable { pos: spec_start });
+                    }
+                    seen.push(name);
+
+                    if spec_end == close {
+                        break;
+                    }
+                    spec_start = spec_end + 1;
+                }
+
+                expressions.push((open, close, operator, content_start));
+                i = close + 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let mut output = String::new();
+    let mut cursor = 0;
+
+    for (open, close, _operator, content_start) in expressions {
+        output.push_str(&template[cursor..open]);
+
+        let mut spec_start = content_start;
+        let mut first_field = true;
+
+        loop {
+            let spec_end = bytes[spec_start..close]
+                .iter()
+                .position(|&b| b == b',')
+                .map(|offset| spec_start + offset)
+                .unwrap_or(close);
+            let name = &template[spec_start..spec_end];
+
+            if let Some(value) = vars.iter().rev().find(|(key, _)| *key == name).map(|(_, value)| *value) {
+                if !first_field {
+                    output.push(',');
+                }
+                output.push_str(&encode_value(value));
+                first_field = false;
+            }
+
+            if spec_end == close {
+                break;
+            }
+            spec_start = spec_end + 1;
+        }
+
+        cursor = close + 1;
+    }
+
+    output.push_str(&template[cursor..]);
+    Ok(output)
+}
+
+fn encode_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut encoded = String::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+
+        if is_unreserved(byte) {
+            encoded.push(byte as char);
+            i += 1;
+        } else if byte == b'%' && i + 2 < bytes.len() && is_hex(bytes[i + 1]) && is_hex(bytes[i + 2]) {
+            encoded.push('%');
+            encoded.push((bytes[i + 1] as char).to_ascii_uppercase());
+            encoded.push((bytes[i + 2] as char).to_ascii_uppercase());
+            i += 3;
+        } else if byte == b'%' {
+            encoded.push_str("%25");
+            i += 1;
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+            i += 1;
+        }
+    }
+
+    encoded
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+```

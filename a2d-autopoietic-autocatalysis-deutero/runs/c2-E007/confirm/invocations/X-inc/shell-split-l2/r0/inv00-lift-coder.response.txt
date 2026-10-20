@@ -1,0 +1,278 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single(usize),
+    Double(usize),
+}
+
+fn is_name_start(c: char) -> bool {
+    c == '_' || c.is_ascii_alphabetic()
+}
+
+fn is_name_char(c: char) -> bool {
+    is_name_start(c) || c.is_ascii_digit()
+}
+
+fn find_env<'a>(env: &'a [(&str, &str)], name: &str) -> Option<&'a str> {
+    env.iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| *value)
+}
+
+fn decode_default(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((_, c)) = chars.next() {
+        if c == '\\' {
+            if let Some((_, next)) = chars.next() {
+                result.push(next);
+            } else {
+                result.push('\\');
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut quote = Quote::None;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((pos, c)) = chars.next() {
+        match quote {
+            Quote::Single(_) => {
+                if c == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.push(c);
+                }
+            }
+            Quote::Double(open_pos) => {
+                match c {
+                    '"' => quote = Quote::None,
+                    '\\' => {
+                        if let Some(&(next_pos, next)) = chars.peek() {
+                            if next == '"' || next == '\\' || next == '$' || next == '\n' {
+                                chars.next();
+                                if next != '\n' {
+                                    word.push(next);
+                                }
+                            } else {
+                                word.push('\\');
+                            }
+                        } else {
+                            return Err(SplitError::TrailingEscape { pos });
+                        }
+                    }
+                    '$' => {
+                        active = true;
+                        if let Some(&(next_pos, next)) = chars.peek() {
+                            if is_name_start(next) {
+                                let start = next_pos;
+                                let mut name = String::new();
+                                while let Some(&(_, n)) = chars.peek() {
+                                    if !is_name_char(n) {
+                                        break;
+                                    }
+                                    name.push(n);
+                                    chars.next();
+                                }
+                                if let Some(value) = find_env(env, &name) {
+                                    word.push_str(value);
+                                }
+                                let _ = start;
+                            } else if next == '{' {
+                                chars.next();
+                                let mut content = String::new();
+                                let mut close_found = false;
+                                let mut escaped = false;
+                                while let Some((_, ch)) = chars.next() {
+                                    if escaped {
+                                        content.push('\\');
+                                        content.push(ch);
+                                        escaped = false;
+                                    } else if ch == '\\' {
+                                        escaped = true;
+                                    } else if ch == '}' {
+                                        close_found = true;
+                                        break;
+                                    } else {
+                                        content.push(ch);
+                                    }
+                                }
+                                if escaped {
+                                    content.push('\\');
+                                }
+                                if !close_found {
+                                    return Err(SplitError::UnterminatedExpansion { pos });
+                                }
+                                let (name, default) = parse_braced(&content)
+                                    .ok_or(SplitError::InvalidExpansion { pos })?;
+                                let value = match default {
+                                    Some(text) => match find_env(env, name) {
+                                        Some(v) if !v.is_empty() => v.to_string(),
+                                        _ => decode_default(text),
+                                    },
+                                    None => find_env(env, name).unwrap_or("").to_string(),
+                                };
+                                word.push_str(&value);
+                            } else {
+                                word.push('$');
+                            }
+                        } else {
+                            word.push('$');
+                        }
+                    }
+                    _ => word.push(c),
+                }
+                let _ = open_pos;
+            }
+            Quote::None => {
+                if c == '\'' {
+                    active = true;
+                    quote = Quote::Single(pos);
+                } else if c == '"' {
+                    active = true;
+                    quote = Quote::Double(pos);
+                } else if c == '\\' {
+                    if let Some(&(next_pos, next)) = chars.peek() {
+                        if next == '\n' {
+                            chars.next();
+                        } else {
+                            chars.next();
+                            active = true;
+                            word.push(next);
+                        }
+                        let _ = next_pos;
+                    } else {
+                        return Err(SplitError::TrailingEscape { pos });
+                    }
+                } else if matches!(c, ' ' | '\t' | '\r' | '\n') {
+                    if active {
+                        words.push(std::mem::take(&mut word));
+                        active = false;
+                    }
+                } else if c == '$' {
+                    active = true;
+                    if let Some(&(next_pos, next)) = chars.peek() {
+                        if is_name_start(next) {
+                            let mut name = String::new();
+                            while let Some(&(_, n)) = chars.peek() {
+                                if !is_name_char(n) {
+                                    break;
+                                }
+                                name.push(n);
+                                chars.next();
+                            }
+                            if let Some(value) = find_env(env, &name) {
+                                word.push_str(value);
+                            }
+                            let _ = next_pos;
+                        } else if next == '{' {
+                            chars.next();
+                            let mut content = String::new();
+                            let mut close_found = false;
+                            let mut escaped = false;
+                            while let Some((_, ch)) = chars.next() {
+                                if escaped {
+                                    content.push('\\');
+                                    content.push(ch);
+                                    escaped = false;
+                                } else if ch == '\\' {
+                                    escaped = true;
+                                } else if ch == '}' {
+                                    close_found = true;
+                                    break;
+                                } else {
+                                    content.push(ch);
+                                }
+                            }
+                            if escaped {
+                                content.push('\\');
+                            }
+                            if !close_found {
+                                return Err(SplitError::UnterminatedExpansion { pos });
+                            }
+                            let (name, default) = parse_braced(&content)
+                                .ok_or(SplitError::InvalidExpansion { pos })?;
+                            let value = match default {
+                                Some(text) => match find_env(env, name) {
+                                    Some(v) if !v.is_empty() => v.to_string(),
+                                    _ => decode_default(text),
+                                },
+                                None => find_env(env, name).unwrap_or("").to_string(),
+                            };
+                            word.push_str(&value);
+                        } else {
+                            word.push('$');
+                        }
+                    } else {
+                        word.push('$');
+                    }
+                } else {
+                    active = true;
+                    word.push(c);
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single(pos) => return Err(SplitError::UnterminatedSingle { pos }),
+        Quote::Double(pos) => return Err(SplitError::UnterminatedDouble { pos }),
+        Quote::None => {}
+    }
+
+    if active {
+        words.push(word);
+    }
+
+    Ok(words)
+}
+
+fn parse_braced(content: &str) -> Option<(&str, Option<&str>)> {
+    let bytes = content.as_bytes();
+    let mut i = 0;
+
+    if i >= bytes.len() || !(bytes[i] == b'_' || bytes[i].is_ascii_alphabetic()) {
+        return None;
+    }
+    i += 1;
+    while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+        i += 1;
+    }
+
+    let name = &content[..i];
+    if i == bytes.len() {
+        return Some((name, None));
+    }
+
+    if bytes.get(i..i + 2) == Some(b":-") {
+        return Some((name, Some(&content[i + 2..])));
+    }
+
+    None
+}
+```

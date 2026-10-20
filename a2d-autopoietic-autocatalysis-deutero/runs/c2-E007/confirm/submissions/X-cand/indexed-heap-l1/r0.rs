@@ -1,0 +1,192 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+pub struct IndexedHeap {
+    items: Vec<HeapEntry>,
+    indices: HashMap<String, usize>,
+    next_age: u128,
+}
+
+struct HeapEntry {
+    item: Item,
+    age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            indices: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonicalize_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        // Rebase before the age counter could overflow. The rank ordering is preserved.
+        if self.next_age == u128::MAX {
+            self.rebase_ages();
+        }
+        let age = self.next_age;
+        self.next_age += 1;
+
+        let index = self.items.len();
+        self.items.push(HeapEntry {
+            item: Item {
+                key: key.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age,
+        });
+        self.indices.insert(key, index);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.items.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.items.is_empty() {
+            return None;
+        }
+
+        let last = self.items.len() - 1;
+        self.swap_slots(0, last);
+        let entry = self.items.pop().expect("heap was nonempty");
+        self.indices.remove(&entry.item.key);
+
+        if !self.items.is_empty() {
+            self.sift_down(0);
+        }
+
+        Some(entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&index| self.items[index].item.clone()))
+    }
+
+    fn rebase_ages(&mut self) {
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
+        order.sort_by_key(|&index| self.items[index].age);
+        for (age, index) in order.into_iter().enumerate() {
+            self.items[index].age = age as u128;
+        }
+        self.next_age = self.items.len() as u128;
+    }
+
+    fn precedes(&self, left: usize, right: usize) -> bool {
+        let left = &self.items[left];
+        let right = &self.items[right];
+
+        left.item
+            .priority
+            .cmp(&right.item.priority)
+            .then_with(|| left.item.value.len().cmp(&right.item.value.len()))
+            .then_with(|| left.age.cmp(&right.age))
+            .is_lt()
+    }
+
+    fn swap_slots(&mut self, left: usize, right: usize) {
+        self.items.swap(left, right);
+        let left_key = self.items[left].item.key.clone();
+        let right_key = self.items[right].item.key.clone();
+        self.indices.insert(left_key, left);
+        self.indices.insert(right_key, right);
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.precedes(index, parent) {
+                break;
+            }
+            self.swap_slots(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        loop {
+            let left = index * 2 + 1;
+            if left >= self.items.len() {
+                break;
+            }
+
+            let right = left + 1;
+            let best_child = if right < self.items.len() && self.precedes(right, left) {
+                right
+            } else {
+                left
+            };
+
+            if !self.precedes(best_child, index) {
+                break;
+            }
+            self.swap_slots(index, best_child);
+            index = best_child;
+        }
+    }
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (relative, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if relative == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphanumeric() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + relative });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}

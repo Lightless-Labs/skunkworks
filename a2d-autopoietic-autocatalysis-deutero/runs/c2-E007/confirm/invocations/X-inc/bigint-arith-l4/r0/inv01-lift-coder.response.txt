@@ -1,0 +1,449 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    SignOnly,
+    InvalidDigit { index: usize },
+    Separator { index: usize },
+    LeadingZero { index: usize },
+    TooManyDigits { limit: usize, index: usize },
+    DivisionByZero,
+    InvalidRadix { radix: u32 },
+    ExponentTooLarge { exponent: u32, limit: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Big {
+    negative: bool,
+    digits: Vec<u8>,
+}
+
+impl Big {
+    fn zero() -> Self {
+        Self {
+            negative: false,
+            digits: vec![0],
+        }
+    }
+
+    fn one() -> Self {
+        Self {
+            negative: false,
+            digits: vec![1],
+        }
+    }
+
+    fn normalize(&mut self) {
+        let first = self.digits.iter().position(|&d| d != 0);
+        match first {
+            Some(i) if i > 0 => {
+                self.digits.drain(0..i);
+            }
+            None => self.digits = vec![0],
+            _ => {}
+        }
+        if self.is_zero() {
+            self.negative = false;
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.digits.len() == 1 && self.digits[0] == 0
+    }
+
+    fn abs_cmp(&self, rhs: &Self) -> Ordering {
+        self.digits
+            .len()
+            .cmp(&rhs.digits.len())
+            .then_with(|| self.digits.cmp(&rhs.digits))
+    }
+
+    fn abs_add(&self, rhs: &Self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = self.digits.len();
+        let mut j = rhs.digits.len();
+        let mut carry = 0u16;
+        while i > 0 || j > 0 || carry > 0 {
+            let a = if i > 0 {
+                i -= 1;
+                self.digits[i] as u16
+            } else {
+                0
+            };
+            let b = if j > 0 {
+                j -= 1;
+                rhs.digits[j] as u16
+            } else {
+                0
+            };
+            let sum = a + b + carry;
+            out.push((sum % 10) as u8);
+            carry = sum / 10;
+        }
+        out.reverse();
+        out
+    }
+
+    // Requires |self| >= |rhs|.
+    fn abs_sub(&self, rhs: &Self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.digits.len());
+        let mut i = self.digits.len();
+        let mut j = rhs.digits.len();
+        let mut borrow = 0i16;
+        while i > 0 {
+            i -= 1;
+            let a = self.digits[i] as i16 - borrow;
+            let b = if j > 0 {
+                j -= 1;
+                rhs.digits[j] as i16
+            } else {
+                0
+            };
+            if a < b {
+                out.push((a + 10 - b) as u8);
+                borrow = 1;
+            } else {
+                out.push((a - b) as u8);
+                borrow = 0;
+            }
+        }
+        while out.len() > 1 && out.last() == Some(&0) {
+            out.pop();
+        }
+        out.reverse();
+        out
+    }
+
+    fn abs_mul(&self, rhs: &Self) -> Vec<u8> {
+        if self.is_zero() || rhs.is_zero() {
+            return vec![0];
+        }
+        let mut acc = vec![0u32; self.digits.len() + rhs.digits.len()];
+        for (i, &a) in self.digits.iter().rev().enumerate() {
+            for (j, &b) in rhs.digits.iter().rev().enumerate() {
+                acc[i + j] += a as u32 * b as u32;
+            }
+        }
+        for i in 0..acc.len() - 1 {
+            let carry = acc[i] / 10;
+            acc[i] %= 10;
+            acc[i + 1] += carry;
+        }
+        while acc.len() > 1 && acc.last() == Some(&0) {
+            acc.pop();
+        }
+        acc.into_iter().rev().map(|x| x as u8).collect()
+    }
+
+    fn abs_mul_small(&mut self, m: u8) {
+        if m == 0 || self.is_zero() {
+            self.digits = vec![0];
+            self.negative = false;
+            return;
+        }
+        let mut carry = 0u16;
+        for d in self.digits.iter_mut().rev() {
+            let n = *d as u16 * m as u16 + carry;
+            *d = (n % 10) as u8;
+            carry = n / 10;
+        }
+        while carry > 0 {
+            self.digits.insert(0, (carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+
+    fn abs_add_small(&mut self, n: u8) {
+        let mut carry = n as u16;
+        let mut i = self.digits.len();
+        while carry > 0 && i > 0 {
+            i -= 1;
+            let sum = self.digits[i] as u16 + carry;
+            self.digits[i] = (sum % 10) as u8;
+            carry = sum / 10;
+        }
+        if carry > 0 {
+            self.digits.insert(0, carry as u8);
+        }
+    }
+
+    fn abs_div_rem(&self, rhs: &Self) -> (Self, Self) {
+        let mut quotient = Vec::with_capacity(self.digits.len());
+        let mut rem = Self::zero();
+        for &d in &self.digits {
+            rem.abs_mul_small(10);
+            rem.abs_add_small(d);
+            let mut qdigit = 0u8;
+            while rem.abs_cmp(rhs) != Ordering::Less {
+                rem.digits = rem.abs_sub(rhs);
+                qdigit += 1;
+            }
+            quotient.push(qdigit);
+        }
+        let mut q = Self {
+            negative: false,
+            digits: quotient,
+        };
+        q.normalize();
+        rem.normalize();
+        (q, rem)
+    }
+
+    fn abs(&self) -> Self {
+        Self {
+            negative: false,
+            digits: self.digits.clone(),
+        }
+    }
+
+    pub fn parse(text: &str, radix: u32, max_digits: usize) -> Result<Self, Error> {
+        if !(2..=36).contains(&radix) {
+            return Err(Error::InvalidRadix { radix });
+        }
+        if text.is_empty() {
+            return Err(Error::Empty);
+        }
+
+        let bytes = text.as_bytes();
+        let mut start = 0;
+        let mut negative = false;
+        if bytes[0] == b'+' || bytes[0] == b'-' {
+            negative = bytes[0] == b'-';
+            start = 1;
+            if start == bytes.len() {
+                return Err(Error::SignOnly);
+            }
+        }
+
+        let mut values = vec![None; bytes.len()];
+        let mut invalid = None;
+        for i in start..bytes.len() {
+            let b = bytes[i];
+            if b == b'_' {
+                continue;
+            }
+            let value = match b {
+                b'0'..=b'9' => Some((b - b'0') as u32),
+                b'a'..=b'z' => Some((b - b'a' + 10) as u32),
+                b'A'..=b'Z' => Some((b - b'A' + 10) as u32),
+                _ => None,
+            };
+            match value {
+                Some(v) if v < radix => values[i] = Some(v as u8),
+                _ => {
+                    if invalid.is_none() {
+                        invalid = Some(i);
+                    }
+                }
+            }
+        }
+        if let Some(index) = invalid {
+            return Err(Error::InvalidDigit { index });
+        }
+
+        let mut separator = None;
+        for i in start..bytes.len() {
+            if bytes[i] == b'_'
+                && (i == start
+                    || i + 1 == bytes.len()
+                    || values[i - 1].is_none()
+                    || values[i + 1].is_none())
+            {
+                separator = Some(i);
+                break;
+            }
+        }
+        if let Some(index) = separator {
+            return Err(Error::Separator { index });
+        }
+
+        let digit_count = bytes[start..].iter().filter(|&&b| b != b'_').count();
+        let first_digit_index = (start..bytes.len()).find(|&i| bytes[i] != b'_').unwrap();
+        if digit_count > 1 && values[first_digit_index] == Some(0) {
+            return Err(Error::LeadingZero {
+                index: first_digit_index,
+            });
+        }
+        if digit_count > max_digits {
+            let index = (start..bytes.len())
+                .filter(|&i| bytes[i] != b'_')
+                .nth(max_digits)
+                .unwrap();
+            return Err(Error::TooManyDigits {
+                limit: max_digits,
+                index,
+            });
+        }
+
+        let mut result = Self::zero();
+        for i in start..bytes.len() {
+            if let Some(d) = values[i] {
+                result.abs_mul_small(radix as u8);
+                result.abs_add_small(d);
+            }
+        }
+        result.negative = negative && !result.is_zero();
+        Ok(result)
+    }
+
+    pub fn format(&self, radix: u32, min_digits: usize, group: usize) -> Result<String, Error> {
+        if !(2..=36).contains(&radix) {
+            return Err(Error::InvalidRadix { radix });
+        }
+        let mut n = self.abs();
+        let mut output = Vec::new();
+        if n.is_zero() {
+            output.push(0u8);
+        } else {
+            while !n.is_zero() {
+                let (q, r) = n.div_small(radix as u8);
+                output.push(r);
+                n = q;
+            }
+            output.reverse();
+        }
+        while output.len() < min_digits.max(1) {
+            output.insert(0, 0);
+        }
+
+        let mut s = String::new();
+        if self.negative && !self.is_zero() {
+            s.push('-');
+        }
+        for (i, &d) in output.iter().enumerate() {
+            if group > 0 && i > 0 && (output.len() - i) % group == 0 {
+                s.push('_');
+            }
+            s.push(if d < 10 {
+                (b'0' + d) as char
+            } else {
+                (b'a' + d - 10) as char
+            });
+        }
+        Ok(s)
+    }
+
+    fn div_small(&self, divisor: u8) -> (Self, u8) {
+        let mut quotient = Vec::with_capacity(self.digits.len());
+        let mut rem = 0u16;
+        for &d in &self.digits {
+            let value = rem * 10 + d as u16;
+            quotient.push((value / divisor as u16) as u8);
+            rem = value % divisor as u16;
+        }
+        let mut q = Self {
+            negative: false,
+            digits: quotient,
+        };
+        q.normalize();
+        (q, rem as u8)
+    }
+
+    pub fn cmp_value(&self, rhs: &Self) -> Ordering {
+        match (self.negative, rhs.negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => self.abs_cmp(rhs),
+            (true, true) => self.abs_cmp(rhs).reverse(),
+        }
+    }
+
+    pub fn add(&self, rhs: &Self) -> Self {
+        let mut result = if self.negative == rhs.negative {
+            Self {
+                negative: self.negative,
+                digits: self.abs_add(rhs),
+            }
+        } else {
+            match self.abs_cmp(rhs) {
+                Ordering::Greater => Self {
+                    negative: self.negative,
+                    digits: self.abs_sub(rhs),
+                },
+                Ordering::Less => Self {
+                    negative: rhs.negative,
+                    digits: rhs.abs_sub(self),
+                },
+                Ordering::Equal => Self::zero(),
+            }
+        };
+        result.normalize();
+        result
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Self {
+        self.add(&rhs.neg())
+    }
+
+    pub fn neg(&self) -> Self {
+        let mut result = self.clone();
+        if !result.is_zero() {
+            result.negative = !result.negative;
+        }
+        result
+    }
+
+    pub fn signum(&self) -> i8 {
+        if self.is_zero() {
+            0
+        } else if self.negative {
+            -1
+        } else {
+            1
+        }
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Self {
+        let mut result = Self {
+            negative: self.negative ^ rhs.negative,
+            digits: self.abs_mul(rhs),
+        };
+        result.normalize();
+        result
+    }
+
+    pub fn div_rem(&self, rhs: &Self) -> Result<(Self, Self), Error> {
+        if rhs.is_zero() {
+            return Err(Error::DivisionByZero);
+        }
+        let (mut q, mut r) = self.abs_div_rem(rhs);
+        q.negative = (self.negative ^ rhs.negative) && !q.is_zero();
+        r.negative = self.negative && !r.is_zero();
+        Ok((q, r))
+    }
+
+    pub fn pow(&self, exponent: u32) -> Result<Self, Error> {
+        const LIMIT: u32 = 1024;
+        if exponent > LIMIT {
+            return Err(Error::ExponentTooLarge { exponent, limit: LIMIT });
+        }
+        let mut e = exponent;
+        let mut base = self.clone();
+        let mut result = Self::one();
+        while e > 0 {
+            if e & 1 == 1 {
+                result = result.mul(&base);
+            }
+            e >>= 1;
+            if e > 0 {
+                base = base.mul(&base);
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn gcd(&self, rhs: &Self) -> Self {
+        let mut a = self.abs();
+        let mut b = rhs.abs();
+        while !b.is_zero() {
+            let r = a.div_rem(&b).unwrap().1;
+            a = b;
+            b = r.abs();
+        }
+        a.negative = false;
+        a
+    }
+}
+```

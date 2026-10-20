@@ -1,0 +1,117 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn digit(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&b| b == byte).map(|n| n as u8)
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let value = ((chunk[0] as u32) << 16)
+            | ((chunk[1] as u32) << 8)
+            | chunk[2] as u32;
+        output.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 6) & 0x3f) as usize] as char);
+        output.push(ALPHABET[(value & 0x3f) as usize] as char);
+    }
+
+    let tail = chunks.remainder();
+    if tail.len() == 1 {
+        let value = tail[0] as u32;
+        output.push(ALPHABET[((value >> 2) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value & 0x03) << 4) as usize] as char);
+        output.push_str("==");
+    } else if tail.len() == 2 {
+        let value = ((tail[0] as u32) << 8) | tail[1] as u32;
+        output.push(ALPHABET[((value >> 10) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 4) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value & 0x0f) << 2) as usize] as char);
+        output.push('=');
+    }
+
+    output
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group: [(u8, usize); 4] = [(0, 0); 4];
+    let mut count = 0usize;
+    let mut padded = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if padded {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if count == 3 && group[2].0 == b'=' {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            group[3] = (byte, offset);
+            output.push((digit(group[0].0).unwrap() << 2) | (digit(group[1].0).unwrap() >> 4));
+            padded = true;
+            count = 0;
+            continue;
+        }
+
+        if byte == b'=' {
+            match count {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => group[count] = (byte, offset),
+                3 => {
+                    group[count] = (byte, offset);
+                    output.push((digit(group[0].0).unwrap() << 2) | (digit(group[1].0).unwrap() >> 4));
+                    output.push((digit(group[1].0).unwrap() << 4) | (digit(group[2].0).unwrap() >> 2));
+                    padded = true;
+                    count = 0;
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            let Some(_) = digit(byte) else {
+                return Err(Error::InvalidByte { offset, byte });
+            };
+            group[count] = (byte, offset);
+        }
+
+        count += 1;
+
+        if count == 4 {
+            let a = digit(group[0].0).unwrap();
+            let b = digit(group[1].0).unwrap();
+            let c = digit(group[2].0).unwrap();
+            let d = digit(group[3].0).unwrap();
+            output.push((a << 2) | (b >> 4));
+            output.push((b << 4) | (c >> 2));
+            output.push((c << 6) | d);
+            count = 0;
+        }
+    }
+
+    if count > 0 {
+        if count == 3 && group[2].0 == b'=' {
+            return Err(Error::BadPadding {
+                offset: group[2].1,
+            });
+        }
+        return Err(Error::Truncated {
+            offset: group[0].1,
+        });
+    }
+
+    Ok(output)
+}
+```

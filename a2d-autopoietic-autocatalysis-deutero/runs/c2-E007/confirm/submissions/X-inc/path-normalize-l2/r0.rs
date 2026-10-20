@@ -1,0 +1,162 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.as_bytes().last() == Some(&b'/') {
+        return true;
+    }
+
+    path.rsplit('/')
+        .find(|component| !component.is_empty())
+        .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a>(
+    components: impl Iterator<Item = (usize, &'a str)>,
+    parts: &mut Vec<String>,
+    absolute: bool,
+) -> Result<(), PathError> {
+    for (at, component) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if parts.last().is_some_and(|part| part != "..") {
+                parts.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                parts.push("..".to_owned());
+            }
+        } else {
+            parts.push(component.to_owned());
+        }
+    }
+
+    Ok(())
+}
+
+fn assemble(parts: &[String], absolute: bool, intent: bool) -> String {
+    let mut result = String::new();
+
+    if absolute {
+        result.push('/');
+    }
+
+    result.push_str(&parts.join("/"));
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let intent = directory_intent(path);
+    let mut parts = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        let at = offset;
+        offset += component.len() + 1;
+        reduce_components(std::iter::once((at, component)), &mut parts, absolute)?;
+    }
+
+    Ok(assemble(&parts, absolute, intent))
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, PathError> {
+    if path.as_bytes().first() != Some(&b'/') {
+        return Err(PathError::InvalidCwd);
+    }
+
+    let normalized = normalize(path).map_err(|_| PathError::InvalidCwd)?;
+    Ok(normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd_parts = validate_context(cwd)?;
+
+    let home_parts = match home {
+        Some(home_path) => Some(validate_context(home_path).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let bytes = path.as_bytes();
+    let tilde_expanded = bytes.first() == Some(&b'~');
+    let mut start = 0;
+    let (mut parts, absolute) = if tilde_expanded {
+        if bytes.len() > 1 && bytes[1] != b'/' {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+
+        let parts = home_parts.ok_or(PathError::MissingHome)?;
+        start = if bytes.len() > 1 { 2 } else { 1 };
+        (parts, true)
+    } else if bytes.first() == Some(&b'/') {
+        (Vec::new(), true)
+    } else {
+        (cwd_parts, true)
+    };
+
+    let intent = directory_intent(path);
+    let remainder = &path[start..];
+    let mut offset = start;
+
+    for component in remainder.split('/') {
+        let at = offset;
+        offset += component.len() + 1;
+        reduce_components(std::iter::once((at, component)), &mut parts, absolute)?;
+    }
+
+    Ok(assemble(&parts, absolute, intent))
+}
