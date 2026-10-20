@@ -1,0 +1,84 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..771b9ff
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For tasks that do not reach a visible pass, use the first call to reproduce the reported behavior before fixing it, so a concrete failing check guides the implementation and reduces symptom-only patches.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..9079ebf 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""Reproduce the reported behavior before implementing and repairing a fix."""
+ 
+ from __future__ import annotations
+ 
+@@ -7,10 +7,32 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+-    "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+-    "Start again from the original code. Verifier output from that attempt:\n"
++    "\n\n---\nThe previous candidate was rejected by the verifier. "
++    "Use this verifier output to guide the next change:\n"
++)
++
++REPRODUCE_PROMPT = (
++    "\n\nFirst inspect the relevant code and existing checks, then reproduce the "
++    "reported behavior. If no existing check reproduces it, add the smallest "
++    "focused regression test that does. Run the reproduction and confirm it "
++    "fails for the intended reason. Do not implement the production fix in "
++    "this call."
++)
++
++FIX_PROMPT = (
++    "\n\nContinue from the reproduction candidate. Diagnose the underlying "
++    "cause and implement the requested fix, using the reproduction and verifier "
++    "output to guide the change. Keep the reproduction and run the relevant "
++    "checks."
++)
++
++REPAIR_PROMPT = (
++    "\n\nContinue from this candidate and repair the remaining verifier failures. "
++    "Use the reproduction and verifier output to identify the underlying cause, "
++    "preserve correct behavior, and run the relevant checks."
+ )
+ 
+ 
+@@ -32,20 +54,23 @@ def render_verify(result: dict) -> str:
+         lines.extend(f"[rejected] {reason}" for reason in result["rejected"])
+     if result.get("error"):
+         lines.append(f"[error] {result['error']}")
+-    return "\n".join(lines) or "No passing visible tests were reported."
++    return "\n".join(lines) or "No verifier failures were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+-        return {"agent": {"base": "fresh", "prompt": state["problem_statement"], "effort": effort}}
++        return {"agent": {"base": "fresh", "prompt": state["problem_statement"] + REPRODUCE_PROMPT, "effort": effort}}
+     last = candidates[-1]
+-    if last.get("verify", {}).get("passed"):
++    if len(candidates) >= 2 and last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+-    if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+-        return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
++    if len(candidates) < 3 and state.get("budget", {}).get("agent_calls_left", 0) > 0:
++        if len(candidates) == 1:
++            prompt = state["problem_statement"] + FIX_PROMPT + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
++        else:
++            prompt = state["problem_statement"] + REPAIR_PROMPT + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
++        return {"agent": {"base": last["index"], "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
+         candidate["index"],
