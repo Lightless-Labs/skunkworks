@@ -11,7 +11,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 **Goal:** the session `/goal` of 2026-10-15 (quoted in the plan).
 **Plan:** `docs/plans/2026-10-15-cycle2-nanoharness.md`.
 **Evidence:** `docs/experiments/LOG.md`, section "Cycle 2" (every entry registered before its run), and `nano/results.tsv` (one row per experiment stage, including discards).
-**Outcome:** **[pending]**. Known so far (10-19): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim. Confirmation-3 (36 new families × 4, plan 2026-10-18) is being authored; its spend is at or after 10-24.
+**Outcome:** **[pending]**. Known so far (10-20): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim. Confirmation-3 (36 new families × 4, plan 2026-10-18) is being authored; its spend is at or after 10-24.
 
 ## The question
 
@@ -60,8 +60,8 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 | E006 | claude | Sol spec notes before 3 samples | discard (full): screen +2.9 pp, full +2.9 pp (SE 2.4), below the 3.6 pp threshold |
 | E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | provisional keep (full): +7.1 pp (SE 3.2) vs E002, with fewer Luna calls (3.4 vs 4.1 per task); **[pending confirmation]** |
 | E008 | sol | 4th sample becomes a synthesis | discard (screen): +0.0 pp (SE 2.9) |
-| E009 | claude-c1 | task-agnostic failure-class checklist | **[pending]** |
-| E010 | claude-c1 | two readings per Luna call | **[pending]** |
+| E009 | claude-c1 | task-agnostic failure-class checklist | discard (screen): −2.9 pp (SE 2.9); hidden fraction −1.8 pp |
+| E010 | claude-c1 | two readings per Luna call (A = most likely, B = hedge on the least certain points) | provisional keep (full): +5.0 pp (SE 2.6) vs E002, same calls; the judge picked a B file in 5 of the first 11 tasks; **[pending confirmation]** |
 
 - **Where E002 still fails (C2-FA1):** the judge never picked a failing file when a passing green existed (0 misses in 249). All-pass equals its own any-pass ceiling (0.857), so **the bottleneck moved from selection to generation:** shared misreadings defeat any selector.
   - The C2-FA2 taxonomy (Claude, train labels only) guided E005, E006, E009 and E010.
@@ -110,6 +110,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - registration bound to the commit that added it.
   - **Disclosed:**
     - three mid-authoring pipeline fixes;
+    - a provider fix after the audit (cwd collision, §0.14), which the certification's ancestry check covers;
     - the audit ran from the provider branch before main's merge;
     - codex 0.162 injects about 10k chars of bundled skills and multi-agent text that no switch removes, the same in every arm.
 - **Status:** registration after T, then a full review, then the spend at or after 10-24, on the day after registration. **Result: [pending]**
@@ -146,6 +147,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - **Codex `--json` prints no version banner,** so the binary is pinned by a fingerprint taken before and after each replicate.
   - **Injected context that no switch removes:** codex's 4 bundled skills and the multi-agent text, about 10k chars. It is the same in every arm and disclosed.
   - **Detector controls, live:** a tool switched back on is counted on both lanes, and the shipped provider shows 0 events.
+  - **Concurrent calls could share a cwd** (found 10-20 by a counts-only look at the audit ledgers). The cwd was named by pid and clock, which has microsecond resolution on macOS. Two calls in the same microsecond therefore shared a cwd and CODEX_HOME, and both failed without a transcript. These were audit round 1's 4 voids. In the spend, such voids would have been imputed against SUPPORTED. Fixed before registration with a counter in the name and an exclusive create (§0.14), and the controls were re-run.
   - **Two mid-authoring pipeline fixes:** a command-scan false positive on prose `at` lines, and a retry isolation check that saw codex's own `skills/`. Both are disclosed.
 
 ## Claims and scope
