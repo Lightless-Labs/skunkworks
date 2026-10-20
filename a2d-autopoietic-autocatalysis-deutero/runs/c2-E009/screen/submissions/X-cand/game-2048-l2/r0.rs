@@ -1,0 +1,177 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Left,
+    Down,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Shape,
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    pub width: usize,
+    pub height: usize,
+    pub cells: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveResult {
+    pub board: Board,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+fn validate(board: &Board) -> Result<(), Error> {
+    if !(1..=8).contains(&board.width) || !(1..=8).contains(&board.height) {
+        return Err(Error::Shape);
+    }
+
+    let expected = board.width * board.height;
+    if board.cells.len() != expected {
+        return Err(Error::Shape);
+    }
+
+    for (index, &value) in board.cells.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    Ok(())
+}
+
+fn process_line(
+    board: &Board,
+    output: &mut [u32],
+    merges: &mut Vec<Merge>,
+    score: &mut u64,
+    indices: &[usize],
+) -> Result<(), Error> {
+    let mut tiles: Vec<(usize, u32)> = Vec::new();
+    for &index in indices {
+        let value = board.cells[index];
+        if value != 0 {
+            tiles.push((index, value));
+        }
+    }
+
+    let mut read = 0;
+    let mut write = 0;
+
+    while read < tiles.len() {
+        let (first_index, first_value) = tiles[read];
+
+        if read + 1 < tiles.len() && tiles[read + 1].1 == first_value {
+            let second_index = tiles[read + 1].0;
+            if first_value == 2_147_483_648 {
+                return Err(Error::MergeOverflow {
+                    first: first_index,
+                    second: second_index,
+                });
+            }
+
+            let value = first_value * 2;
+            let to = indices[write];
+            output[to] = value;
+            merges.push(Merge {
+                from: [first_index, second_index],
+                to,
+                value,
+            });
+            *score += u64::from(value);
+            read += 2;
+        } else {
+            output[indices[write]] = first_value;
+            read += 1;
+        }
+
+        write += 1;
+    }
+
+    Ok(())
+}
+
+pub fn move_board(board: &Board, direction: Direction) -> Result<MoveResult, Error> {
+    validate(board)?;
+
+    let mut cells = vec![0; board.cells.len()];
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+
+    match direction {
+        Direction::Left | Direction::Right => {
+            for row in 0..board.height {
+                let mut indices = Vec::new();
+                for offset in 0..board.width {
+                    let column = match direction {
+                        Direction::Left => offset,
+                        Direction::Right => board.width - 1 - offset,
+                        _ => unreachable!(),
+                    };
+                    indices.push(row * board.width + column);
+                }
+                process_line(board, &mut cells, &mut merges, &mut score, &indices)?;
+            }
+        }
+        Direction::Up | Direction::Down => {
+            for column in 0..board.width {
+                let mut indices = Vec::new();
+                for offset in 0..board.height {
+                    let row = match direction {
+                        Direction::Up => offset,
+                        Direction::Down => board.height - 1 - offset,
+                        _ => unreachable!(),
+                    };
+                    indices.push(row * board.width + column);
+                }
+                process_line(board, &mut cells, &mut merges, &mut score, &indices)?;
+            }
+        }
+    }
+
+    let changed = cells != board.cells;
+    Ok(MoveResult {
+        board: Board {
+            width: board.width,
+            height: board.height,
+            cells,
+        },
+        score,
+        changed,
+        merges,
+    })
+}
+
+pub fn legal_moves(board: &Board) -> Result<Vec<Direction>, Error> {
+    validate(board)?;
+
+    let mut legal = Vec::new();
+    for direction in [
+        Direction::Up,
+        Direction::Left,
+        Direction::Down,
+        Direction::Right,
+    ] {
+        match move_board(board, direction) {
+            Ok(result) if result.changed => legal.push(direction),
+            Ok(_) | Err(Error::MergeOverflow { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(legal)
+}

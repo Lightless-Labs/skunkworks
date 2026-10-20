@@ -1767,3 +1767,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - controls at the fixed head.
 
   It was evaluated without writing, printing booleans only. The candidate resolves to E002's frozen file when look 2 has no result (lanes: Sol judge, medium). At T, what remains is the candidate's wording, the generator, the review and the commit.
+- **E009 (failure-class checklist appended to every coder prompt), screen: DISCARD** (L19, 00:08–03:21 UTC 10-20).
+  - Δall-pass −2.9 pp (SE 2.9); Δhidden fraction −1.8 pp (SE 1.3).
+  - 675 invocations: X:cand 273 Luna + 65 Sol, X:inc 274 Luna + 63 Sol.
+  - The first prompts were read before the result and are as designed (above). The first-wave timeout asymmetry (4 vs 2) cannot explain a negative delta of this size.
+  - Reading: a generic checklist does not move Luna's misreadings. C2-FA2 found most failures to be a shared, task-specific misreading, and a checklist of generic failure classes doesn't touch that.

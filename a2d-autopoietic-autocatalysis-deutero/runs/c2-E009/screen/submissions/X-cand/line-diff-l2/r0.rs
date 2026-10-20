@@ -1,0 +1,219 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text[..text.len() - 1].split('\n').collect()
+    }
+}
+
+fn make_edits(old: &[&str], new: &[&str]) -> Vec<Edit> {
+    let rows = old.len() + 1;
+    let cols = new.len() + 1;
+    let mut lcs = vec![0usize; rows * cols];
+
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            let index = i * cols + j;
+            lcs[index] = if old[i] == new[j] {
+                lcs[(i + 1) * cols + j + 1] + 1
+            } else {
+                lcs[(i + 1) * cols + j].max(lcs[i * cols + j + 1])
+            };
+        }
+    }
+
+    let mut edits = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+
+    while i < old.len() && j < new.len() {
+        if old[i] == new[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].to_owned(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_score = lcs[(i + 1) * cols + j];
+            let insert_score = lcs[i * cols + j + 1];
+            if delete_score > insert_score
+                || (delete_score == insert_score && (i + j) % 2 == 0)
+            {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old[i].to_owned(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new[j].to_owned(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < old.len() {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old[i].to_owned(),
+        });
+        i += 1;
+    }
+    while j < new.len() {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new[j].to_owned(),
+        });
+        j += 1;
+    }
+
+    edits
+}
+
+fn row_is_keep(edit: &Edit) -> bool {
+    matches!(edit, Edit::Keep { .. })
+}
+
+fn row_counts(edit: &Edit) -> (usize, usize) {
+    match edit {
+        Edit::Keep { .. } => (1, 1),
+        Edit::Delete { .. } => (1, 0),
+        Edit::Insert { .. } => (0, 1),
+    }
+}
+
+fn row_line(edit: &Edit) -> (&'static str, &str) {
+    match edit {
+        Edit::Keep { line, .. } => (" ", line),
+        Edit::Delete { line, .. } => ("-", line),
+        Edit::Insert { line, .. } => ("+", line),
+    }
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+    if let Some(byte) = old.as_bytes().iter().position(|&b| b == b'\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::Old,
+            byte,
+        });
+    }
+    if let Some(byte) = new.as_bytes().iter().position(|&b| b == b'\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::New,
+            byte,
+        });
+    }
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+    if old_lines.len() > 128 || new_lines.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old_lines.len(),
+            new_len: new_lines.len(),
+        });
+    }
+
+    let edits = make_edits(&old_lines, &new_lines);
+    let mut changed = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
+        if !row_is_keep(edit) {
+            changed.push(index);
+        }
+    }
+    if changed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    let mut start = changed[0];
+    let mut end = start;
+    for &index in changed.iter().skip(1) {
+        let keep_count = edits[end + 1..index].iter().filter(|e| row_is_keep(e)).count();
+        if keep_count <= 2 * context {
+            end = index;
+        } else {
+            groups.push((start, end));
+            start = index;
+            end = index;
+        }
+    }
+    groups.push((start, end));
+
+    let mut output = String::from("--- before\n+++ after\n");
+    for (group_start, group_end) in groups {
+        let hunk_start = group_start.saturating_sub(context);
+        let hunk_end = (group_end + context + 1).min(edits.len());
+
+        let old_before: usize = edits[..hunk_start].iter().map(|e| row_counts(e).0).sum();
+        let new_before: usize = edits[..hunk_start].iter().map(|e| row_counts(e).1).sum();
+        let (old_count, new_count) = edits[hunk_start..hunk_end]
+            .iter()
+            .map(row_counts)
+            .fold((0usize, 0usize), |(a, b), (x, y)| (a + x, b + y));
+        let old_start = if old_count > 0 {
+            old_before + 1
+        } else {
+            old_before
+        };
+        let new_start = if new_count > 0 {
+            new_before + 1
+        } else {
+            new_before
+        };
+
+        output.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+        for edit in &edits[hunk_start..hunk_end] {
+            let (prefix, line) = row_line(edit);
+            output.push_str(prefix);
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    Ok(output)
+}

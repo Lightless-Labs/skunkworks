@@ -1,0 +1,419 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeSide {
+    Base,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    Mark,
+    PreferLeft,
+    PreferRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeError {
+    CarriageReturn {
+        side: MergeSide,
+        byte: usize,
+    },
+    MissingFinalLf {
+        side: MergeSide,
+    },
+    TooLarge {
+        base_len: usize,
+        left_len: usize,
+        right_len: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub ordinal: usize,
+    pub base_start: usize,
+    pub base_len: usize,
+    pub output_start: usize,
+    pub output_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeResult {
+    pub text: String,
+    pub conflicts: usize,
+    pub regions: Vec<Conflict>,
+}
+
+#[derive(Debug, Clone)]
+struct Change {
+    start: usize,
+    end: usize,
+    replacement: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct Component {
+    start: usize,
+    end: usize,
+    left: Vec<usize>,
+    right: Vec<usize>,
+}
+
+fn line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|&b| b == b'\n').count()
+    }
+}
+
+fn split_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text[..text.len() - 1]
+        .split('\n')
+        .map(str::to_owned)
+        .collect()
+}
+
+fn validate(
+    text: &str,
+    side: MergeSide,
+) -> Result<(), MergeError> {
+    if let Some(byte) = text.as_bytes().iter().position(|&b| b == b'\r') {
+        return Err(MergeError::CarriageReturn { side, byte });
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(MergeError::MissingFinalLf { side });
+    }
+    Ok(())
+}
+
+fn canonical_changes(old: &[String], new: &[String]) -> Vec<Change> {
+    let n = old.len();
+    let m = new.len();
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut changes = Vec::new();
+    let mut active_start = None;
+    let mut deletes = 0usize;
+    let mut inserts = Vec::new();
+
+    while i < n || j < m {
+        if i < n && j < m && old[i] == new[j] {
+            if let Some(start) = active_start.take() {
+                changes.push(Change {
+                    start,
+                    end: start + deletes,
+                    replacement: std::mem::take(&mut inserts),
+                });
+                deletes = 0;
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        if active_start.is_none() {
+            active_start = Some(i);
+        }
+
+        if i == n {
+            inserts.push(new[j].clone());
+            j += 1;
+        } else if j == m {
+            deletes += 1;
+            i += 1;
+        } else {
+            let delete_score = lcs[i + 1][j];
+            let insert_score = lcs[i][j + 1];
+            let choose_delete = if delete_score > insert_score {
+                true
+            } else if insert_score > delete_score {
+                false
+            } else {
+                (i + j) % 2 == 0
+            };
+            if choose_delete {
+                deletes += 1;
+                i += 1;
+            } else {
+                inserts.push(new[j].clone());
+                j += 1;
+            }
+        }
+    }
+
+    if let Some(start) = active_start {
+        changes.push(Change {
+            start,
+            end: start + deletes,
+            replacement: inserts,
+        });
+    }
+
+    changes
+}
+
+fn interacts(a: &Change, b: &Change) -> bool {
+    let a_zero = a.start == a.end;
+    let b_zero = b.start == b.end;
+    match (a_zero, b_zero) {
+        (true, true) => a.start == b.start,
+        (false, false) => a.start.max(b.start) < a.end.min(b.end),
+        (true, false) => b.start < a.start && a.start < b.end,
+        (false, true) => a.start < b.start && b.start < a.end,
+    }
+}
+
+fn build_components(left: &[Change], right: &[Change]) -> Vec<Component> {
+    let total = left.len() + right.len();
+    let mut parent: Vec<usize> = (0..total).collect();
+
+    fn root(parent: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while parent[r] != r {
+            r = parent[r];
+        }
+        let mut cur = x;
+        while parent[cur] != cur {
+            let next = parent[cur];
+            parent[cur] = r;
+            cur = next;
+        }
+        r
+    }
+
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = root(parent, a);
+        let rb = root(parent, b);
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    }
+
+    for i in 0..total {
+        let (ci, si) = if i < left.len() {
+            (&left[i], 0usize)
+        } else {
+            (&right[i - left.len()], 1usize)
+        };
+        for j in i + 1..total {
+            let (cj, sj) = if j < left.len() {
+                (&left[j], 0usize)
+            } else {
+                (&right[j - left.len()], 1usize)
+            };
+            if si != sj && interacts(ci, cj) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    let mut groups: Vec<(usize, usize, Vec<usize>, Vec<usize>)> = Vec::new();
+    for idx in 0..total {
+        let r = root(&mut parent, idx);
+        let change = if idx < left.len() {
+            &left[idx]
+        } else {
+            &right[idx - left.len()]
+        };
+        let pos = groups.iter().position(|g| g.0 == r);
+        let gi = match pos {
+            Some(p) => p,
+            None => {
+                groups.push((r, change.start, Vec::new(), Vec::new()));
+                groups.len() - 1
+            }
+        };
+        let g = &mut groups[gi];
+        g.1 = g.1.min(change.start);
+        if idx < left.len() {
+            g.2.push(idx);
+        } else {
+            g.3.push(idx - left.len());
+        }
+    }
+
+    let mut components = Vec::new();
+    for (_, _, left_ids, right_ids) in groups {
+        let mut start = usize::MAX;
+        let mut end = 0usize;
+        for &i in &left_ids {
+            start = start.min(left[i].start);
+            end = end.max(left[i].end);
+        }
+        for &i in &right_ids {
+            start = start.min(right[i].start);
+            end = end.max(right[i].end);
+        }
+        components.push(Component {
+            start,
+            end,
+            left: left_ids,
+            right: right_ids,
+        });
+    }
+
+    components.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then_with(|| (a.end > a.start).cmp(&(b.end > b.start)))
+            .then_with(|| a.end.cmp(&b.end))
+    });
+    components
+}
+
+fn projection(base: &[String], start: usize, end: usize, changes: &[Change], ids: &[usize]) -> Vec<String> {
+    let mut ordered = ids.to_vec();
+    ordered.sort_by_key(|&i| (changes[i].start, changes[i].end));
+
+    let mut out = Vec::new();
+    let mut cursor = start;
+    for idx in ordered {
+        let change = &changes[idx];
+        while cursor < change.start {
+            out.push(base[cursor].clone());
+            cursor += 1;
+        }
+        out.extend(change.replacement.iter().cloned());
+        cursor = change.end;
+    }
+    while cursor < end {
+        out.push(base[cursor].clone());
+        cursor += 1;
+    }
+    out
+}
+
+pub fn merge_three_way(
+    base: &str,
+    left: &str,
+    right: &str,
+    resolution: Resolution,
+) -> Result<MergeResult, MergeError> {
+    validate(base, MergeSide::Base)?;
+    validate(left, MergeSide::Left)?;
+    validate(right, MergeSide::Right)?;
+
+    let base_len = line_count(base);
+    let left_len = line_count(left);
+    let right_len = line_count(right);
+    if base_len > 128 || left_len > 128 || right_len > 128 {
+        return Err(MergeError::TooLarge {
+            base_len,
+            left_len,
+            right_len,
+        });
+    }
+
+    let base_lines = split_lines(base);
+    let left_lines = split_lines(left);
+    let right_lines = split_lines(right);
+
+    let left_changes = canonical_changes(&base_lines, &left_lines);
+    let right_changes = canonical_changes(&base_lines, &right_lines);
+    let components = build_components(&left_changes, &right_changes);
+
+    let mut output = Vec::<String>::new();
+    let mut conflicts = Vec::new();
+    let mut cursor = 0usize;
+    let mut ordinal = 0usize;
+
+    for component in components {
+        while cursor < component.start {
+            output.push(base_lines[cursor].clone());
+            cursor += 1;
+        }
+
+        let base_projection = base_lines[component.start..component.end].to_vec();
+        let left_projection = projection(
+            &base_lines,
+            component.start,
+            component.end,
+            &left_changes,
+            &component.left,
+        );
+        let right_projection = projection(
+            &base_lines,
+            component.start,
+            component.end,
+            &right_changes,
+            &component.right,
+        );
+
+        if left_projection == right_projection {
+            output.extend(left_projection);
+        } else if left_projection == base_projection {
+            output.extend(right_projection);
+        } else if right_projection == base_projection {
+            output.extend(left_projection);
+        } else {
+            match resolution {
+                Resolution::PreferLeft => output.extend(left_projection),
+                Resolution::PreferRight => output.extend(right_projection),
+                Resolution::Mark => {
+                    ordinal += 1;
+                    let output_start = output.len();
+                    let base_count = component.end - component.start;
+                    let base_position = if base_count > 0 {
+                        component.start + 1
+                    } else {
+                        component.start
+                    };
+
+                    output.push(format!("<<<<<<< LEFT {ordinal}"));
+                    output.extend(left_projection.iter().cloned());
+                    output.push(format!("||||||| BASE {base_position},{base_count}"));
+                    output.extend(base_projection.iter().cloned());
+                    output.push("=======".to_owned());
+                    output.extend(right_projection.iter().cloned());
+                    output.push(format!(">>>>>>> RIGHT {ordinal}"));
+
+                    conflicts.push(Conflict {
+                        ordinal,
+                        base_start: component.start,
+                        base_len: base_count,
+                        output_start,
+                        output_len: 4
+                            + left_projection.len()
+                            + base_projection.len()
+                            + right_projection.len(),
+                    });
+                }
+            }
+        }
+        cursor = component.end;
+    }
+
+    while cursor < base_lines.len() {
+        output.push(base_lines[cursor].clone());
+        cursor += 1;
+    }
+
+    let mut text = String::new();
+    for line in &output {
+        text.push_str(line);
+        text.push('\n');
+    }
+
+    Ok(MergeResult {
+        text,
+        conflicts: conflicts.len(),
+        regions: conflicts,
+    })
+}
+```

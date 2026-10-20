@@ -1,0 +1,603 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Constraint {
+    Exact(Version),
+    AtLeast(Version),
+    Before(Version),
+    Caret(Version),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub package: String,
+    pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub releases: Vec<Release>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Requirement {
+    pub package: String,
+    pub constraint: Constraint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    pub version: Version,
+    pub deps: Vec<Requirement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lock {
+    pub package: String,
+    pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeReason {
+    Added,
+    Removed,
+    Unavailable,
+    Rejected,
+    Rebalanced,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub package: String,
+    pub before: Option<Version>,
+    pub after: Option<Version>,
+    pub reason: ChangeReason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolution {
+    pub selected: Vec<Selection>,
+    pub changes: Vec<Change>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    InvalidName {
+        site: String,
+        name: String,
+    },
+    DuplicatePackage {
+        package: String,
+    },
+    DuplicateVersion {
+        package: String,
+        version: Version,
+    },
+    DuplicateLock {
+        package: String,
+    },
+    Missing {
+        package: String,
+    },
+    NoMatch {
+        package: String,
+        requirements: Vec<Constraint>,
+    },
+    Conflict {
+        package: String,
+        selected: Version,
+        requirements: Vec<Constraint>,
+    },
+    Limit {
+        attempts: usize,
+    },
+}
+
+fn valid_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 24 || !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    if bytes.last() == Some(&b'-') {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+fn constraint_matches(constraint: Constraint, version: Version) -> bool {
+    match constraint {
+        Constraint::Exact(v) => version == v,
+        Constraint::AtLeast(v) => version >= v,
+        Constraint::Before(v) => version < v,
+        Constraint::Caret(v) => {
+            if version < v {
+                false
+            } else if v.major > 0 {
+                version.major == v.major
+            } else if v.minor > 0 {
+                version.major == 0 && version.minor == v.minor
+            } else {
+                version == v
+            }
+        }
+    }
+}
+
+fn matches_all(version: Version, constraints: &[Constraint]) -> bool {
+    constraints
+        .iter()
+        .all(|constraint| constraint_matches(*constraint, version))
+}
+
+fn canonical_constraints(constraints: &[Constraint]) -> Vec<Constraint> {
+    let mut result = constraints.to_vec();
+    result.sort();
+    result.dedup();
+    result
+}
+
+fn version_text(version: Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
+
+fn constraint_text(constraint: Constraint) -> String {
+    match constraint {
+        Constraint::Exact(v) => format!("={}", version_text(v)),
+        Constraint::AtLeast(v) => format!(">={}", version_text(v)),
+        Constraint::Before(v) => format!("<{}", version_text(v)),
+        Constraint::Caret(v) => format!("^{}", version_text(v)),
+    }
+}
+
+fn constraints_text(constraints: &[Constraint]) -> String {
+    canonical_constraints(constraints)
+        .iter()
+        .map(|constraint| constraint_text(*constraint))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn encode_text(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in text.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-') {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
+}
+
+pub fn error_text(error: &ResolveError) -> String {
+    match error {
+        ResolveError::InvalidName { site, name } => {
+            format!(
+                "invalid-name|site={}|name={}",
+                encode_text(site),
+                encode_text(name)
+            )
+        }
+        ResolveError::DuplicatePackage { package } => {
+            format!("duplicate-package|package={}", encode_text(package))
+        }
+        ResolveError::DuplicateVersion { package, version } => format!(
+            "duplicate-version|package={}|version={}",
+            encode_text(package),
+            version_text(*version)
+        ),
+        ResolveError::DuplicateLock { package } => {
+            format!("duplicate-lock|package={}", encode_text(package))
+        }
+        ResolveError::Missing { package } => {
+            format!("missing|package={}", encode_text(package))
+        }
+        ResolveError::NoMatch {
+            package,
+            requirements,
+        } => format!(
+            "no-match|package={}|constraints={}",
+            encode_text(package),
+            constraints_text(requirements)
+        ),
+        ResolveError::Conflict {
+            package,
+            selected,
+            requirements,
+        } => format!(
+            "conflict|package={}|selected={}|constraints={}",
+            encode_text(package),
+            version_text(*selected),
+            constraints_text(requirements)
+        ),
+        ResolveError::Limit { attempts } => format!("limit|attempts={attempts}"),
+    }
+}
+
+fn validate_name(site: String, name: &str) -> Result<(), ResolveError> {
+    if valid_name(name) {
+        Ok(())
+    } else {
+        Err(ResolveError::InvalidName {
+            site,
+            name: name.to_owned(),
+        })
+    }
+}
+
+fn active_constraints(
+    roots: &[Requirement],
+    catalog: &[Package],
+    by_name: &std::collections::BTreeMap<String, usize>,
+    assigned: &std::collections::BTreeMap<String, Version>,
+) -> std::collections::BTreeMap<String, Vec<Constraint>> {
+    let mut active = std::collections::BTreeMap::<String, Vec<Constraint>>::new();
+
+    for root in roots {
+        active
+            .entry(root.package.clone())
+            .or_default()
+            .push(root.constraint);
+    }
+
+    for (name, version) in assigned {
+        if let Some(&package_index) = by_name.get(name) {
+            if let Some(release) = catalog[package_index]
+                .releases
+                .iter()
+                .find(|release| release.version == *version)
+            {
+                for dependency in &release.deps {
+                    active
+                        .entry(dependency.package.clone())
+                        .or_default()
+                        .push(dependency.constraint);
+                }
+            }
+        }
+    }
+
+    for constraints in active.values_mut() {
+        *constraints = canonical_constraints(constraints);
+    }
+    active
+}
+
+#[derive(Clone)]
+struct SearchResult {
+    best: Option<std::collections::BTreeMap<String, Version>>,
+    best_cost: usize,
+    first_failure: Option<ResolveError>,
+}
+
+struct SearchContext<'a> {
+    catalog: &'a [Package],
+    roots: &'a [Requirement],
+    by_name: std::collections::BTreeMap<String, usize>,
+    locks: &'a [Lock],
+    max_attempts: usize,
+    attempts: usize,
+}
+
+impl SearchContext<'_> {
+    fn lock_cost(&self, assigned: &std::collections::BTreeMap<String, Version>) -> usize {
+        self.locks
+            .iter()
+            .filter(|lock| assigned.get(&lock.package) != Some(&lock.version))
+            .count()
+    }
+
+    fn vector_better(
+        &self,
+        candidate: &std::collections::BTreeMap<String, Version>,
+        current: &std::collections::BTreeMap<String, Version>,
+    ) -> bool {
+        let mut names: Vec<&String> = self.by_name.keys().collect();
+        names.sort();
+        for name in names {
+            match (candidate.get(name), current.get(name)) {
+                (Some(a), Some(b)) if a != b => return a > b,
+                (Some(_), None) => return true,
+                (None, Some(_)) => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn record_failure(result: &mut SearchResult, error: ResolveError) {
+        if result.first_failure.is_none() {
+            result.first_failure = Some(error);
+        }
+    }
+
+    fn visit(
+        &mut self,
+        assigned: &mut std::collections::BTreeMap<String, Version>,
+        result: &mut SearchResult,
+    ) -> Result<(), ResolveError> {
+        let active = active_constraints(self.roots, self.catalog, &self.by_name, assigned);
+
+        for name in active.keys() {
+            if !self.by_name.contains_key(name) {
+                Self::record_failure(
+                    result,
+                    ResolveError::Missing {
+                        package: name.clone(),
+                    },
+                );
+                return Ok(());
+            }
+        }
+
+        for (name, version) in assigned.iter() {
+            if let Some(constraints) = active.get(name) {
+                if !matches_all(*version, constraints) {
+                    Self::record_failure(
+                        result,
+                        ResolveError::Conflict {
+                            package: name.clone(),
+                            selected: *version,
+                            requirements: constraints.clone(),
+                        },
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        for (name, constraints) in &active {
+            if assigned.contains_key(name) {
+                continue;
+            }
+            let package = &self.catalog[self.by_name[name]];
+            if !package
+                .releases
+                .iter()
+                .any(|release| matches_all(release.version, constraints))
+            {
+                Self::record_failure(
+                    result,
+                    ResolveError::NoMatch {
+                        package: name.clone(),
+                        requirements: constraints.clone(),
+                    },
+                );
+                return Ok(());
+            }
+        }
+
+        let next_name = active.keys().find(|name| !assigned.contains_key(*name)).cloned();
+        let Some(name) = next_name else {
+            let cost = self.lock_cost(assigned);
+            let replace = match &result.best {
+                None => true,
+                Some(current) => {
+                    cost < result.best_cost
+                        || (cost == result.best_cost && self.vector_better(assigned, current))
+                }
+            };
+            if replace {
+                result.best = Some(assigned.clone());
+                result.best_cost = cost;
+            }
+            return Ok(());
+        };
+
+        let constraints = active.get(&name).expect("active package has constraints");
+        let package = &self.catalog[self.by_name[&name]];
+        let mut candidates: Vec<Version> = package
+            .releases
+            .iter()
+            .map(|release| release.version)
+            .filter(|version| matches_all(*version, constraints))
+            .collect();
+        candidates.sort_by(|a, b| b.cmp(a));
+        candidates.dedup();
+
+        if let Some(lock) = self.locks.iter().find(|lock| lock.package == name) {
+            if let Some(index) = candidates.iter().position(|version| *version == lock.version) {
+                let locked = candidates.remove(index);
+                candidates.insert(0, locked);
+            }
+        }
+
+        let mut branch_failure = None;
+        for candidate in candidates {
+            if self.attempts == self.max_attempts {
+                return Err(ResolveError::Limit {
+                    attempts: self.max_attempts,
+                });
+            }
+            self.attempts += 1;
+            assigned.insert(name.clone(), candidate);
+            let child_result = self.visit(assigned, result);
+            assigned.remove(&name);
+
+            if let Err(error) = child_result {
+                return Err(error);
+            }
+            if branch_failure.is_none() {
+                branch_failure = result.first_failure.clone();
+            }
+        }
+
+        if result.best.is_none() && result.first_failure.is_none() {
+            if let Some(error) = branch_failure {
+                Self::record_failure(result, error);
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn resolve(
+    catalog: &[Package],
+    roots: &[Requirement],
+    locks: &[Lock],
+    max_attempts: usize,
+) -> Result<Resolution, ResolveError> {
+    for (index, root) in roots.iter().enumerate() {
+        validate_name(format!("root[{index}]"), &root.package)?;
+    }
+    for (package_index, package) in catalog.iter().enumerate() {
+        validate_name(
+            format!("catalog[{package_index}]"),
+            &package.name,
+        )?;
+        for (release_index, release) in package.releases.iter().enumerate() {
+            for (dependency_index, dependency) in release.deps.iter().enumerate() {
+                validate_name(
+                    format!(
+                        "catalog[{package_index}].release[{release_index}].dep[{dependency_index}]"
+                    ),
+                    &dependency.package,
+                )?;
+            }
+        }
+    }
+
+    let mut seen_packages = std::collections::BTreeMap::<String, ()>::new();
+    for package in catalog {
+        if seen_packages.insert(package.name.clone(), ()).is_some() {
+            return Err(ResolveError::DuplicatePackage {
+                package: package.name.clone(),
+            });
+        }
+    }
+
+    for package in catalog {
+        let mut seen_versions = std::collections::BTreeMap::<Version, ()>::new();
+        for release in &package.releases {
+            if seen_versions.insert(release.version, ()).is_some() {
+                return Err(ResolveError::DuplicateVersion {
+                    package: package.name.clone(),
+                    version: release.version,
+                });
+            }
+        }
+    }
+
+    for (index, lock) in locks.iter().enumerate() {
+        validate_name(format!("lock[{index}]"), &lock.package)?;
+    }
+    let mut seen_locks = std::collections::BTreeMap::<String, ()>::new();
+    for lock in locks {
+        if seen_locks.insert(lock.package.clone(), ()).is_some() {
+            return Err(ResolveError::DuplicateLock {
+                package: lock.package.clone(),
+            });
+        }
+    }
+
+    let mut by_name = std::collections::BTreeMap::<String, usize>::new();
+    for (index, package) in catalog.iter().enumerate() {
+        by_name.insert(package.name.clone(), index);
+    }
+
+    let mut context = SearchContext {
+        catalog,
+        roots,
+        by_name,
+        locks,
+        max_attempts,
+        attempts: 0,
+    };
+    let mut result = SearchResult {
+        best: None,
+        best_cost: usize::MAX,
+        first_failure: None,
+    };
+    let mut assigned = std::collections::BTreeMap::new();
+    context.visit(&mut assigned, &mut result)?;
+
+    let selected_map = match result.best {
+        Some(best) => best,
+        None => {
+            return Err(result.first_failure.unwrap_or(ResolveError::NoMatch {
+                package: String::new(),
+                requirements: Vec::new(),
+            }));
+        }
+    };
+
+    let mut selected: Vec<Selection> = selected_map
+        .iter()
+        .map(|(package, version)| Selection {
+            package: package.clone(),
+            version: *version,
+        })
+        .collect();
+    selected.sort_by(|a, b| a.package.cmp(&b.package));
+
+    let final_active = active_constraints(roots, catalog, &context.by_name, &selected_map);
+    let mut before = std::collections::BTreeMap::<String, Version>::new();
+    for lock in locks {
+        before.insert(lock.package.clone(), lock.version);
+    }
+    let mut all_names = std::collections::BTreeMap::<String, ()>::new();
+    for name in before.keys() {
+        all_names.insert(name.clone(), ());
+    }
+    for name in selected_map.keys() {
+        all_names.insert(name.clone(), ());
+    }
+
+    let mut changes = Vec::new();
+    for name in all_names.keys() {
+        let old = before.get(name).copied();
+        let new = selected_map.get(name).copied();
+        if old == new {
+            continue;
+        }
+        let reason = match (old, new) {
+            (None, Some(_)) => ChangeReason::Added,
+            (Some(_), None) => ChangeReason::Removed,
+            (Some(old_version), Some(_)) => {
+                let exists = context
+                    .by_name
+                    .get(name)
+                    .map(|index| {
+                        catalog[*index]
+                            .releases
+                            .iter()
+                            .any(|release| release.version == old_version)
+                    })
+                    .unwrap_or(false);
+                if !exists {
+                    ChangeReason::Unavailable
+                } else if final_active
+                    .get(name)
+                    .map(|constraints| !matches_all(old_version, constraints))
+                    .unwrap_or(false)
+                {
+                    ChangeReason::Rejected
+                } else {
+                    ChangeReason::Rebalanced
+                }
+            }
+            (None, None) => unreachable!(),
+        };
+        changes.push(Change {
+            package: name.clone(),
+            before: old,
+            after: new,
+            reason,
+        });
+    }
+
+    Ok(Resolution { selected, changes })
+}
+```

@@ -1,0 +1,416 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+    pub release: u64,
+    pub priority: i32,
+    pub needs: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub start: u64,
+    pub finish: u64,
+    pub worker: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub makespan: u64,
+    pub trace: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stage {
+    Tail,
+    Finish,
+    Turnaround,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Workers {
+        count: usize,
+    },
+    Overflow {
+        task: usize,
+        stage: Stage,
+    },
+    ResourceShape {
+        task: usize,
+        expected: usize,
+        actual: usize,
+    },
+    ResourceExceeded {
+        task: usize,
+        resource: usize,
+        need: u32,
+        capacity: u32,
+    },
+}
+
+pub fn schedule(
+    tasks: &[Task],
+    cooldowns: &[u64],
+    capacity: &[u32],
+) -> Result<Schedule, Error> {
+    let n = tasks.len();
+
+    // Validate every dependency before checking any other input property.
+    for (task_id, task) in tasks.iter().enumerate() {
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if task.deps[..position].contains(&value) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+        }
+    }
+
+    let worker_count = cooldowns.len();
+    if !(1..=64).contains(&worker_count) {
+        return Err(Error::Workers {
+            count: worker_count,
+        });
+    }
+
+    for (task_id, task) in tasks.iter().enumerate() {
+        if task.needs.len() != capacity.len() {
+            return Err(Error::ResourceShape {
+                task: task_id,
+                expected: capacity.len(),
+                actual: task.needs.len(),
+            });
+        }
+        for (resource, &need) in task.needs.iter().enumerate() {
+            if need > capacity[resource] {
+                return Err(Error::ResourceExceeded {
+                    task: task_id,
+                    resource,
+                    need,
+                    capacity: capacity[resource],
+                });
+            }
+        }
+    }
+
+    // Build successor lists and indegrees.
+    let mut children: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+    let mut indegree = Vec::new();
+    for task in tasks {
+        indegree.push(task.deps.len());
+    }
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &predecessor in &task.deps {
+            children[predecessor].push(task_id);
+        }
+    }
+
+    // Kahn traversal with the smallest currently available ID first.
+    let mut available = Vec::new();
+    for (id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(id);
+        }
+    }
+    let mut order = Vec::new();
+    while !available.is_empty() {
+        let mut smallest_index = 0;
+        for i in 1..available.len() {
+            if available[i] < available[smallest_index] {
+                smallest_index = i;
+            }
+        }
+        let id = available.swap_remove(smallest_index);
+        order.push(id);
+        for &child in &children[id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.push(child);
+            }
+        }
+    }
+
+    if order.len() != n {
+        let mut blocked = Vec::new();
+        for id in 0..n {
+            if indegree[id] != 0 {
+                blocked.push(id);
+            }
+        }
+        return Err(Error::Cycle { blocked });
+    }
+
+    let mut tails = Vec::new();
+    tails.resize(n, 0_u64);
+    for &id in order.iter().rev() {
+        let mut longest_child = 0_u64;
+        for &child in &children[id] {
+            if tails[child] > longest_child {
+                longest_child = tails[child];
+            }
+        }
+        tails[id] = tasks[id]
+            .duration
+            .checked_add(longest_child)
+            .ok_or(Error::Overflow {
+                task: id,
+                stage: Stage::Tail,
+            })?;
+    }
+
+    #[derive(Clone, Copy)]
+    struct Running {
+        task: usize,
+        finish: u64,
+        worker: usize,
+    }
+
+    let mut runs: Vec<Option<Run>> = (0..n).map(|_| None).collect();
+    let mut started = Vec::new();
+    started.resize(n, false);
+    let mut completed = Vec::new();
+    completed.resize(n, false);
+    let mut worker_ready = Vec::new();
+    worker_ready.resize(worker_count, 0_u64);
+    let mut running: Vec<Running> = Vec::new();
+    let mut used: Vec<u64> = capacity.iter().map(|_| 0_u64).collect();
+    let mut trace = String::new();
+    use std::fmt::Write;
+    let _ = writeln!(
+        trace,
+        "workers={};resources={}",
+        worker_count,
+        capacity.len()
+    );
+
+    let mut now = 0_u64;
+    let mut makespan = 0_u64;
+    let mut completed_count = 0_usize;
+
+    while completed_count < n {
+        // Complete every task finishing now, in ascending task ID order.
+        let mut ending: Vec<Running> = running
+            .iter()
+            .copied()
+            .filter(|entry| entry.finish == now)
+            .collect();
+        ending.sort_by_key(|entry| entry.task);
+
+        if !ending.is_empty() {
+            running.retain(|entry| entry.finish != now);
+            for entry in ending {
+                let id = entry.task;
+                completed[id] = true;
+                completed_count += 1;
+                for r in 0..capacity.len() {
+                    used[r] -= u64::from(tasks[id].needs[r]);
+                }
+                let _ = write!(trace, "{}|end|{}|{}|", now, id, entry.worker);
+                write_used(&mut trace, &used);
+                trace.push('\n');
+                if now > makespan {
+                    makespan = now;
+                }
+            }
+        }
+
+        // Start tasks one at a time, choosing the best currently fitting task.
+        let mut started_any = false;
+        loop {
+            let mut selected: Option<usize> = None;
+            for id in 0..n {
+                if started[id] || tasks[id].release > now {
+                    continue;
+                }
+                if !tasks[id].deps.iter().all(|&dep| completed[dep]) {
+                    continue;
+                }
+                let fits = (0..capacity.len()).all(|r| {
+                    u64::from(tasks[id].needs[r]) <= u64::from(capacity[r]) - used[r]
+                });
+                if !fits {
+                    continue;
+                }
+                match selected {
+                    None => selected = Some(id),
+                    Some(best) => {
+                        if tails[id] > tails[best]
+                            || (tails[id] == tails[best]
+                                && (tasks[id].priority > tasks[best].priority
+                                    || (tasks[id].priority == tasks[best].priority && id < best)))
+                        {
+                            selected = Some(id);
+                        }
+                    }
+                }
+            }
+
+            let Some(id) = selected else {
+                break;
+            };
+
+            // Choose the first available worker in the task-specific cyclic order.
+            let mut chosen_worker = None;
+            for offset in 0..worker_count {
+                let worker = (id % worker_count + offset) % worker_count;
+                if worker_ready[worker] <= now {
+                    chosen_worker = Some(worker);
+                    break;
+                }
+            }
+            let Some(worker) = chosen_worker else {
+                break;
+            };
+
+            let finish = now.checked_add(tasks[id].duration).ok_or(Error::Overflow {
+                task: id,
+                stage: Stage::Finish,
+            })?;
+            let ready = finish
+                .checked_add(cooldowns[worker])
+                .ok_or(Error::Overflow {
+                    task: id,
+                    stage: Stage::Turnaround,
+                })?;
+
+            started[id] = true;
+            worker_ready[worker] = ready;
+            runs[id] = Some(Run {
+                start: now,
+                finish,
+                worker,
+            });
+            for r in 0..capacity.len() {
+                used[r] += u64::from(tasks[id].needs[r]);
+            }
+            let _ = write!(trace, "{}|start|{}|{}|", now, id, worker);
+            write_used(&mut trace, &used);
+            trace.push('\n');
+
+            if tasks[id].duration == 0 {
+                completed[id] = true;
+                completed_count += 1;
+                for r in 0..capacity.len() {
+                    used[r] -= u64::from(tasks[id].needs[r]);
+                }
+                let _ = write!(trace, "{}|end|{}|{}|", now, id, worker);
+                write_used(&mut trace, &used);
+                trace.push('\n');
+                if now > makespan {
+                    makespan = now;
+                }
+            } else {
+                running.push(Running {
+                    task: id,
+                    finish,
+                    worker,
+                });
+            }
+
+            started_any = true;
+        }
+
+        if completed_count == n {
+            break;
+        }
+
+        // Find the next actual event. A task completion, release, or cooldown
+        // expiry can make progress possible.
+        let mut next_event: Option<u64> = None;
+        for entry in &running {
+            if entry.finish > now {
+                next_event = Some(match next_event {
+                    None => entry.finish,
+                    Some(value) => value.min(entry.finish),
+                });
+            }
+        }
+        for id in 0..n {
+            if !started[id] && tasks[id].release > now {
+                next_event = Some(match next_event {
+                    None => tasks[id].release,
+                    Some(value) => value.min(tasks[id].release),
+                });
+            }
+        }
+        for &ready in &worker_ready {
+            if ready > now {
+                next_event = Some(match next_event {
+                    None => ready,
+                    Some(value) => value.min(ready),
+                });
+            }
+        }
+
+        if let Some(next) = next_event {
+            now = next;
+        } else if !started_any {
+            // The graph is acyclic, so this is only a defensive escape path.
+            break;
+        }
+    }
+
+    let mut ordered_runs = Vec::new();
+    for run in runs {
+        if let Some(run) = run {
+            ordered_runs.push(run);
+        }
+    }
+
+    let _ = writeln!(trace, "makespan={}", makespan);
+    Ok(Schedule {
+        runs: ordered_runs,
+        makespan,
+        trace,
+    })
+}
+
+fn write_used(trace: &mut String, used: &[u64]) {
+    if used.is_empty() {
+        trace.push('-');
+    } else {
+        for (index, value) in used.iter().enumerate() {
+            if index != 0 {
+                trace.push(',');
+            }
+            use std::fmt::Write;
+            let _ = write!(trace, "{}", value);
+        }
+    }
+}
+```

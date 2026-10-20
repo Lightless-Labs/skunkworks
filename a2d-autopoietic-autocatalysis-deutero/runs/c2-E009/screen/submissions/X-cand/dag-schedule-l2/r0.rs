@@ -1,0 +1,202 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Analysis {
+    pub order: Vec<usize>,
+    pub earliest: Vec<Timing>,
+    pub latest: Vec<Timing>,
+    pub slack: Vec<u64>,
+    pub critical: Vec<usize>,
+    pub path: Vec<usize>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+    TargetTooSmall {
+        minimum: u64,
+    },
+}
+
+pub fn analyze(tasks: &[Task], target: u64) -> Result<Analysis, Error> {
+    let n = tasks.len();
+
+    // Validate every dependency before building or traversing the graph.
+    for (task_id, task) in tasks.iter().enumerate() {
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if task.deps[..position].contains(&value) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+        }
+    }
+
+    let mut successors: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+    let mut indegree: Vec<usize> = tasks.iter().map(|task| task.deps.len()).collect();
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &predecessor in &task.deps {
+            successors[predecessor].push(task_id);
+        }
+    }
+
+    // A min-heap represented as Reverse ordering, so each step removes the
+    // smallest currently available task ID.
+    let mut available = std::collections::BinaryHeap::new();
+    for (task_id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(std::cmp::Reverse(task_id));
+        }
+    }
+
+    let mut order = Vec::new();
+    while let Some(std::cmp::Reverse(task_id)) = available.pop() {
+        order.push(task_id);
+        for &child in &successors[task_id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.push(std::cmp::Reverse(child));
+            }
+        }
+    }
+
+    if order.len() != n {
+        let mut blocked = Vec::new();
+        for task_id in 0..n {
+            if indegree[task_id] != 0 {
+                blocked.push(task_id);
+            }
+        }
+        return Err(Error::Cycle { blocked });
+    }
+
+    let mut earliest: Vec<Option<Timing>> = (0..n).map(|_| None).collect();
+    let mut makespan = 0u64;
+
+    for &task_id in &order {
+        let start = tasks[task_id]
+            .deps
+            .iter()
+            .map(|&predecessor| earliest[predecessor].as_ref().unwrap().finish)
+            .max()
+            .unwrap_or(0);
+
+        let finish = match start.checked_add(tasks[task_id].duration) {
+            Some(finish) => finish,
+            None => return Err(Error::Overflow { task: task_id }),
+        };
+
+        earliest[task_id] = Some(Timing { start, finish });
+        makespan = makespan.max(finish);
+    }
+
+    if target < makespan {
+        return Err(Error::TargetTooSmall { minimum: makespan });
+    }
+
+    let mut latest: Vec<Option<Timing>> = (0..n).map(|_| None).collect();
+    for &task_id in order.iter().rev() {
+        let finish = if successors[task_id].is_empty() {
+            target
+        } else {
+            successors[task_id]
+                .iter()
+                .map(|&child| latest[child].as_ref().unwrap().start)
+                .min()
+                .unwrap()
+        };
+        let start = finish - tasks[task_id].duration;
+        latest[task_id] = Some(Timing { start, finish });
+    }
+
+    let mut slack = Vec::new();
+    for task_id in 0..n {
+        slack.push(
+            latest[task_id].as_ref().unwrap().start
+                - earliest[task_id].as_ref().unwrap().start,
+        );
+    }
+
+    let baseline = target - makespan;
+    let critical = (0..n)
+        .filter(|&task_id| slack[task_id] == baseline)
+        .collect();
+
+    let mut path = Vec::new();
+    if n != 0 {
+        let sink = (0..n)
+            .filter(|&task_id| successors[task_id].is_empty())
+            .filter(|&task_id| earliest[task_id].as_ref().unwrap().finish == makespan)
+            .max()
+            .unwrap();
+
+        let mut current = sink;
+        path.push(current);
+        while !tasks[current].deps.is_empty() {
+            let predecessor = tasks[current]
+                .deps
+                .iter()
+                .copied()
+                .max_by_key(|&id| (earliest[id].as_ref().unwrap().finish, id))
+                .unwrap();
+            current = predecessor;
+            path.push(current);
+        }
+        path.reverse();
+    }
+
+    Ok(Analysis {
+        order,
+        earliest: earliest.into_iter().map(Option::unwrap).collect(),
+        latest: latest.into_iter().map(Option::unwrap).collect(),
+        slack,
+        critical,
+        path,
+        makespan,
+    })
+}

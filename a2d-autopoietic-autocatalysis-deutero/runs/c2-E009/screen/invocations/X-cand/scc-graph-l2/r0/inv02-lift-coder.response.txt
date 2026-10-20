@@ -1,0 +1,198 @@
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+
+    for (edge_index, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: edge_index,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: edge_index,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adjacency = vec![Vec::new(); n];
+    let mut reverse_adjacency = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adjacency[from].push(to);
+        reverse_adjacency[to].push(from);
+    }
+
+    // Iterative Kosaraju first pass, recording vertices in finish order.
+    let mut visited = vec![false; n];
+    let mut finish_order = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((vertex, next_neighbor)) = stack.last_mut() {
+            if *next_neighbor < adjacency[*vertex].len() {
+                let neighbor = adjacency[*vertex][*next_neighbor];
+                *next_neighbor += 1;
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    stack.push((neighbor, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().unwrap();
+                finish_order.push(finished);
+            }
+        }
+    }
+
+    // Second pass assigns temporary component IDs.
+    let mut temporary_id = vec![usize::MAX; n];
+    let mut temporary_components: Vec<Vec<usize>> = Vec::new();
+    for &start in finish_order.iter().rev() {
+        if temporary_id[start] != usize::MAX {
+            continue;
+        }
+        let id = temporary_components.len();
+        let mut members = Vec::new();
+        let mut stack = vec![start];
+        temporary_id[start] = id;
+        while let Some(vertex) = stack.pop() {
+            members.push(vertex);
+            for &neighbor in &reverse_adjacency[vertex] {
+                if temporary_id[neighbor] == usize::MAX {
+                    temporary_id[neighbor] = id;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        members.sort_unstable();
+        temporary_components.push(members);
+    }
+
+    // Canonicalize component ordering by size descending, then minimum vertex ascending.
+    let mut order: Vec<usize> = (0..temporary_components.len()).collect();
+    order.sort_unstable_by(|&a, &b| {
+        temporary_components[b]
+            .len()
+            .cmp(&temporary_components[a].len())
+            .then_with(|| temporary_components[a][0].cmp(&temporary_components[b][0]))
+    });
+
+    let mut old_to_new = vec![0usize; temporary_components.len()];
+    let mut components = Vec::new();
+    for (new_id, &old_id) in order.iter().enumerate() {
+        old_to_new[old_id] = new_id;
+        components.push(temporary_components[old_id].clone());
+    }
+
+    let mut component_of = vec![0usize; n];
+    for (vertex, &old_id) in temporary_id.iter().enumerate() {
+        component_of[vertex] = old_to_new[old_id];
+    }
+
+    let component_count = components.len();
+    let mut cyclic = vec![false; component_count];
+    for (id, members) in components.iter().enumerate() {
+        cyclic[id] = members.len() >= 2;
+    }
+
+    let mut internal_edges = vec![0usize; component_count];
+    let mut arc_data: Vec<(usize, usize, usize, usize)> = Vec::new();
+    // At most MAX_EDGES entries are collected before sorting and combining.
+    for (edge_index, &(from, to)) in edges.iter().enumerate() {
+        let source_component = component_of[from];
+        let target_component = component_of[to];
+        if source_component == target_component {
+            internal_edges[source_component] += 1;
+            if from == to {
+                cyclic[source_component] = true;
+            }
+        } else {
+            arc_data.push((
+                source_component,
+                target_component,
+                edge_index,
+                1usize,
+            ));
+        }
+    }
+
+    arc_data.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+
+    let mut arcs = Vec::new();
+    let mut index = 0;
+    while index < arc_data.len() {
+        let from = arc_data[index].0;
+        let to = arc_data[index].1;
+        let first_edge = arc_data[index].2;
+        let mut multiplicity = 0usize;
+        while index < arc_data.len() && arc_data[index].0 == from && arc_data[index].1 == to {
+            multiplicity += arc_data[index].3;
+            index += 1;
+        }
+        arcs.push(Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        });
+    }
+
+    // Arc sort contract uses target component descending within each source.
+    arcs.sort_unstable_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+    })
+}
+```

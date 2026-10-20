@@ -1,0 +1,173 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonicalize_key(key)?;
+
+        if self.entries.iter().any(|entry| entry.item.key == key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        if self.next_age == u128::MAX {
+            self.renumber_ages();
+        }
+
+        let entry = Entry {
+            item: Item {
+                key,
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+        self.next_age += 1;
+
+        let index = self.entries.len();
+        self.entries.push(entry);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.entries.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let last = self.entries.pop()?;
+        if self.entries.is_empty() {
+            return Some(last.item);
+        }
+
+        let best = std::mem::replace(&mut self.entries[0], last);
+        self.sift_down(0);
+        Some(best.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self
+            .entries
+            .iter()
+            .find(|entry| entry.item.key == key)
+            .map(|entry| entry.item.clone()))
+    }
+
+    fn renumber_ages(&mut self) {
+        let mut indices: Vec<usize> = (0..self.entries.len()).collect();
+        indices.sort_unstable_by_key(|&index| self.entries[index].age);
+        for (age, index) in indices.into_iter().enumerate() {
+            self.entries[index].age = age as u128;
+        }
+        self.next_age = self.entries.len() as u128;
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !entry_is_better(&self.entries[index], &self.entries[parent]) {
+                break;
+            }
+            self.entries.swap(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        loop {
+            let left = index * 2 + 1;
+            if left >= self.entries.len() {
+                break;
+            }
+
+            let right = left + 1;
+            let best_child = if right < self.entries.len()
+                && entry_is_better(&self.entries[right], &self.entries[left])
+            {
+                right
+            } else {
+                left
+            };
+
+            if !entry_is_better(&self.entries[best_child], &self.entries[index]) {
+                break;
+            }
+            self.entries.swap(index, best_child);
+            index = best_child;
+        }
+    }
+}
+
+fn entry_is_better(a: &Entry, b: &Entry) -> bool {
+    a.item
+        .priority
+        .cmp(&b.item.priority)
+        .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+        .then_with(|| a.age.cmp(&b.age))
+        .is_lt()
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}

@@ -1,0 +1,312 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Analysis {
+    pub order: Vec<usize>,
+    pub earliest: Vec<Timing>,
+    pub latest: Vec<Timing>,
+    pub slack: Vec<u64>,
+    pub critical: Vec<usize>,
+    pub path: Vec<usize>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+    TargetTooSmall {
+        minimum: u64,
+    },
+}
+
+pub fn analyze(tasks: &[Task], target: u64) -> Result<Analysis, Error> {
+    let n = tasks.len();
+
+    // Validate every dependency entry before doing any other computation.
+    for (task_id, task) in tasks.iter().enumerate() {
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if task.deps[..position].contains(&value) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+        }
+    }
+
+    let mut successors = Vec::new();
+    let mut indegree = Vec::new();
+    for task in tasks {
+        successors.push(Vec::new());
+        indegree.push(task.deps.len());
+    }
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &predecessor in &task.deps {
+            successors[predecessor].push(task_id);
+        }
+    }
+
+    // A min-heap gives deterministic Kahn order, with newly available smaller
+    // IDs taking precedence over IDs that were already available.
+    let mut available = BinaryMinHeap::new();
+    for (task_id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(task_id);
+        }
+    }
+
+    let mut order = Vec::new();
+    while let Some(task_id) = available.pop() {
+        order.push(task_id);
+        for &child in &successors[task_id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.push(child);
+            }
+        }
+    }
+
+    if order.len() != n {
+        let mut blocked = Vec::new();
+        for (task_id, &degree) in indegree.iter().enumerate() {
+            if degree != 0 {
+                blocked.push(task_id);
+            }
+        }
+        return Err(Error::Cycle { blocked });
+    }
+
+    let mut earliest: Vec<Option<Timing>> = Vec::new();
+    for _ in 0..n {
+        earliest.push(None);
+    }
+
+    let mut makespan = 0;
+    for &task_id in &order {
+        let mut start = 0;
+        for &predecessor in &tasks[task_id].deps {
+            let finish = earliest[predecessor]
+                .as_ref()
+                .expect("predecessor must be processed first")
+                .finish;
+            if finish > start {
+                start = finish;
+            }
+        }
+
+        let finish = match start.checked_add(tasks[task_id].duration) {
+            Some(finish) => finish,
+            None => return Err(Error::Overflow { task: task_id }),
+        };
+        if finish > makespan {
+            makespan = finish;
+        }
+        earliest[task_id] = Some(Timing { start, finish });
+    }
+
+    if target < makespan {
+        return Err(Error::TargetTooSmall { minimum: makespan });
+    }
+
+    let mut latest: Vec<Option<Timing>> = Vec::new();
+    for _ in 0..n {
+        latest.push(None);
+    }
+
+    for &task_id in order.iter().rev() {
+        let finish = if successors[task_id].is_empty() {
+            target
+        } else {
+            let mut minimum_start: Option<u64> = None;
+            for &child in &successors[task_id] {
+                let child_start = latest[child]
+                    .as_ref()
+                    .expect("successor must be processed first")
+                    .start;
+                minimum_start = Some(match minimum_start {
+                    Some(current) => current.min(child_start),
+                    None => child_start,
+                });
+            }
+            minimum_start.expect("non-sink must have a successor")
+        };
+
+        let start = finish
+            .checked_sub(tasks[task_id].duration)
+            .expect("validated target guarantees nonnegative latest start");
+        latest[task_id] = Some(Timing { start, finish });
+    }
+
+    let mut earliest_result = Vec::new();
+    let mut latest_result = Vec::new();
+    let mut slack = Vec::new();
+    let mut critical = Vec::new();
+
+    let baseline = target - makespan;
+    for task_id in 0..n {
+        let early = earliest[task_id]
+            .take()
+            .expect("every task must have an earliest timing");
+        let late = latest[task_id]
+            .take()
+            .expect("every task must have a latest timing");
+        let task_slack = late.start - early.start;
+        if task_slack == baseline {
+            critical.push(task_id);
+        }
+        slack.push(task_slack);
+        earliest_result.push(early);
+        latest_result.push(late);
+    }
+
+    let path = if n == 0 {
+        Vec::new()
+    } else {
+        let mut sink: Option<usize> = None;
+        for task_id in 0..n {
+            if successors[task_id].is_empty()
+                && earliest_result[task_id].finish == makespan
+            {
+                sink = Some(task_id);
+            }
+        }
+
+        let mut current = sink.expect("nonempty DAG has a makespan sink");
+        let mut reversed_path = Vec::new();
+        loop {
+            reversed_path.push(current);
+            if tasks[current].deps.is_empty() {
+                break;
+            }
+
+            let mut best: Option<usize> = None;
+            for &predecessor in &tasks[current].deps {
+                best = Some(match best {
+                    None => predecessor,
+                    Some(previous) => {
+                        let previous_finish = earliest_result[previous].finish;
+                        let candidate_finish = earliest_result[predecessor].finish;
+                        if candidate_finish > previous_finish
+                            || (candidate_finish == previous_finish
+                                && predecessor > previous)
+                        {
+                            predecessor
+                        } else {
+                            previous
+                        }
+                    }
+                });
+            }
+            current = best.expect("non-root task has a predecessor");
+        }
+        reversed_path.reverse();
+        reversed_path
+    };
+
+    Ok(Analysis {
+        order,
+        earliest: earliest_result,
+        latest: latest_result,
+        slack,
+        critical,
+        path,
+        makespan,
+    })
+}
+
+struct BinaryMinHeap {
+    data: Vec<usize>,
+}
+
+impl BinaryMinHeap {
+    fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn push(&mut self, value: usize) {
+        self.data.push(value);
+        let mut index = self.data.len() - 1;
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if self.data[parent] <= self.data[index] {
+                break;
+            }
+            self.data.swap(parent, index);
+            index = parent;
+        }
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let result = self.data.first().copied()?;
+        let last = self.data.pop().expect("heap is nonempty");
+        if !self.data.is_empty() {
+            self.data[0] = last;
+            let mut index = 0;
+            loop {
+                let left = index * 2 + 1;
+                if left >= self.data.len() {
+                    break;
+                }
+                let right = left + 1;
+                let smaller_child = if right < self.data.len()
+                    && self.data[right] < self.data[left]
+                {
+                    right
+                } else {
+                    left
+                };
+                if self.data[index] <= self.data[smaller_child] {
+                    break;
+                }
+                self.data.swap(index, smaller_child);
+                index = smaller_child;
+            }
+        }
+        Some(result)
+    }
+}
+```
