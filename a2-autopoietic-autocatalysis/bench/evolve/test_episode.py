@@ -88,8 +88,11 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(opaque, "opaque-secret")
             self.assertEqual(sealed_root, self.root / "e1-home" / "sealed")
             patch_diff = patch_diffs[len(rows)]
-            record = {"patch_diff": patch_diff, "tokens_in": 7, "tokens_out": 3, "wall_secs": 2}
+            tokens_in, tokens_out, log_text = getattr(self, "call_outcomes", {}).get(len(rows), (7, 3, ""))
+            record = {"patch_diff": patch_diff, "tokens_in": tokens_in, "tokens_out": tokens_out, "wall_secs": 2}
             Path(emit).write_text(json.dumps(record) + "\n")
+            with Path(log).open("a") as handle:
+                handle.write(log_text)
             rows.append(record)
             return 0
         return calls, rows, policy, a2ctl
@@ -136,6 +139,28 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual([len(s["candidates"]) for s in states], [0, 1, 2])
         self.assertEqual((row["tokens_in"], row["tokens_out"]), (14, 6))
         self.assertEqual(len(a2rows), 2)
+
+    def test_zero_token_no_edit_call_is_an_agent_failure_not_infra(self):
+        # a2ctl reports tokens=0 when the agent ran but edited nothing; that is not a provider error.
+        no_edit = ("ERROR a2_workcell::runtime: catalyst failed: agent made no changes to the worktree\n"
+                   "[restricted network policy blocked provider launch for x; no candidate patch produced]\n")
+        self.call_outcomes = {0: (0, 0, no_edit)}
+        acts = [{"agent": {"base": "fresh", "prompt": "", "effort": "high"}},
+                {"agent": {"base": "fresh", "prompt": self._patch("base\n", "passing\n"), "effort": "high"}},
+                {"submit": {"candidate": 1}}]
+        row, _states, _rows = self._run(acts, lambda _opaque, diff: {"passed": "passing" in diff, "tests": []})
+        self.assertIsNone(row["infra_failure"])
+        self.assertEqual(row["grade"], {"resolved": True})
+
+    def test_zero_token_provider_error_call_stays_infra(self):
+        provider = ("ERROR a2_workcell::runtime: catalyst failed: model provider error: codex provider "
+                    "model `gpt-6-luna` exited with status exit status: 1\n")
+        self.call_outcomes = {0: (0, 0, provider)}
+        acts = [{"agent": {"base": "fresh", "prompt": "", "effort": "high"}},
+                {"agent": {"base": "fresh", "prompt": self._patch("base\n", "passing\n"), "effort": "high"}},
+                {"submit": {"candidate": 1}}]
+        row, _states, _rows = self._run(acts, lambda _opaque, diff: {"passed": "passing" in diff, "tests": []})
+        self.assertEqual(row["infra_failure"], "provider_error")
 
     def test_candidate_base_composes_cumulative_diff(self):
         patch = self._patch("base\n", "passing\n")

@@ -293,7 +293,7 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
                                     manifest.get("hidden_fail_to_pass", []))
     sealed_root = tasks.e1_home() / "sealed"
     sealed_root.mkdir(parents=True, exist_ok=True)
-    candidates, attempts, returncodes, actions = [], [], [], []
+    candidates, attempts, returncodes, actions, logs = [], [], [], [], []
     calls, policy_error, submitted = 0, None, None
     started = time.time()
     for step in range(MAX_STEPS):
@@ -333,11 +333,13 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
         emit = output_dir / f"call-{calls}.jsonl"
         log = output_dir / f"call-{calls}.log"
         cfg.reasoning_effort = action["effort"]
+        offset = e1run.log_offset(log)
         try:
             call_rc = _run_agent_call(cfg, opaque, workspace, payload, emit, log, sealed_root)
         except (OSError, subprocess.TimeoutExpired):
             call_rc = -1
         returncodes.append(call_rc)
+        logs.append(e1run.log_since(log, offset))
         rows = e1run.read_rows(emit)
         attempts.extend(rows)
         a2row = rows[-1] if rows else {}
@@ -366,7 +368,7 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
             "wall_secs": round(time.time() - started, 1), "submitted_candidate": submitted if submitted >= 0 else None,
             "final_diff_sha256": hashlib.sha256(final_diff.encode()).hexdigest(),
             "final_diff_empty": not final_diff.strip(), "policy_error": policy_error,
-            "infra_failure": e1run.classify_infra(attempts, returncodes), "grade": grade,
+            "infra_failure": e1run.classify_infra(attempts, returncodes, logs=logs), "grade": grade,
             "verify_summaries": [{"passed": bool(c["verify"].get("passed")),
                                   "failing": [t.get("name", t.get("index")) for t in c["verify"].get("tests", []) if t.get("outcome") != "pass"],
                                   "rejected": bool(c["verify"].get("rejected"))} for c in candidates],

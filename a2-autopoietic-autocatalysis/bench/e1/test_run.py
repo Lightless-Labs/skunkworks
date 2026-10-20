@@ -118,6 +118,27 @@ class InfraClassificationTests(unittest.TestCase):
         self.assertEqual(run.classify_infra([ok, dead], [0, 0]), "provider_error")
         self.assertEqual(run.classify_infra([dead], [0]), "provider_error")
 
+    def test_zero_token_agent_failures_are_not_infra_when_logs_explain_them(self) -> None:
+        # a2ctl reports tokens=0 (and a misleading "restricted network policy blocked
+        # provider launch" line) for timeouts and no-edit calls, though the model ran.
+        ok = {"tokens_in": 10, "tokens_out": 5}
+        dead = {"tokens_in": 0, "tokens_out": 0}
+        blocked = "[restricted network policy blocked provider launch for e1-x; no candidate patch produced]\n"
+        timeout = "WARN a2_workcell::runtime: catalyst timed out — wall-clock budget exceeded\n" + blocked
+        no_edit = ("ERROR a2_workcell::runtime: catalyst failed: catalyst cat-1 failed: agent made no "
+                   "changes to the worktree — the worktree agent must edit the correct file\n" + blocked)
+        provider = ("ERROR a2_workcell::runtime: catalyst failed: model provider error: codex provider "
+                    "model `gpt-6-luna` exited with status exit status: 1\n" + blocked)
+        self.assertIsNone(run.classify_infra([dead], [0], logs=[timeout]))
+        self.assertIsNone(run.classify_infra([dead], [0], logs=[no_edit]))
+        self.assertIsNone(run.classify_infra([ok, dead], [0, 0], logs=["", no_edit]))
+        self.assertEqual(run.classify_infra([dead], [0], logs=[provider]), "provider_error")
+        self.assertEqual(run.classify_infra([dead], [0], logs=[blocked]), "provider_error")
+        # One log covering several attempts: every dead attempt needs its own explanation.
+        self.assertIsNone(run.classify_infra([dead, dead], [0], logs=[timeout + no_edit]))
+        self.assertEqual(run.classify_infra([dead, dead], [0], logs=[timeout]), "provider_error")
+        self.assertEqual(run.classify_infra([dead, dead], [0], logs=[timeout + provider]), "provider_error")
+
 
 class InfraRetryTests(unittest.TestCase):
     def test_retries_infra_failure_once_and_records_it(self) -> None:

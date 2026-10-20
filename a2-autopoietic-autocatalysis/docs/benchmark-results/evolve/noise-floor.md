@@ -109,3 +109,23 @@ The loop was stopped at the boundary after exp-0005, while exp-0006 was in the r
 - `bench/confirm` is now part of the lock.
 
 None of the 193 gold patches (68 dev, 125 sealed) contains a rename, copy or binary section, so every gate result is unchanged.
+
+## Addendum, 2026-10-20: infrastructure classifier fix, in force from exp-0010
+
+exp-0010 tripped a classification bug. Its first call ran the reproduce-only prompt, and the agent often made no edits. a2ctl reports `tokens=0` for a call like that, and the evaluator read any zero-token attempt as a `provider_error`. A provider error marks the episode as infra, so it was retried, and dropped from scoring if the retry also failed. In exp-0010's stage A, 17 of 19 rows were flagged this way.
+
+The same bug touched every earlier run. Across all evolve logs, the zero-token calls were 74 no-edit calls, 68 timeouts and 3 genuine provider exits. Under the pre-registered definition, timeouts and no-edit calls are agent failures. The classifier now reads the call logs (see protocol-v2 `[addendum_2026_10_20]`); evaluator sha256 is `99fac147…`.
+
+**Champion rates.** The loop was stopped while it was backing off. `champion_rows` in the loop state were reclassified from their logs. Only rows previously flagged `provider_error` were reclassified; `evaluator_error` rows stay infra. 7 rows changed (4 in nf-1, 3 in the 2026-10-18 control run). Per-task rates (resolved / runs) before and after:
+
+| task | before | after |
+|---|---|---|
+| e1-237cd392e5f3 | 2/2 | 5/5 |
+| e1-32a5795ee41f | 0/4 | 0/5 |
+| e1-2f91f4386c9f | 0/5 | 0/6 |
+| e1-667916f5ba15 | 5/5 | 5/6 |
+| e1-82b8da935f94 | 1/8 | 2/9 |
+
+Some originals cannot be recovered. The evaluate retry overwrote the original episode row, so a retried episode's first grade is lost. 10 champion rows are retries that this bug triggered (8 in nf-1, 2 in the 2026-10-19 control run). One of them, on e1-792e600f54fd, followed a genuine provider exit. All 10 are on tasks that are deterministic in the remaining reps (every rep resolves, or none does). The lost originals therefore cannot move p̂, and the floor is not re-run. The other 13 retry rows in the state come from the `evaluator_error` retries of 2026-10-18, a separate and genuine infra class, and are unaffected.
+
+**Earlier experiments.** exp-0001 to exp-0009 were decided under the old classifier. On both sides, agent timeouts and no-edit calls got free retries. Those decisions stand as logged. exp-0010's stage A was deleted and re-runs under the fixed classifier. It is still exp-0010, not a new experiment. Its logs were deleted with the run before being archived; the counts above were taken first.

@@ -167,6 +167,7 @@ def run_a2_full(cfg: Config, opaque: str, arm: str, run_dir: Path) -> dict:
     manifest = tasks.load_manifest(opaque)
     workspace = fresh_workspace(opaque, arm)
     log = run_dir / f"{opaque}.{arm}.log"
+    offset = e1run.log_offset(log)
     emit = run_dir / f"{opaque}.{arm}.attempts.jsonl"
     emit.unlink(missing_ok=True)
     payload = task_payload(opaque, manifest["problem_statement"])
@@ -177,7 +178,7 @@ def run_a2_full(cfg: Config, opaque: str, arm: str, run_dir: Path) -> dict:
     passed = [row for row in attempts if e1run.verifier_passed(row)]
     final = passed[0] if passed else (attempts[-1] if attempts else None)
     diff = (final or {}).get("patch_diff") or ""
-    infra = e1run.classify_infra(attempts, [returncode])
+    infra = e1run.classify_infra(attempts, [returncode], logs=[e1run.log_since(log, offset)])
     if not attempts and not infra:
         infra = "no_attempt_row"
     grade = hardened.grade_hardened(opaque, diff) if final is not None else None

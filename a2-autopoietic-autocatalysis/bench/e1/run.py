@@ -190,13 +190,42 @@ def verifier_output(row: dict) -> str:
     return text[-FEEDBACK_TAIL_CHARS:]
 
 
-def classify_infra(attempts: list[dict], returncodes: list[int]) -> str | None:
-    """Pre-registered infrastructure-failure classes; agent failures (timeouts, bad diffs) are not infra."""
+AGENT_FAILURE_MARKERS = ("catalyst timed out", "agent made no changes to the worktree")
+PROVIDER_FAILURE_MARKER = "model provider error"
+
+
+def classify_infra(attempts: list[dict], returncodes: list[int], logs: list[str] | None = None) -> str | None:
+    """Pre-registered infrastructure-failure classes; agent failures (timeouts, bad diffs) are not infra.
+
+    a2ctl reports tokens=0 for timed-out and no-edit attempts too, so with logs a zero-token
+    attempt is a provider error only when the logs do not attribute it to the agent.
+    """
     if not attempts:
         return "a2ctl_failed" if any(rc != 0 for rc in returncodes) else "no_attempt_row"
-    if any(int(a.get("tokens_in") or 0) == 0 and int(a.get("tokens_out") or 0) == 0 for a in attempts):
+    dead = sum(1 for a in attempts if int(a.get("tokens_in") or 0) == 0 and int(a.get("tokens_out") or 0) == 0)
+    if not dead:
+        return None
+    if logs is None:
         return "provider_error"  # the model never completed a turn (rejected request, quota, auth)
+    text = "\n".join(logs)
+    explained = sum(text.count(marker) for marker in AGENT_FAILURE_MARKERS)
+    if PROVIDER_FAILURE_MARKER in text or explained < dead:
+        return "provider_error"
     return None
+
+
+def log_offset(log: Path) -> int:
+    return log.stat().st_size if log.exists() else 0
+
+
+def log_since(log: Path, offset: int) -> str:
+    """The part of an append-only a2ctl log written after `offset` (this run's calls only)."""
+    try:
+        with log.open("rb") as handle:
+            handle.seek(offset)
+            return handle.read().decode("utf-8", "replace")
+    except FileNotFoundError:
+        return ""
 
 
 def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> dict:
@@ -204,6 +233,7 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
     instruction = common.agent_instruction(manifest, cfg.instruction)
     markers = private_markers((tasks.private_dir(opaque) / "gold.patch").read_text(), manifest["hidden_fail_to_pass"])
     log = run_dir / f"{opaque}.{arm}.log"
+    offset = log_offset(log)
     workspace = fresh_workspace(opaque, arm)
     started = time.time()
     attempts: list[dict] = []
@@ -235,7 +265,7 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
                 break
             feedback = verifier_output(rows[-1])
     final = next((r for r in attempts if verifier_passed(r)), attempts[-1] if attempts else None)
-    infra = classify_infra(attempts, returncodes)
+    infra = classify_infra(attempts, returncodes, logs=[log_since(log, offset)])
     diff = (final or {}).get("patch_diff") or ""
     grade = tasks.grade_diff(opaque, diff) if final is not None else None
     shutil.rmtree(workspace.parent, ignore_errors=True)
