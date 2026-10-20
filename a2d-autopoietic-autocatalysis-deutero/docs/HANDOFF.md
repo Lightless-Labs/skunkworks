@@ -28,7 +28,9 @@
    - **Look 2:** a detached job (pid 13208, `~/.a2d-queue/look2-early.out`) runs the L38 line (`look_if_promoted.py`) at ≥ 00:05 UTC 10-21, taking about 3 h. Only `runs/c2-look2/gate.json` reaches the repo. PASS ⇒ the confirmation-3 candidate is E007, with the E007 entry of `c3_wording.json`; FAIL ⇒ E002.
    - **After look 2:**
      1. Merge `c2-web-provider` (≥ ecbb9611) into main, build, run the tests, log it.
-     2. Phase B from E007. Pools are done (`runs/2026-10-20-c2-e007-pool/`, screen + rest + confirm). Then stats with `--runs` screen=S, rest=R, confirm=`tasks/train-all`, then dossiers, `propose` and `round` (steps below).
+     2. Phase B from E007. **Round 1's proposals are generated and committed** (0a600e7b): informed `repair-contracts`, uninformed `high-effort-review`.
+        - Next: `python3 -I docs/experiments/analysis/c2_phaseb.py round --round 1 --jobs 6` after the merge and build (about 0.43k Luna, about 1.5 h).
+        - Then rounds 2–6: `quarters`, `stats` (the same E007 runs and pools), `dossiers --round r`, `propose` for both arms, commit, `round --round r`.
    - **Queue (pid 7116):** L23–L29 at 00:05 are no-ops after the promotion (E-resumes fail on the new aa.json by design; `confirm_best` says already promoted). L30 holds until 10-22; L38 and L40 will print "already attempted".
    - **Luna:** about 2,705 today (10-20); about 11.2k left of 25k.
 0. **State, 10-20 07:10 UTC:**
