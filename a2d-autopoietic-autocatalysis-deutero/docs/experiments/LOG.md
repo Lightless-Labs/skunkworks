@@ -1746,3 +1746,10 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - the candidate, at T or at look 2's result;
   - `c3_registration.py`, then the full review (Sol plus a fresh Claude) on `registration.json`, then the commit;
   - the spend at or after 10-24, on the day after the registration's day.
+
+### Queue resumed 10-20; E009 first prompts read  [cycle 2, 2026-10-20 00:05–00:20 UTC]
+- At 00:05 UTC, L16–L18 re-reported the stored results without new calls: E006 discarded on the full set, E007 a provisional keep, E008 discarded at screen. L19 (E009 screen) started at 00:08.
+- **E009 first prompts read** (screen, X:cand, path-normalize-l2, r0, inv00–02). Each prompt has the system line, then the task's requirements, then the public tests, then the 8-point failure checklist (worst-case cost through boundaries and arithmetic), ending cleanly after point 8. No hidden-test text. The first completed response is a single fenced Rust file implementing both clauses. **As designed.**
+- **Infrastructure note:** the first wave of 6 Luna calls (4 X:cand tasks, 2 X:inc tasks), started together at 00:09:33, all timed out at 300 s (00:14:33). Every later call completed in 80–100 s.
+  - Under the protocol, a timeout spends that invocation in either arm, and the A/A threshold was measured with such noise. The run continues unchanged.
+  - The asymmetry (4 candidate tuples vs 2 incumbent tuples lost a first sample) is recorded here in case E009's screen lands near the threshold.
