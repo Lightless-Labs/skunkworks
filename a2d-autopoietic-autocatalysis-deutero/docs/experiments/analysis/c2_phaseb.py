@@ -193,7 +193,10 @@ def branch_of(run, arm, task):
                     branch = json.loads(line[5:]).get("branch", branch)
                 except (ValueError, AttributeError):
                     continue
-    return branch if branch in {"judge", "one-green", "no-green-repair", "unknown"} else "other"
+    # The incumbent's own DIAG label (E002: judge / one-green / no-green-repair; a promoted
+    # keep may name others, e.g. E007's review-keep / review-repair). Labels are harness
+    # constants; anything that is not a short lowercase slug is "other".
+    return branch if re.fullmatch(r"[a-z][a-z0-9-]{0,31}", branch) else "other"
 
 
 def stats(pairs, arm, pool):
@@ -233,8 +236,11 @@ def stats(pairs, arm, pool):
                             "judge-branch with no hidden-passing green"] += 1
                 elif branch == "one-green":
                     buckets["one-green fails hidden"] += 1
-                else:
+                elif branch in ("no-green-repair", "unknown", "other") or not greens:
                     buckets["no green"] += 1
+                else:
+                    buckets[f"{branch}: a hidden-passing green existed" if green_hidden else
+                            f"{branch}: no hidden-passing green"] += 1
                 result = scored.get(task)
                 kind = ("missing" if result is None else "timeout" if result.get("timed_out") else
                         "compile" if not result.get("compiled") else "partial")

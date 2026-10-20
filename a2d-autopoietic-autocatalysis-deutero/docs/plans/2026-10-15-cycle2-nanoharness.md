@@ -4,6 +4,7 @@
 **Status:** Active
 **Goal:** the session `/goal` of 2026-10-15 ("A²D cycle 2"). This plan is its working form.
 **Reviewed:** 2026-10-16, proposer-comparison protocol (Codex `gpt-6.1-sol` high + fresh Claude subagent; dispositions in the 2026-10-16 Addendum). 2026-10-15, design review before the first live run (Codex `gpt-6.1-sol` high, fresh Claude subagent; copies-only dirs). Dispositions in the Addendum.
+**Addendum:** 2026-10-20 — phase-B stats script: branch labels generalised for a promoted incumbent (see protocol v2, informed context); before any phase-B proposal.
 **Addendum:** 2026-10-15 — **design review dispositions and definitions** (all accepted unless noted):
 - **Evaluator integrity** (`nano/eval.py` v2.1):
   - experiments are immutable, with a manifest of code, controller and suite hashes, and the frozen snapshot is what gets promoted;
@@ -59,6 +60,7 @@
     - the protocol, guard and rules;
     - `results.tsv` rows: everything before phase B, plus the informed arm's own earlier rounds, never the other arm's;
     - the incumbent's failure aggregates from a frozen stats script (C2-FA-style: branches, any-pass curve, failure kinds);
+      - *Addendum 2026-10-20, before any phase-B proposal:* the script named only E002's DIAG branches. A promoted keep (e.g. E007: review-keep / review-repair) would have shown every task as "other" and every failure as "no green". Branch labels now pass through (lowercase slugs only, else "other"). A failure on a non-E002 branch with public-green samples is bucketed by whether one of them passed hidden tests, the same split E002's judge bucket uses. Output for an E002 incumbent is unchanged (test added). This is a label generalisation for the actual incumbent, not new information.
     - up to 8 failure dossiers (train-label rule, as in `a2d distill`): what the coder saw (requirements and public tests), the submitted file, and the label "fails at least one hidden test". Never hidden content or counts.
       - Dossiers come only from families **outside** that round's evaluation set, drawn from the incumbent's two full dev runs by a seeded rule (sha256 of the round id), not by the operator.
   - **Uninformed context:** the incumbent, v0, the protocol, guard and rules, and the titles of its own earlier proposals (to avoid repeats), without outcomes.

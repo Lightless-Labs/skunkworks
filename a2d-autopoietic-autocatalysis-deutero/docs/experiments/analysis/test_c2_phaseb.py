@@ -356,6 +356,18 @@ class StatsAndRoundTests(Fixtures):
         self.assertNotIn("task-", json.dumps(result))
         self.assertNotIn("family-", json.dumps(result))
 
+    def test_stats_names_a_promoted_incumbents_own_branches(self):
+        # E007's DIAG branches (review-keep / review-repair) are not E002's; they keep their
+        # label, and failures are bucketed by whether a hidden-passing green existed.
+        run, _, pool = self.run_fixture(branch="review-repair")
+        for sample in list(pool):
+            pool.append({**sample, "inv": "inv01", "hidden": {"ok": True}})
+        result = pc.stats([(run, self.suite)], "X:cand", pool)
+        self.assertEqual(result["branch_counts"], {"review-repair": 12})
+        self.assertEqual(result["failure_buckets"], {"review-repair: a hidden-passing green existed": 12})
+        weird, _, _ = self.run_fixture(name="weird", branch="Task 7/../x")
+        self.assertEqual(pc.branch_of(weird, "X:cand", "task-0"), "other")
+
     def test_missing_scores_and_voids_count_as_failures(self):
         run, rows, _ = self.run_fixture(results={"task-0": True, "task-1": True})
         rows = [row for row in rows if not (row["kind"] == "score" and row["task"] == "task-0")]
