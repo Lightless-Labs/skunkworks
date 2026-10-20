@@ -1783,3 +1783,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **L21 `confirm_best`** chose E007 (the largest Δ) and was **deferred by the cap**: Luna today 1,673, plus the confirmation's worst case of 1,400, exceeds 3,000.
   - The queue waits until 00:05 UTC 10-21 (L22). L28 then confirms E007.
   - If E007 is discarded, L29 confirms the next keep: E010, ahead of E005 on the smaller SE. At most 2 confirmations.
+
+### C2-FA3 — which tasks the batch keeps gain on (dev data only, offline)  [cycle 2, 2026-10-20 07:30 UTC]
+- Source: per-task hidden all-pass in each experiment's full stage (screen + rest, 140 tasks); X:cand vs that run's own X:inc (E002) arm.
+- **Gains are mostly on different tasks:**
+  - gains / losses: E005 12 / 5, E007 13 / 3, E010 11 / 4;
+  - pairwise overlap of gains: 3 for every pair, unions 20–22.
+  - E002's own arm ranges 116–120 across these replicates, so much of the per-task flipping is sampling noise.
+- **The harder signal is the hard core:** 11 tasks that E002 failed in all four of its in-run replicates. Solved by: E007 6, E010 4, E005 3, E006 3; any of E005/E007/E010: 9 of 11.
+  - **E007 (Sol defect list + Luna repair)** alone solves rational-matrix l2, l3 and l4 and rate-sched-l4. These are defects that every draft repeats and that a targeted critique fixes.
+  - **The reading-diversity levers** (E005 angles, E006 spec notes, E010 hedges) are the ones that solve cron-next l2 and l3. These are misreadings that a second reading fixes.
+  - Unsolved by all: semver l3 and l4.
+- **Reading:** reading diversity and defect-directed repair act on different failure classes. E007 and E010 together cover 8 of the 11.
+- **Next proposal (mine, for after phase B; not registered):** E007's three drafts written in E010's two-file format (A plus a hedge), then E007's Sol pick and defect list and one Luna repair. Same 5-call budget. It cannot enter confirmation-3, whose candidate is fixed at T. Phase B's informed brief reads `results.tsv` and the failure stats, not this LOG, so the proposer comparison is unaffected.
