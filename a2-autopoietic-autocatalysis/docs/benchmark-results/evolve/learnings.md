@@ -1,6 +1,6 @@
 # What the loop has learned (living document)
 
-**Status:** interim, as of exp-0009 (2026-10-20). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
+**Status:** interim, as of exp-0009 plus the exp-0010 evaluator finding (2026-10-20). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
 
 ## Campaign so far
 
@@ -31,6 +31,8 @@
    - an experiment that reaches stage B costs 75–90 M tokens and 6–13 h.
 
    Twenty-two experiments are likely to total 0.6–1 B tokens (337 M after 8).
+8. **Reproduce-first stalls because the agent cannot run anything.** exp-0010's first call asked for a reproduction and no fix. Agents reported that they could not run one: "`ansible-test` requires Python 3.11–3.13, but only Python 3.9.6 is available; `pytest` and `pexpect` are also missing". In 34 of 36 first calls they made no edits at all. This is the most direct evidence yet for the in-call verifier as the next genome (below).
+9. **The loop's own evaluator had a scoring hole, which exp-0010 exposed.** a2ctl reports `tokens=0` for timeouts and no-edit calls. The evaluator read every zero-token call as a provider error, so these agent failures got a free retry, and were dropped from scoring when the retry also failed. A genome that timed out or stalled on hard tasks would have had those tasks excluded. exp-0010 hit the hole rather than exploiting it: 17 of its 19 screen rows were flagged and the infra guard stalled the loop. The classifier now reads the call logs (protocol-v2 `[addendum_2026_10_20]`, noise-floor addendum 2026-10-20). exp-0001 to exp-0009 were decided under the old classifier. Both sides got the free retries, and those decisions stand.
 
 ## Working hypotheses for the next genome, if nothing is promoted
 
