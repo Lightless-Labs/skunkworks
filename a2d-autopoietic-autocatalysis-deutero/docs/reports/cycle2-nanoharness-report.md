@@ -56,12 +56,12 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 | E002 / E002b | claude | v0 → 4 Luna samples + 1 Sol judge over distinct public-green files | **KEEP:** screen +11.8, full +10.7 (SE 2.9), fresh confirm +7.1 (SE 3.5) pp all-pass vs v0 = D |
 | E003 / E003b | claude | same 4 samples, random green pick (attribution control) | discard (full): −1.4 pp. **The judge is the active ingredient.** |
 | E004 | claude | repair to green, then sample + judge | screen +4.4 pp; superseded by E002's promotion |
-| E005 | claude | samples 2–4 get different "Approach" angles | provisional keep (full): +5.0 pp (SE 2.8) vs E002; **[pending confirmation]** |
+| E005 | claude | samples 2–4 get different "Approach" angles | provisional keep (full): +5.0 pp (SE 2.8) vs E002; not confirmed (E007 promoted first; at most 2 confirmations) |
 | E006 | claude | Sol spec notes before 3 samples | discard (full): screen +2.9 pp, full +2.9 pp (SE 2.4), below the 3.6 pp threshold |
-| E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | provisional keep (full): +7.1 pp (SE 3.2) vs E002, with fewer Luna calls (3.4 vs 4.1 per task); **[pending confirmation]** |
+| E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | **KEEP, promoted 10-20:** full +7.1 pp (SE 3.2), fresh confirm **+17.1 pp (SE 4.0)**, 137/140 vs 113/140 (discordant 24 vs 0) vs E002, with fewer Luna calls (3.3–3.4 vs 4.0–4.1 per task) |
 | E008 | sol | 4th sample becomes a synthesis | discard (screen): +0.0 pp (SE 2.9) |
 | E009 | claude-c1 | task-agnostic failure-class checklist | discard (screen): −2.9 pp (SE 2.9); hidden fraction −1.8 pp |
-| E010 | claude-c1 | two readings per Luna call (A = most likely, B = hedge on the least certain points) | provisional keep (full): +5.0 pp (SE 2.6) vs E002, same calls; the judge picked a B file in 5 of the first 11 tasks; **[pending confirmation]** |
+| E010 | claude-c1 | two readings per Luna call (A = most likely, B = hedge on the least certain points) | provisional keep (full): +5.0 pp (SE 2.6) vs E002, same calls; the judge picked a B file in 5 of the first 11 tasks; not confirmed (E007 promoted first) |
 
 - **Where E002 still fails (C2-FA1):** the judge never picked a failing file when a passing green existed (0 misses in 249). All-pass equals its own any-pass ceiling (0.857), so **the bottleneck moved from selection to generation:** shared misreadings defeat any selector.
   - The C2-FA2 taxonomy (Claude, train labels only) guided E005, E006, E009 and E010.

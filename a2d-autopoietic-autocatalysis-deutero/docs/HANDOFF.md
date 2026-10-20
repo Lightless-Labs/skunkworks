@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-20 07:10 UTC (session 145, cont.: **batch done to full**: E009 discarded at screen (−2.9 pp), **E010 provisional keep (+5.0 pp, SE 2.6)**; E007's confirmation (`confirm_best`, L21) was cap-deferred to 10-21 (L28). Confirmation-3: a cwd-collision bug in the provider found and fixed before registration (plan §0.14; branch ≥ 73bc99ee); the registration predicates are all true on the merged branch.)
+**Last updated:** 2026-10-20 16:20 UTC (session 145, cont.: **E007 PROMOTED**. Its confirmation, launched early at the owner's request, gave +17.1 pp all-pass (SE 4.0), 137/140 vs E002's 113/140. A/A rebuilt from E007's replicates. **Look 2 is armed for 00:05 UTC 10-21** (detached, pid 13208); if it passes, E007 is the confirmation-3 candidate. Confirmation-3's provider fix and pre-check are done (plan §0.14).)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -23,7 +23,15 @@
 - **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
-0. **State, 10-20 07:10 UTC (read first):**
+0. **State, 10-20 16:20 UTC (read first; supersedes the 07:10 block below):**
+   - **Incumbent = E007** (Sol-directed repair). Promoted 15:56 UTC on its confirmation: +17.1 pp all-pass (SE 4.0) vs E002, discordant 24 vs 0. `nano/harness.py` = `runs/c2-E007/candidate.py`; `nano/aa.json` was rebuilt from E007's replicates. The batch's confirmation step is done; E005 and E010 stay unconfirmed provisional keeps.
+   - **Look 2:** a detached job (pid 13208, `~/.a2d-queue/look2-early.out`) runs the L38 line (`look_if_promoted.py`) at ≥ 00:05 UTC 10-21, taking about 3 h. Only `runs/c2-look2/gate.json` reaches the repo. PASS ⇒ the confirmation-3 candidate is E007, with the E007 entry of `c3_wording.json`; FAIL ⇒ E002.
+   - **After look 2:**
+     1. Merge `c2-web-provider` (≥ ecbb9611) into main, build, run the tests, log it.
+     2. Phase B from E007. Pools are done (`runs/2026-10-20-c2-e007-pool/`, screen + rest + confirm). Then stats with `--runs` screen=S, rest=R, confirm=`tasks/train-all`, then dossiers, `propose` and `round` (steps below).
+   - **Queue (pid 7116):** L23–L29 at 00:05 are no-ops after the promotion (E-resumes fail on the new aa.json by design; `confirm_best` says already promoted). L30 holds until 10-22; L38 and L40 will print "already attempted".
+   - **Luna:** about 2,705 today (10-20); about 11.2k left of 25k.
+0. **State, 10-20 07:10 UTC:**
    - **Batch E005–E010 vs E002 is complete to full.** Provisional keeps: E007 +7.1 (SE 3.2), E010 +5.0 (SE 2.6), E005 +5.0 (SE 2.8). Discards: E006 (full), E008 and E009 (screen).
    - **Queue (runner pid 7116, alive):** waits at L22 until 00:05 UTC 10-21.
      - L23–L27 are no-op resumes. L28 `confirm_best` runs E007's confirmation (worst case 1,400 Luna; deferred on 10-20 at 1,673 + 1,400 > 3,000).
