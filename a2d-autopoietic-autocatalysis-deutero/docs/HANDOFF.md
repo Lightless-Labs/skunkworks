@@ -30,6 +30,15 @@
      - If E007 is discarded, L29 confirms E010 (tie with E005 broken by the smaller SE). At most 2 confirmations.
      - L36 and L37 (10-22) repeat as needed. L38 and L40: `look_if_promoted` runs look 2 by T = 10-23 23:59 UTC if a keep was promoted.
    - **After a promotion:** `python3 -I nano/eval.py aa-from-replicates --id <id>`, then phase B from that incumbent (`c2_phaseb.py`, by hand). The 3-keep trigger has fired; phase B still waits for the confirmation step.
+   - **Phase-B kickoff, by hand.** Order: the batch confirmation step, then look 2, then the provider merge and rebuild, then round 1.
+     1. Pools: `python3 -I docs/experiments/analysis/candidate_pool.py <suite> <out.json> <run>` for each of the incumbent's screen, rest and confirm runs.
+        - E007's screen and rest pools are done (`runs/2026-10-20-c2-e007-pool/`); E002's are in `runs/2026-10-16-c2-e002-pool/`.
+        - If E010 is the incumbent, the pool must score both files of each reply. Add an opt-in all-blocks mode that mirrors E010's `parse_files` before scoring.
+     2. `c2_phaseb.py stats --runs <screen>=<S> <rest>=<R> <confirm>=tasks/train-all --pool … --arm X:cand --out runs/c2-pc/round1/stats.json`.
+     3. `dossiers … --round 1 --max 8`.
+     4. `propose` for both arms.
+     5. `round --round 1`.
+     - The driver pattern is in the smoke (LOG 10-17). Stats now name the incumbent's own branches (ee9453ff).
    - **Confirmation-3:**
      - The provider branch head is ≥ 73bc99ee. It holds the cwd fix (36bea1e1) and controls re-run complete at that head, and main was merged into it at ecbb9611.
      - On the merged tree all registration predicates are true (LOG 10-20 01:15).
