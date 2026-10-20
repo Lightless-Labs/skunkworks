@@ -1,0 +1,91 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..e3b2b61
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For tasks without a visible pass, contrasting only the two latest verifier runs by persistent failures, new regressions, and recovered checks will guide fresh retries better than last-run-only feedback by showing both unresolved behavior and what improved.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..6aa139c 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -7,6 +7,7 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+@@ -35,7 +36,59 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def _test_key(test: dict):
++    if "name" in test:
++        return str(test["name"])
++    if "index" in test:
++        return str(test["index"])
++    return None
++
++
++def render_comparison(previous: dict, current: dict) -> str:
++    previous_tests = previous.get("tests", [])
++    current_tests = current.get("tests", [])
++    previous_by_key = {
++        _test_key(test): test
++        for test in previous_tests
++        if _test_key(test) is not None
++    }
++    current_by_key = {
++        _test_key(test): test
++        for test in current_tests
++        if _test_key(test) is not None
++    }
++    if not previous_by_key or not current_by_key:
++        return ""
++
++    previous_passes = sum(test.get("outcome") == "pass" for test in previous_tests)
++    current_passes = sum(test.get("outcome") == "pass" for test in current_tests)
++    previous_failures = {
++        key for key, test in previous_by_key.items() if test.get("outcome") != "pass"
++    }
++    current_failures = {
++        key for key, test in current_by_key.items() if test.get("outcome") != "pass"
++    }
++
++    lines = [
++        "\n\nComparison with the immediately previous verifier run:",
++        f"Visible checks passed: {previous_passes} -> {current_passes}.",
++    ]
++    persistent = sorted(previous_failures & current_failures)
++    new_failures = sorted(current_failures - previous_failures)
++    recovered = sorted(
++        key for key in previous_failures
++        if current_by_key.get(key, {}).get("outcome") == "pass"
++    )
++    if persistent:
++        lines.append("Still failing: " + ", ".join(persistent))
++    if new_failures:
++        lines.append("Newly failing: " + ", ".join(new_failures))
++    if recovered:
++        lines.append("Previously failing and now passing: " + ", ".join(recovered))
++    return "\n".join(lines)
++
++
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+@@ -45,6 +98,10 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+         prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
++        if len(candidates) > 1:
++            prompt += render_comparison(
++                candidates[-2].get("verify", {}), last.get("verify", {})
++            )
+         return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
