@@ -1825,3 +1825,22 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Its dry check now prints the registered command (`eval.py look --n 2 --registered-at 98672c36… --seed 6262 --jobs 8`). Every precondition holds: E007 promoted, harness = snapshot, never attempted, before T.
   - Main's crates are unchanged since the registration commit, so the controller accepts it.
   - Overnight queue: L23–L29 spend no Luna after the promotion, and L30 holds until 10-22, so look 2 has the day alone. L38 and L40 will then print "already attempted".
+
+### Phase B (proposer comparison, protocol v2) — round 1 proposals  [cycle 2, 2026-10-20 16:30–17:10 UTC; incumbent E007, frozen]
+- **Trigger:** the batch's confirmation step is done (E007 promoted, at most 2 confirmations), and the ≥ 3-keep trigger fired. `propose` froze the incumbent: `runs/c2-pc/incumbent.py` = E007 (c1e3e897…), with v0 = D.
+- **Inputs (offline):**
+  - quarter 1 (seed `A2D-C2-PC-1`);
+  - stats from E007's three runs (screen, rest, confirm) and their sandboxed pools: 280 task-runs, all-pass 0.954; branches review-keep 184 and review-repair 96; failures 10 "review-repair: no hidden-passing green" and 3 "no green";
+  - 7 dossiers, from families outside quarter 1.
+  - Brief sizes: informed 236k chars (mostly the dossiers), uninformed 14k. The shared head is identical. The forbidden-context assertion passed, and there is no holdout or look mention.
+- **Informed (Sol high): `repair-contracts`**, valid after one re-ask.
+  - Only the reviewer prompt changes: each defect becomes a contract (Requirement, Witness, Cause, Plan, Verify).
+  - Its own estimate: +2 to 4 pp.
+- **Uninformed (Sol high): `high-effort-review`**, valid.
+  - Only the judge lane's effort changes, medium → high.
+  - Its own estimate: +5 pp.
+- **First prompts read** (1-task smokes, bigint-arith-l1):
+  - informed: inv00–02 are E007's Luna draft prompts; inv03, the Sol judge prompt, carries the repair-contract instructions;
+  - uninformed: the judge lane was passed as `codex/gpt-6.1-sol:high`.
+  - **As designed.**
+- **Round 1 evaluation** (X:inc, X:inf, X:uninf on quarter 1, about 0.43k Luna) runs after look 2 and the provider merge (10-21).
