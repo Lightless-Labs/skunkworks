@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-10-17
+**Last updated:** 2026-10-20
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -9,10 +9,10 @@ A² (Autopoietic Autocatalysis) is intended to become an autonomous software fac
 
 The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.md`](plans/2026-07-10-a2-remediation-roadmap.md). Follow its phase order and stop/go gates before making further maturity, autonomy, or external-value claims.
 
-**Status (2026-10-17):** maturity `PreStage0`; `--apply` locked. E1: **NO GO** for the lineage loop ([decision](benchmark-results/external-value/e1/decision.md), [post-mortem](post-mortems/2026-10-15-a2-first-cycle.md)).
+**Status (2026-10-20):** maturity `PreStage0`; `--apply` locked. E1: **NO GO** for the lineage loop ([decision](benchmark-results/external-value/e1/decision.md), [post-mortem](post-mortems/2026-10-15-a2-first-cycle.md)).
 - **Active plan:** [harness-evolution loop](plans/2026-10-15-harness-evolution-loop.md). A researcher (Codex gpt-6-luna) evolves `genome/` against the frozen evaluator `bench/evolve/` (`evaluator.lock`). The keep/discard rule and thresholds are in the [noise floor](benchmark-results/evolve/noise-floor.md). The sealed pool is openlibrary only ([blocker](blockers/2026-10-16-qutebrowser-native-gate.md)).
-- **Log:** [`log.jsonl`](benchmark-results/evolve/log.jsonl). Nine discards so far (exp-0001 to exp-0009); three repair variants reached stage B (best p = 0.10), each +2 to +3 on the full pool. Running analysis: [`learnings.md`](benchmark-results/evolve/learnings.md).
-- **Running:** the unattended loop to 22 experiments, on evaluator `63404eaa` (stream-confirmed passes, rename and binary audit; the dev pool gates 44/44). It resumes with `python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 6 --max-experiments 22 --nightly-token-cap 600000000`.
+- **Log:** [`log.jsonl`](benchmark-results/evolve/log.jsonl). Nine discards so far (exp-0001 to exp-0009); three repair variants reached stage B (best p = 0.10), each +2 to +3 on the full pool. exp-0010 exposed an infra-classification bug, now fixed (noise-floor addendum 2026-10-20). Running analysis: [`learnings.md`](benchmark-results/evolve/learnings.md).
+- **Running:** the unattended loop to 22 experiments, on evaluator `99fac147` (stream-confirmed passes, rename and binary audit, log-aware infra classification; the dev pool gates 44/44). It resumes with `python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 6 --max-experiments 22 --nightly-token-cap 600000000`.
 - **Next:** sealed pool re-gated 46/46 under the strict grader (protocol-v2 addendum 2026-10-17). Remaining: the pre-confirmation checklist (plan §7 addendum), then the confirmation, 2026-12-01..10.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
