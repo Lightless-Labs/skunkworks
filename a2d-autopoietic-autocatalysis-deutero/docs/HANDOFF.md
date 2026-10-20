@@ -33,7 +33,7 @@
    - **Phase-B kickoff, by hand.** Order: the batch confirmation step, then look 2, then the provider merge and rebuild, then round 1.
      1. Pools: `python3 -I docs/experiments/analysis/candidate_pool.py <suite> <out.json> <run>` for each of the incumbent's screen, rest and confirm runs.
         - E007's screen and rest pools are done (`runs/2026-10-20-c2-e007-pool/`); E002's are in `runs/2026-10-16-c2-e002-pool/`.
-        - If E010 is the incumbent, the pool must score both files of each reply. Add an opt-in all-blocks mode that mirrors E010's `parse_files` before scoring.
+        - If E010 is the incumbent, score with `candidate_pool.py --all-blocks` (both files of each reply). E010's screen and rest pools are done (`runs/2026-10-20-c2-e010-pool/`).
      2. `c2_phaseb.py stats --runs <screen>=<S> <rest>=<R> <confirm>=tasks/train-all --pool … --arm X:cand --out runs/c2-pc/round1/stats.json`.
      3. `dossiers … --round 1 --max 8`.
      4. `propose` for both arms.
