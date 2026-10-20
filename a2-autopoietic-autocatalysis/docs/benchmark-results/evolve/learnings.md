@@ -1,6 +1,6 @@
 # What the loop has learned (living document)
 
-**Status:** interim, as of exp-0009 plus the exp-0010 evaluator finding (2026-10-20). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
+**Status:** interim, as of exp-0011 (2026-10-20). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
 
 ## Campaign so far
 
@@ -15,6 +15,8 @@
 | 0007 | aggregate failures and regressions across fresh retries | never visible-pass | −1.18 | — | — | 18 M | discard (A) |
 | 0008 | repair only partial-pass candidates, fresh restart after zero-pass | never visible-pass | +1.33 | +1.83 (0.17) | +2.33 | 86 M | discard (B) |
 | 0009 | plan-only call, then implement from the plan | never visible-pass | −0.66 | — | — | 18 M | discard (A) |
+| 0010 | reproduce-only first call, then fix | never visible-pass | +0.41 | — | — | 16 M | discard (A) |
+| 0011 | low-effort fresh 2nd attempt, then configured effort | never visible-pass | −0.59 | — | — | 18 M | discard (A) |
 
 ## Observations
 
@@ -24,14 +26,14 @@
 2. **Repairing from the candidate is the only family with a repeated positive signal.** exp-0002 and exp-0003 were each +3 on the full pool. exp-0002 reached p = 0.10 at stage B. That is consistent with a real effect smaller than the rule can see: P(keep) is 0.40 at +1 logit per task and 0.12 at +0.5. It is not evidence of an effect, and the rule stands. exp-0008, a third repair variant (repair only when the candidate passes at least one visible test), again landed in the same place: +2.33 on the full pool, p = 0.17 at stage B. Three repair variants, all positive on the full pool (+3, +3, +2.33) and none significant, is the clearest pattern so far. It suggests a real effect of about 2–3 tasks in 44, which the per-experiment rule cannot detect. The rule stands for this campaign. Whether to pool across a family, or run a larger stage B for a family that keeps landing positive, is a design question for the next campaign.
 3. **The first move into the other failure mode did not clear the screen.** exp-0005 reviewed and repaired candidates that already passed the visible tests. That failure mode covers only 5 of 44 tasks, so even a perfect fix has little headroom on S.
 4. **Selecting by visible score across fresh attempts did not help** (exp-0001, −1). Visible-test partial credit is a weak proxy for hidden resolution.
-5. **Eight of the nine hypotheses tune call sequencing or how feedback is routed between calls.** These include best-of-n, repair versus restart, effort mix and failure aggregation. None changes what the agent does inside a call. `program.md` lists plan-then-execute and reproduce-then-fix. exp-0009 tried plan-then-execute and lost ground (−0.66): giving a whole call to planning leaves only two calls to implement and repair. Reproduce-then-fix has not been tried. This is the main input to the "next genome" section below.
-6. **Lowering effort hurt** (exp-0006, −0.83). Effort diversity is not a cheap source of variance worth exploiting.
+5. **Ten of the eleven hypotheses tune call sequencing or how feedback is routed between calls.** These include best-of-n, repair versus restart, effort mix and failure aggregation. None changes what the agent does inside a call. `program.md` lists plan-then-execute and reproduce-then-fix. exp-0009 tried plan-then-execute and lost ground (−0.66): giving a whole call to planning leaves only two calls to implement and repair. exp-0010 tried reproduce-then-fix under the fixed classifier and landed at +0.41, below the screen bar (item 8 explains why). This is the main input to the "next genome" section below.
+6. **Lowering effort hurt, twice.** exp-0006 (medium-effort 2nd attempt) was −0.83 and exp-0011 (low-effort 2nd attempt) was −0.59. exp-0011 is the first near-repeat of a refuted direction: the same call shape with a lower effort. The researcher may be running out of ideas inside the current search space. That is more evidence for widening the genome (below).
 7. **Cost shape:**
    - a stage-A discard costs about 17–20 M tokens and 1–2 h;
    - an experiment that reaches stage B costs 75–90 M tokens and 6–13 h.
 
-   Twenty-two experiments are likely to total 0.6–1 B tokens (337 M after 8).
-8. **Reproduce-first stalls because the agent cannot run anything.** exp-0010's first call asked for a reproduction and no fix. Agents reported that they could not run one: "`ansible-test` requires Python 3.11–3.13, but only Python 3.9.6 is available; `pytest` and `pexpect` are also missing". In 34 of 36 first calls they made no edits at all. This is the most direct evidence yet for the in-call verifier as the next genome (below).
+   Twenty-two experiments are likely to total 0.6–1 B tokens (about 390 M after 11).
+8. **Reproduce-first stalls because the agent cannot run anything.** exp-0010's first call asked for a reproduction and no fix. Agents reported that they could not run one: "`ansible-test` requires Python 3.11–3.13, but only Python 3.9.6 is available; `pytest` and `pexpect` are also missing". In 34 of 36 first calls they made no edits at all. Under the fixed classifier the re-run scored those stalls as failures and still reached +0.41, because the two remaining calls recovered most tasks. This is the most direct evidence yet for the in-call verifier as the next genome (below).
 9. **The loop's own evaluator had a scoring hole, which exp-0010 exposed.** a2ctl reports `tokens=0` for timeouts and no-edit calls. The evaluator read every zero-token call as a provider error, so these agent failures got a free retry, and were dropped from scoring when the retry also failed. A genome that timed out or stalled on hard tasks would have had those tasks excluded. exp-0010 hit the hole rather than exploiting it: 17 of its 19 screen rows were flagged and the infra guard stalled the loop. The classifier now reads the call logs (protocol-v2 `[addendum_2026_10_20]`, noise-floor addendum 2026-10-20). exp-0001 to exp-0009 were decided under the old classifier. Both sides got the free retries, and those decisions stand.
 
 ## Working hypotheses for the next genome, if nothing is promoted
