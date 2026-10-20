@@ -38,8 +38,11 @@ Confirmation-3 voids a `(task, arm, replicate)` tuple when any invocation has a 
 - **A live probe catches what unit tests don't.** One of three forced 12 s timeouts was killed before Codex emitted `thread.started` (cold start). That is still a valid transcript: an empty stream has zero events. The first version of the live test asserted an event and failed.
 - **Test prompts embed libtest's `finished in 0.30s`.** A parity test comparing two runs' prompts flaked under load. Normalise durations, just as the test already masked temp paths, module names and thread ids.
 - **Don't let a "missing artifact → void" rule meet a recorder that only writes on success.** Check the recorder's error paths before freezing such a rule.
+- **Pre-spawn failures have no transcript at all** (2026-10-20). Codex never started, so there was nothing to capture. In the confirmation-3 audit, 4 such calls voided 4 tuples. They were 2 pairs of calls starting in the same microsecond: macOS clocks have microsecond resolution, and the cwd was named `<pid>-<nanos>` and created with `create_dir_all`, so the pair shared a cwd and a CODEX_HOME. Fix: a per-process sequence in the name, and `create_dir` (fail closed). A thread-barrier regression test reproduces the collision.
 
 ## Practice
 - For every integrity rule that keys on an artifact, ask **when the artifact is not written**, and make that path either write it or be impossible.
 - An audit trail that is complete only on success is biased: failures cluster where the most calls are made.
 - When a structured output mode replaces a text one, re-check every check that parsed the text: banners, markers and line formats.
+- Never name a per-call scratch directory by clock and pid alone, and never create it with a call that tolerates an existing directory. Under concurrency, uniqueness must come from a counter or a random suffix, and an existing directory must be an error.
+- Classify "no information" voids by fixed labels before re-running them. A re-run that succeeds hides an instrument fault that will recur at random in the spend.

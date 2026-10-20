@@ -1726,3 +1726,37 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Repair and re-validation** (14:06–14:22 UTC): c3-f13 was repaired in round 1 (exit 0, 0 events, 0 flags, ok). After re-assembly, 36 families and 144 tasks; similarity clean again (max 0.04, 0 conflicts). **Re-validation: 144 of 144 accepted.**
   - **Confirmation-3's suite is built.** What remains of step 5 is the independent-solve audit and adjudication. Both wait for the provider merge (after L37 on 10-22, and after look 2 is done or T has passed).
   - STOP is set only after adjudication: the drain check that precedes the replicates requires it, but STOP would also refuse the adjudication jobs.
+- **Step-5 audit started early from the provider branch** (14:47 UTC; disclosed in plan §0.13).
+  - `main` was merged into `c2-web-provider` (2830f5ba: main's tooling plus the reviewed provider, differing from main only in `crates/`). `a2d` was built in the worktree, and `detached.sh c3_audit.py` was launched from there. It runs the canary preflight on the Sol solver lane, then the k = 3 Sol solve of all 144 tasks.
+  - Main keeps its binary for the queue and look 2. Main merges the same branch commit after L37 and look 2 or T.
+  - **Controls:** the first recorded run was incomplete. On Luna, the sub-agent prompt was answered directly (no `collab_tool_call`), after producing one in the earlier trial. A positive control tests the detector, not the model's propensity, so each kind now retries up to 3 times, with attempts recorded (d3498243 on the branch, c665d3db on main). Re-run in progress.
+- **Detector controls recorded, complete** (14:59 UTC, branch 3ca9102b, `runs/c2-confirm3/controls.json`): on Luna low and Sol medium, shell, web search, file change, MCP, sub-agent and error each detected on the first attempt, with the negative control at 0.
+  - The 14:48 run had been incomplete: Sol medium answered "spawn a sub-agent to compute 2+2" directly 3 times. The prompt now requires delegation (0f6d140f).
+- **Audit** (run 1, head 2830f5ba, codex fingerprint recorded): the preflight passed, and the 144-task Sol solve is running.
+- **Audit round 1** (14:47–15:31 UTC, Sol medium, k = 3, run 1 at 2830f5ba): of 144 tasks, **139 solved** by the independent solve, 1 failed (c3-f16-l1) and 4 void (no information; each gets its one re-audit).
+- **Adjudication** (15:32, one Sol high job, blind): c3-f16-l1's failing test was judged UNDERDETERMINED and **repaired, requirements only** (hidden tests untouched); none excluded. Re-assembly gave 144 tasks; similarity clean (max 0.04, 0 conflicts). Re-validation is running, then audit round 2 (the repaired task plus the 4 voids).
+- **Re-validation** 144/144 (15:48). **Audit round 2** (15:49–15:54, run 2 at 3ca9102b): the repaired task and the 4 round-1 voids were **all solved** (5/5, 0 void).
+- **Step 5 complete; the suite is certified.** All 144 tasks (36 families × 4) were solved by the independent blind Sol audit.
+  - 1 was repaired (requirements only); 0 were excluded.
+  - Both audit runs are bound to the provider (bc6922f7 in their heads) and the codex fingerprint, with their brackets held.
+  - The generator's `certified()` is True on the live records.
+- **Authoring pipeline stopped** (STOP set, 15:57). The §0.10 drain check passes, relocation evidence included.
+- **What remains before the spend:**
+  - main's provider merge, after L37 (10-22) and after look 2 is done or T has passed;
+  - the candidate, at T or at look 2's result;
+  - `c3_registration.py`, then the full review (Sol plus a fresh Claude) on `registration.json`, then the commit;
+  - the spend at or after 10-24, on the day after the registration's day.
+
+### Queue resumed 10-20; E009 first prompts read  [cycle 2, 2026-10-20 00:05–00:20 UTC]
+- At 00:05 UTC, L16–L18 re-reported the stored results without new calls: E006 discarded on the full set, E007 a provisional keep, E008 discarded at screen. L19 (E009 screen) started at 00:08.
+- **E009 first prompts read** (screen, X:cand, path-normalize-l2, r0, inv00–02). Each prompt has the system line, then the task's requirements, then the public tests, then the 8-point failure checklist (worst-case cost through boundaries and arithmetic), ending cleanly after point 8. No hidden-test text. The first completed response is a single fenced Rust file implementing both clauses. **As designed.**
+- **Infrastructure note:** the first wave of 6 Luna calls (4 X:cand tasks, 2 X:inc tasks), started together at 00:09:33, all timed out at 300 s (00:14:33). Every later call completed in 80–100 s.
+  - Under the protocol, a timeout spends that invocation in either arm, and the A/A threshold was measured with such noise. The run continues unchanged.
+  - The asymmetry (4 candidate tuples vs 2 incumbent tuples lost a first sample) is recorded here in case E009's screen lands near the threshold.
+- **Provider fix before registration: concurrent calls shared a cwd** (00:30–01:10 UTC; plan §0.14).
+  - **Timeouts first.** Across 9,035 dev responses there are 56 timeouts (0.6%), all in three bursts: 10-16 01:23 (38, across concurrent runs), 10-19 11:02 (6) and today's first wave (6). They are API stalls, not tied to the cap reset.
+  - On the provider branch, a timed-out call keeps its partial transcript with the marker. It is a spent invocation, as on dev, not a void. (A line cut off mid-write would still count as a tool event, fail closed.)
+  - **Then the audit ledgers, counts only.** Audit round 1's 4 failed calls were 2 adjacent pairs of first calls, sub-second, without transcripts: one auth.json link failure and one spawn ENOENT per pair. That is two calls in the same microsecond sharing `a2d-provider-<cmd>-<pid>-<nanos>` and so one CODEX_HOME. These were round 1's 4 voids.
+  - **Fixed** on c2-web-provider (36bea1e1): a per-process sequence in the name, plus `create_dir` (fails closed). The regression test failed before the fix and passes after. Controls re-run complete on both lanes at that head (73bc99ee).
+  - `PROVIDER_COMMIT` and certification are unchanged (both check ancestry). Main merges the branch at the scheduled point; the merge target is now ≥ 73bc99ee.
+  - *Learning:* a "no information" void is worth classifying (by fixed labels) before it is re-run away. Here, the re-audit hid an instrument fault that would have voided tuples at random in the spend.

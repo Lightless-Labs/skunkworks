@@ -37,10 +37,13 @@
          - Set STOP (`c3_author.py --stop`) only after adjudication; the drain check before each replicate needs it.
          - **Step 5 waits for the provider merge.** The merge comes after L37 (the batch's confirmation step, 10-22) **and** after look 2 is done or T has passed.
          - At the merge:
-           - merge `c2-web-provider` (bc6922f7; it equals `PROVIDER_COMMIT`) and build;
-           - run `c3_controls.py --lanes <coder + candidate lanes>` and commit `runs/c2-confirm3/controls.json`;
-           - then `detached.sh c3_audit.py`, `c3_adjudicate.py`, and `c3_audit.py` again for round 2.
-         - **Registration:** after T, `c3_registration.py` (dry-run first; it lists any unmet prerequisite), then a full review (Sol plus a fresh Claude) on the written `registration.json`, then commit. Spend ≥ 10-24 via `nano/confirm3.py generate` (queue lines).
+           - merge the `c2-web-provider` head (≥ 73bc99ee: the provider with the cwd-collision fix 36bea1e1, main's tooling and the committed `controls.json` re-run at the fix) and build. Do not re-pin `PROVIDER_COMMIT` (bc6922f7).
+           - Re-run `c3_controls.py` only if the candidate's lanes differ from Luna low and Sol medium.
+         - **Step 5 is done (10-19 15:54): the suite is certified.** Audit round 1 solved 139/144 (1 failure, 4 voids). The failure was adjudicated UNDERDETERMINED and repaired, requirements only. Round 2 solved all 5. `certified()` is True, and the pipeline is stopped and drained.
+         - Only the merge, the candidate (at T), the registration and its review, and the spend remain.
+         - **Registration:** after T, `c3_registration.py` (dry-run first; it lists any unmet prerequisite), then a full review (Sol plus a fresh Claude) on the written `registration.json`, then commit.
+           - The candidate's `--frozen-from`, `--claim-wording` and `--branch-caps` are drafted in `docs/experiments/analysis/c3_wording.json` (E002, E007, E005).
+           - Spend ≥ 10-24, on the day after the registration's day, via `nano/confirm3.py generate` (queue lines).
          - **Early reviews:** 3 rounds; every blocker fixed (plan §0.13). Round 3: the fresh Claude said Yes (with fixes), Sol said No (7, all fixed). The next review is the full one on the registration.
        - **State (10-18 14:40 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.

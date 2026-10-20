@@ -1,0 +1,72 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..710eb48
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For never-visible-pass tasks, repair the strongest candidate only when it passes at least one visible check and restart from fresh after zero-pass attempts, because partial success is useful evidence about which behavior to preserve while zero-pass patches provide a poor repair base.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..ef7c6d1 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""Repair partial visible progress and restart fresh after zero-pass attempts."""
+ 
+ from __future__ import annotations
+ 
+@@ -12,6 +12,11 @@ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++REPAIR_HEADER = (
++    "\n\n---\nA previous candidate passed some visible checks but was rejected by the verifier. "
++    "Continue from that candidate, preserve behavior that already passes, and fix the remaining "
++    "verifier failures. Verifier output from that candidate:\n"
++)
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,6 +40,13 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
++def visible_pass_count(candidate: dict) -> int:
++    return sum(
++        test.get("outcome") == "pass"
++        for test in candidate.get("verify", {}).get("tests", [])
++    )
++
++
+ def choose_action(state: dict, effort: str | None = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+@@ -44,10 +56,24 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+-        return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
++        best = max(candidates, key=lambda candidate: (
++            visible_pass_count(candidate),
++            candidate["index"],
++        ))
++        if visible_pass_count(best) > 0:
++            base = best["index"]
++            feedback_candidate = best
++            header = REPAIR_HEADER
++        else:
++            base = "fresh"
++            feedback_candidate = last
++            header = FEEDBACK_HEADER
++        prompt = state["problem_statement"] + header + render_verify(
++            feedback_candidate.get("verify", {})
++        )
++        return {"agent": {"base": base, "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+-        sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
++        visible_pass_count(candidate),
+         candidate["index"],
+     ))
+     return {"submit": {"candidate": best["index"]}}

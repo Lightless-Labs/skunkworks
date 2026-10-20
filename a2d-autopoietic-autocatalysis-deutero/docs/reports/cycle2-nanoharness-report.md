@@ -59,7 +59,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 | E005 | claude | samples 2–4 get different "Approach" angles | provisional keep (full): +5.0 pp (SE 2.8) vs E002; **[pending confirmation]** |
 | E006 | claude | Sol spec notes before 3 samples | discard (full): screen +2.9 pp, full +2.9 pp (SE 2.4), below the 3.6 pp threshold |
 | E007 | sol | 3 drafts → Sol pick + defect list → Luna repair | provisional keep (full): +7.1 pp (SE 3.2) vs E002, with fewer Luna calls (3.4 vs 4.1 per task); **[pending confirmation]** |
-| E008 | sol | 4th sample becomes a synthesis | **[pending]** (screen running 10-19) |
+| E008 | sol | 4th sample becomes a synthesis | discard (screen): +0.0 pp (SE 2.9) |
 | E009 | claude-c1 | task-agnostic failure-class checklist | **[pending]** |
 | E010 | claude-c1 | two readings per Luna call | **[pending]** |
 
@@ -85,6 +85,34 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - Replicate 2 (10-19, 1,617 invocations, 0 void submissions) ran as registered. Its web audit counted 0 searches, but 11 invocations without a transcript (a failed-call recording gap, fixed for confirmation-3).
   - Scored once (10-19 06:11 UTC). `decision.json` and `pooled-summary.json` are **sealed unread** in the holdout dir (sha256 in `runs/c2-confirm2/sealed-sha256.txt`) until confirmation-3's decision. Then they are reported here, **descriptive only**: **[pending]**.
   - The cause is not examined: that would mean opening the set. The counts are the whole permitted view.
+
+## Confirmation-3 (C2-CONFIRM3): a new blind set after confirmation-2's IntegrityReview
+
+- **Pre-commitment** (plan 2026-10-18-confirmation-3 §0, fixed before confirmation-2's replicate 2 and before any batch confirmation):
+  - 36 new families × 4 = 144 tasks, r = 2, k = 5;
+  - arms D, B and X:frozen, under the same claim rule as confirmation-2;
+  - tuple-level voids, imputed worst-case for SUPPORTED and best-case for RULED OUT, on both the point and the whole-family bootstrap CI;
+  - IntegrityReview above 0.5% tool events per replicate.
+- **Candidate rule (§0.1, no operator choice):** the batch winner iff it is promoted and passes one dev-holdout look by 2026-10-23 23:59 UTC; otherwise E002.
+- **Suite, built 10-19:**
+  - Sol picked 40 briefs, 36 OK after a namecheck.
+  - Authoring ran under a seatbelt profile with a Mach-service allowlist and sandbox-membership reaping, and all 36 families were verified.
+  - Similarity against 1,035 prior tasks: max 0.04, 0 conflicts.
+  - Validation 144/144, after one repair.
+  - An independent blind Sol solve (k = 3) solved 139/144 in round 1. One failure was adjudicated UNDERDETERMINED and repaired, requirements only; round 2 solved the remaining 5. **Certified: 144 tasks, 0 excluded.**
+- **Instrument, hardened before registration** (three early review rounds, Codex Sol plus a fresh Claude, every blocker fixed; plan §0.13):
+  - web search and every tool feature off;
+  - an auth-only CODEX_HOME per call, under the holdout dir;
+  - a `--json` allowlist detector that fails closed, with live positive controls per item type on each lane;
+  - failed-call transcripts;
+  - the codex binary fingerprinted around each replicate;
+  - a canary preflight through the real provider;
+  - registration bound to the commit that added it.
+  - **Disclosed:**
+    - three mid-authoring pipeline fixes;
+    - the audit ran from the provider branch before main's merge;
+    - codex 0.162 injects about 10k chars of bundled skills and multi-agent text that no switch removes, the same in every arm.
+- **Status:** registration after T, then a full review, then the spend at or after 10-24, on the day after registration. **Result: [pending]**
 
 ## Proposer comparison (phase B)
 
