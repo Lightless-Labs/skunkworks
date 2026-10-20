@@ -6,6 +6,7 @@
 **Parent:** `docs/plans/2026-10-15-cycle2-nanoharness.md`, addendum 2026-10-18.
 **Addendum:** 2026-10-18 ~12:00 UTC — §0.12. Sol's second pipeline re-check found 5 startup blockers. A live probe then showed that a *copied* `open` launched an app outside the sandbox. All 5 are closed in code, and one gap in the frozen rules is filled: an authoring-exhausted family is replaced. Still before any selection call.
 **Addendum:** 2026-10-19 ~07:00 UTC — §0.13: the scoring shape (imputation binds the point threshold, as in confirmation-2; a best-case guard on RULED OUT). A failed call has no transcript and so voids its tuple; this is fixed on the provider branch before registration. Written during selection, before any authored content.
+**Addendum:** 2026-10-20 ~01:10 UTC — §0.14: concurrent provider calls could share a cwd and CODEX_HOME (the 4 failed calls behind audit round 1's 4 voids). Fixed on the provider branch (36bea1e1) with a regression test; controls re-run complete at that head (73bc99ee). Before registration; no rule changes.
 **Why:** confirmation-2 ended in IntegrityReview (LOG, 10-18 03:59 UTC: 2 web searches in arm B, replicate 1). Confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs both D and B on its confirmation set) needs a new blind set in the same regime.
 
 ## 0. Pre-commitment (fixed 2026-10-18; binds the registration)
@@ -355,6 +356,19 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
 
 
 - *Answered by the early reviews (2026-10-19): yes; imputed CI guards adopted, see the dispositions above.* Original question: should the CI also be computed under imputation? That would need a `pool --impute` flag in the controller, landing with the ≥ 10-22 merge. Until then the CI is on complete tuples and imputation binds the point threshold, as in confirmation-2.
+
+### 0.14 Addendum: concurrent calls shared a cwd (2026-10-20 ~01:10 UTC, before registration)
+- **Found by** a counts-only look at the step-5 audit ledgers (labels and booleans printed, no content). Audit round 1's 4 failed calls were 2 adjacent pairs. Each pair was the first call of two different tasks, failing in under a second with no transcript: one "failed to link codex auth.json", one "failed to start: No such file". These 4 calls are the 4 round-1 voids.
+- **Cause.** `isolated_provider_cwd` named the call's cwd `a2d-provider-<cmd>-<pid>-<nanos>` and created it with `create_dir_all`. On macOS the clock has microsecond resolution, so two calls starting in the same microsecond shared the cwd and the CODEX_HOME derived from its name. The second call's auth link failed (EEXIST), its cleanup removed the shared directory, and the first call's spawn failed (ENOENT).
+- **Why it matters here.** In a replicate, each such pair voids 2 tuples, and voids are imputed against SUPPORTED (§0.13). At the audit's rate (2 collisions in 148 calls at `--jobs 4`), a `--jobs 8` replicate of about 2,000 calls could void tens of tuples. That is a loss of lift, and possibly a crossing of the 5% Invalid gate, from an instrument fault.
+- **Fix** (c2-web-provider 36bea1e1): a per-process sequence in the directory name, and `create_dir`, so a collision fails closed instead of sharing. The regression test (8 threads × 200 cwds, all distinct) failed before the fix and passes after. Provider and lift tests pass.
+- **Controls** re-run at 36bea1e1 (record committed as 73bc99ee): complete on Luna low and Sol medium, negative control 0 events.
+- **What does not change:**
+  - `PROVIDER_COMMIT` stays bc6922f7, an ancestor of the fix.
+  - The suite stays certified: `audit_instrument_ok` checks ancestry and the codex fingerprint, and the round-1 voids were re-audited and solved in round 2.
+  - Main merges the branch head (≥ 73bc99ee) at the scheduled point, after L37 and after look 2 or T, so the dev batch and look 2 keep main's provider throughout.
+  - The registration's binary sha and the review packet's provider diff carry the fix.
+- **Dev runs on main** have the same naming without a per-call CODEX_HOME. There, a collision can only show up as a spawn failure (0 found in 9,035 dev responses) or as a cwd removed under a running call. This is paired noise that the A/A threshold already includes, and it is left unchanged mid-batch.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.

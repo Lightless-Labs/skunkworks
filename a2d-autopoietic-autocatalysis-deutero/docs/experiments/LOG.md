@@ -1753,3 +1753,10 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Infrastructure note:** the first wave of 6 Luna calls (4 X:cand tasks, 2 X:inc tasks), started together at 00:09:33, all timed out at 300 s (00:14:33). Every later call completed in 80–100 s.
   - Under the protocol, a timeout spends that invocation in either arm, and the A/A threshold was measured with such noise. The run continues unchanged.
   - The asymmetry (4 candidate tuples vs 2 incumbent tuples lost a first sample) is recorded here in case E009's screen lands near the threshold.
+- **Provider fix before registration: concurrent calls shared a cwd** (00:30–01:10 UTC; plan §0.14).
+  - **Timeouts first.** Across 9,035 dev responses there are 56 timeouts (0.6%), all in three bursts: 10-16 01:23 (38, across concurrent runs), 10-19 11:02 (6) and today's first wave (6). They are API stalls, not tied to the cap reset.
+  - On the provider branch, a timed-out call keeps its partial transcript with the marker. It is a spent invocation, as on dev, not a void. (A line cut off mid-write would still count as a tool event, fail closed.)
+  - **Then the audit ledgers, counts only.** Audit round 1's 4 failed calls were 2 adjacent pairs of first calls, sub-second, without transcripts: one auth.json link failure and one spawn ENOENT per pair. That is two calls in the same microsecond sharing `a2d-provider-<cmd>-<pid>-<nanos>` and so one CODEX_HOME. These were round 1's 4 voids.
+  - **Fixed** on c2-web-provider (36bea1e1): a per-process sequence in the name, plus `create_dir` (fails closed). The regression test failed before the fix and passes after. Controls re-run complete on both lanes at that head (73bc99ee).
+  - `PROVIDER_COMMIT` and certification are unchanged (both check ancestry). Main merges the branch at the scheduled point; the merge target is now ≥ 73bc99ee.
+  - *Learning:* a "no information" void is worth classifying (by fixed labels) before it is re-run away. Here, the re-audit hid an instrument fault that would have voided tuples at random in the spend.

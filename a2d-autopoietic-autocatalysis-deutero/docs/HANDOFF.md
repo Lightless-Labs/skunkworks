@@ -37,7 +37,7 @@
          - Set STOP (`c3_author.py --stop`) only after adjudication; the drain check before each replicate needs it.
          - **Step 5 waits for the provider merge.** The merge comes after L37 (the batch's confirmation step, 10-22) **and** after look 2 is done or T has passed.
          - At the merge:
-           - merge the `c2-web-provider` head (≥ 3ca9102b: the provider, main's tooling and the committed `controls.json`) and build. Do not re-pin `PROVIDER_COMMIT` (bc6922f7).
+           - merge the `c2-web-provider` head (≥ 73bc99ee: the provider with the cwd-collision fix 36bea1e1, main's tooling and the committed `controls.json` re-run at the fix) and build. Do not re-pin `PROVIDER_COMMIT` (bc6922f7).
            - Re-run `c3_controls.py` only if the candidate's lanes differ from Luna low and Sol medium.
          - **Step 5 is done (10-19 15:54): the suite is certified.** Audit round 1 solved 139/144 (1 failure, 4 voids). The failure was adjudicated UNDERDETERMINED and repaired, requirements only. Round 2 solved all 5. `certified()` is True, and the pipeline is stopped and drained.
          - Only the merge, the candidate (at T), the registration and its review, and the spend remain.
