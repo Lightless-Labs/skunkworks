@@ -71,8 +71,8 @@
 
      | | Luna |
      |---|---|
-     | Spent, from all cycle-2 ledgers on 10-19 10:20 UTC | 10,750 (dev 6,711; holdout 4,039 = look 1 + confirmation-2 r1 and r2) |
-     | Left | ≈ 14.25k (10-19 so far: 2,277 of the 3k daily cap) |
+     | Spent, from all cycle-2 ledgers on 10-20 01:20 UTC | 11,206 (dev 7,166; holdout 4,040 = look 1 + confirmation-2 r1 and r2), plus about 40 off-ledger in the live detector controls (4 runs) |
+     | Left | ≈ 13.75k (10-19: about 2.56k of the 3k cap; 10-20 so far: 171) |
      | Projected left after the batch and its confirmations (10-17 projection) | ≈ 8.6k |
      | Ring-fenced: confirmation-3 plus relaunch reserve | 4.5k |
      | Candidate look (only if a keep is promoted; it doubles as the final look) | 1.3k |
