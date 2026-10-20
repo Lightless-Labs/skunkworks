@@ -1820,3 +1820,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `nano/harness.py` = `runs/c2-E007/candidate.py` (sha c1e3e897…); `nano/history/before-E007.py` = E002.
   - **The batch's confirmation step is done** (at most 2 confirmations; the first promoted). E005 and E010 stay provisional keeps vs E002 and are not confirmed.
   - **Next:** `aa-from-replicates --id E007`; then **look 2 (C2-LOOK2) at 00:05 UTC 10-21**, armed detached (its 2,000 worst case does not fit today). If look 2 passes, E007 is the confirmation-3 candidate; otherwise E002.
+- **A/A for E007** (`aa-from-replicates --id E007`): from E007's two replicates (130 and 137 of 140; 7 discordant). thr_allpass 0.0357 (5 net tasks, as before), thr_frac 0.0402.
+- **Look 2 armed** for ≥ 00:05 UTC 10-21. A detached job (pid 13208, `~/.a2d-queue/look2-early.out`) waits, then runs the queue's own L38 line through `qrun.sh`: `look_if_promoted.py E005 … E010`.
+  - Its dry check now prints the registered command (`eval.py look --n 2 --registered-at 98672c36… --seed 6262 --jobs 8`). Every precondition holds: E007 promoted, harness = snapshot, never attempted, before T.
+  - Main's crates are unchanged since the registration commit, so the controller accepts it.
+  - Overnight queue: L23–L29 spend no Luna after the promotion, and L30 holds until 10-22, so look 2 has the day alone. L38 and L40 will then print "already attempted".
