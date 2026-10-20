@@ -369,15 +369,20 @@ pub fn remove_network_configuration_env(command: &mut Command) {
 }
 
 fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderError> {
+    // The clock alone is not unique (microseconds on macOS): two concurrent calls
+    // shared a cwd and CODEX_HOME, and one's cleanup broke the other. A per-process
+    // sequence makes the name unique, and `create_dir` fails closed if it is not.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let dir = std::env::temp_dir().join(format!(
-        "a2d-provider-{command}-{}-{now}",
+        "a2d-provider-{command}-{}-{now}-{seq}",
         std::process::id()
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| {
+    std::fs::create_dir(&dir).map_err(|e| {
         ProviderError::InvocationFailed(format!(
             "failed to create isolated provider cwd {}: {e}",
             dir.display()
@@ -800,6 +805,34 @@ impl Provider for CliProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Concurrent calls must never share a cwd (and so a CODEX_HOME): on macOS the
+    // clock has microsecond resolution, and two calls that shared one failed with
+    // "failed to link codex auth.json" and "failed to start" (C3 audit 1, 2026-10-20).
+    #[test]
+    fn concurrent_provider_cwds_are_distinct() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..200)
+                        .map(|_| isolated_provider_cwd("collide-test").expect("cwd"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let dirs: Vec<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<_> = dirs.iter().collect();
+        for dir in &dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        assert_eq!(distinct.len(), dirs.len());
+    }
 
     #[test]
     fn codex_usage_reads_reported_total() {
