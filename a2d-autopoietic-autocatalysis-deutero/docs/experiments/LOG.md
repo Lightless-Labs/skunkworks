@@ -1804,3 +1804,5 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - Every review-keep task passed.
     - All 10 failures are tasks where no draft passed hidden tests (9 review-repair, 1 without a green draft).
     - So E007 fails only when the right reading never enters the draft pool, which is the failure class E010's hedges target (C2-FA3).
+  - **Pool check against the oracle:** for all 280 E007 tuples (screen + rest, both arms), the pool record whose code is the submitted file carries the ledger's hidden verdict (280 agree, 0 disagree). The pool's 31 hidden timeouts are all on drafts that were not submitted.
+  - `branch_of` has one caller (`stats`), so the plan addendum covers the whole change. `eval.py look` does not check `aa.json`, and a cap deferral returns before the holdout run dir exists (no attempt). So look 2 is safe from a stale A/A. `aa-from-replicates` still runs right after a promotion.
