@@ -2,11 +2,31 @@
 with public and hidden tests (oracle layout: candidate root + #[path] test
 module). Development data only. Writes a JSON pool for offline analyses.
 
-usage: python3 -I candidate_pool.py <suite-dir> <out.json> <run-dir>...
+usage: python3 -I candidate_pool.py [--all-blocks] <suite-dir> <out.json> <run-dir>...
+
+--all-blocks: one record per parsed file of a reply, by E010's parse_files rule (fences on
+their own lines, deduplicated, at most the two longest, in reply order); the second file's
+record is <inv>b. For harnesses whose coder calls return two files (E010). Default: the
+first ```rust block of each reply, as before.
 """
 import concurrent.futures, json, pathlib, re, subprocess, sys, tempfile
 RUSTC = str(pathlib.Path.home() / ".rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc")
-suite = pathlib.Path(sys.argv[1]); out = pathlib.Path(sys.argv[2]); runs = [pathlib.Path(r) for r in sys.argv[3:]]
+ALL_BLOCKS = len(sys.argv) > 1 and sys.argv[1] == "--all-blocks"
+args = sys.argv[2:] if ALL_BLOCKS else sys.argv[1:]
+suite = pathlib.Path(args[0]); out = pathlib.Path(args[1]); runs = [pathlib.Path(r) for r in args[2:]]
+
+FENCE = r"^[ \t]*```(?:rust|rs)[^\n]*\n(.*?)^[ \t]*```[ \t]*$"
+
+def extract_all(text):
+    """E010's parse_files: at most two blocks (the longest), in reply order."""
+    blocks = []
+    for body in re.findall(FENCE, text, re.S | re.M):
+        if body.strip() and body not in blocks:
+            blocks.append(body)
+    if len(blocks) > 2:
+        longest = sorted(range(len(blocks)), key=lambda i: len(blocks[i]), reverse=True)[:2]
+        blocks = [blocks[i] for i in sorted(longest)]
+    return [b.strip() for b in blocks]
 
 def extract(text):
     m = re.search(r"```rust(.*?)```", text, re.S)
@@ -55,17 +75,26 @@ for run in runs:
             if task_dir.name not in tasks:
                 continue
             for f in sorted((task_dir / "r0").glob("inv*-*coder.response.txt")):
-                jobs.append((run.name, arm_dir.name, task_dir.name, f.name.split("-")[0], f))
+                inv = f.name.split("-")[0]
+                n = max(1, len(extract_all(f.read_text()))) if ALL_BLOCKS else 1
+                for block in range(n):
+                    jobs.append((run.name, arm_dir.name, task_dir.name, inv + ("b" if block else ""), f, block))
 
 def work(job):
-    run, arm, task, inv, f = job
+    run, arm, task, inv, f, block = job
     t = tasks[task]; meta = json.loads((t / "task.json").read_text())
-    code = extract(f.read_text())
+    if ALL_BLOCKS:
+        blocks = extract_all(f.read_text())
+        code = blocks[block] if block < len(blocks) else None
+    else:
+        code = extract(f.read_text())
     rec = {"run": run, "arm": arm, "task": task, "family": meta["family"], "inv": inv, "has_code": code is not None}
     if code is not None:
         rec["public"] = score(code, (t / "public_tests.rs").read_text(), meta.get("test_timeout_secs", 10))
         rec["hidden"] = score(code, (t / "hidden_tests.rs").read_text(), meta.get("test_timeout_secs", 10))
         rec["code_path"] = str(f)
+        if ALL_BLOCKS:
+            rec["block"] = block
     return rec
 
 with concurrent.futures.ThreadPoolExecutor(4) as ex:
