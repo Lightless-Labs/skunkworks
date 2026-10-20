@@ -1,0 +1,261 @@
+- Dimensions are checked row first, then column, before examining entries.
+- Entry validation follows input order; within an entry, row bounds precede column bounds, which precede finiteness.
+- All entries are validated before any duplicate sums are attempted.
+- Duplicate values are added sequentially in input order starting at positive zero; overflow reports the index of the addition that overflowed.
+- Coordinates are sorted row-major only after successful summation, and final signed zeros are omitted.
+- Zero dimensions are allowed; any entry in a zero-sized axis is out of bounds.
+
+### Solution A
+
+```rust
+pub const MAX_DIM: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Row,
+    Column,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub row: usize,
+    pub col: usize,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sparse {
+    rows: usize,
+    cols: usize,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Shape {
+        axis: Axis,
+        size: usize,
+    },
+    Bounds {
+        entry: usize,
+        axis: Axis,
+        index: usize,
+        limit: usize,
+    },
+    NonFinite {
+        entry: usize,
+    },
+    SumOverflow {
+        entry: usize,
+    },
+}
+
+impl Sparse {
+    pub fn from_coo(rows: usize, cols: usize, entries: &[Entry]) -> Result<Self, Error> {
+        if rows > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Row,
+                size: rows,
+            });
+        }
+        if cols > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Column,
+                size: cols,
+            });
+        }
+
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if entry.row >= rows {
+                return Err(Error::Bounds {
+                    entry: entry_index,
+                    axis: Axis::Row,
+                    index: entry.row,
+                    limit: rows,
+                });
+            }
+            if entry.col >= cols {
+                return Err(Error::Bounds {
+                    entry: entry_index,
+                    axis: Axis::Column,
+                    index: entry.col,
+                    limit: cols,
+                });
+            }
+            if !entry.value.is_finite() {
+                return Err(Error::NonFinite { entry: entry_index });
+            }
+        }
+
+        let mut sums: Vec<((usize, usize), f64)> = Vec::new();
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if let Some((_, sum)) = sums
+                .iter_mut()
+                .find(|((row, col), _)| *row == entry.row && *col == entry.col)
+            {
+                *sum = *sum + entry.value;
+                if !sum.is_finite() {
+                    return Err(Error::SumOverflow { entry: entry_index });
+                }
+            } else {
+                sums.push(((entry.row, entry.col), 0.0 + entry.value));
+            }
+        }
+
+        sums.sort_by_key(|((row, col), _)| (*row, *col));
+
+        let canonical = sums
+            .into_iter()
+            .filter_map(|((row, col), value)| {
+                if value == 0.0 {
+                    None
+                } else {
+                    Some(Entry { row, col, value })
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            rows,
+            cols,
+            entries: canonical,
+        })
+    }
+
+    pub fn shape(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+}
+```
+
+### Solution B
+
+```rust
+pub const MAX_DIM: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Row,
+    Column,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub row: usize,
+    pub col: usize,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sparse {
+    rows: usize,
+    cols: usize,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Shape {
+        axis: Axis,
+        size: usize,
+    },
+    Bounds {
+        entry: usize,
+        axis: Axis,
+        index: usize,
+        limit: usize,
+    },
+    NonFinite {
+        entry: usize,
+    },
+    SumOverflow {
+        entry: usize,
+    },
+}
+
+impl Sparse {
+    pub fn from_coo(rows: usize, cols: usize, entries: &[Entry]) -> Result<Self, Error> {
+        if rows > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Row,
+                size: rows,
+            });
+        }
+        if cols > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Column,
+                size: cols,
+            });
+        }
+
+        for (i, entry) in entries.iter().enumerate() {
+            if entry.row >= rows {
+                return Err(Error::Bounds {
+                    entry: i,
+                    axis: Axis::Row,
+                    index: entry.row,
+                    limit: rows,
+                });
+            }
+            if entry.col >= cols {
+                return Err(Error::Bounds {
+                    entry: i,
+                    axis: Axis::Column,
+                    index: entry.col,
+                    limit: cols,
+                });
+            }
+            if !entry.value.is_finite() {
+                return Err(Error::NonFinite { entry: i });
+            }
+        }
+
+        let mut sums: Vec<((usize, usize), f64)> = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let key = (entry.row, entry.col);
+            let pos = sums
+                .binary_search_by_key(&key, |(coord, _)| *coord);
+            match pos {
+                Ok(index) => {
+                    sums[index].1 = sums[index].1 + entry.value;
+                    if !sums[index].1.is_finite() {
+                        return Err(Error::SumOverflow { entry: i });
+                    }
+                }
+                Err(index) => {
+                    sums.insert(index, (key, 0.0 + entry.value));
+                }
+            }
+        }
+
+        let canonical = sums
+            .into_iter()
+            .filter_map(|((row, col), value)| {
+                if value == 0.0 {
+                    None
+                } else {
+                    Some(Entry { row, col, value })
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            rows,
+            cols,
+            entries: canonical,
+        })
+    }
+
+    pub fn shape(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+}
+```

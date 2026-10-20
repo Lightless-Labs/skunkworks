@@ -1,0 +1,138 @@
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+}
+
+pub struct Store {
+    committed: BTreeMap<String, String>,
+    scopes: Vec<BTreeMap<String, String>>,
+    snapshots: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+        }
+    }
+
+    fn visible(&self) -> &BTreeMap<String, String> {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut BTreeMap<String, String> {
+        self.scopes.last_mut().unwrap_or(&mut self.committed)
+    }
+
+    fn validate_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+
+        for (at, ch) in name.char_indices() {
+            let valid = if at == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at });
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn begin(&mut self) -> Result<(), Error> {
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    pub fn commit(&mut self) -> Result<(), Error> {
+        let map = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = map;
+        } else {
+            self.committed = map;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&mut self) -> Result<(), Error> {
+        self.scopes.pop().map(|_| ()).ok_or(Error::NoTransaction)
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), Error> {
+        Self::validate_key(key)?;
+        self.visible_mut().insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    pub fn delete(&mut self, key: &str) -> Result<bool, Error> {
+        Self::validate_key(key)?;
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    pub fn get(&mut self, key: &str) -> Result<Option<String>, Error> {
+        Self::validate_key(key)?;
+        Ok(self.visible().get(key).cloned())
+    }
+
+    pub fn count(&mut self, value: &str) -> Result<usize, Error> {
+        Ok(self.visible().values().filter(|v| v.as_str() == value).count())
+    }
+
+    pub fn depth(&mut self) -> Result<usize, Error> {
+        Ok(self.scopes.len())
+    }
+
+    pub fn snapshot(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        let copy = self.visible().clone();
+        self.snapshots.insert(name.to_owned(), copy);
+        Ok(())
+    }
+
+    pub fn restore(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        let copy = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        *self.visible_mut() = copy;
+        Ok(())
+    }
+
+    pub fn forget(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))
+    }
+}

@@ -1,0 +1,271 @@
+- Validate tier count first: empty yields `Empty`, and over 64 yields `TooMany` before inspecting tiers.
+- Scan bounds in order; `Some` must increase strictly, and `None` is allowed only on the final tier.
+- Validate the full tier schedule before calculating, including when quantity is zero.
+- Finite tier bounds are inclusive; a tier at its exact bound does not activate the next tier.
+- Include bands only for positive allocated units, even when their charge is zero.
+- Use checked multiplication and addition in tier order; report `Overflow` for the first used band that overflows.
+
+### Solution A
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                return Ok(Charge {
+                    amount: 0,
+                    bands: Vec::new(),
+                });
+            }
+            let amount = quantity
+                .checked_mul(*unit)
+                .and_then(|v| v.checked_add(*start))
+                .ok_or(Error::Overflow { index: 0 })?;
+            Ok(Charge {
+                amount,
+                bands: vec![Band {
+                    index: 0,
+                    units: quantity,
+                    amount,
+                }],
+            })
+        }
+        Price::Tiers(tiers) => {
+            if tiers.is_empty() {
+                return Err(Error::Empty);
+            }
+            if tiers.len() > 64 {
+                return Err(Error::TooMany);
+            }
+
+            let mut previous_bound = 0u64;
+            for (index, tier) in tiers.iter().enumerate() {
+                match tier.up_to {
+                    Some(bound) => {
+                        if bound <= previous_bound {
+                            return Err(Error::Bound { index });
+                        }
+                        previous_bound = bound;
+                    }
+                    None => {
+                        if index + 1 != tiers.len() {
+                            return Err(Error::Unbounded { index });
+                        }
+                    }
+                }
+            }
+            if tiers.last().and_then(|tier| tier.up_to).is_some() {
+                return Err(Error::MissingFinal);
+            }
+
+            let mut remaining = quantity;
+            let mut previous_bound = 0u64;
+            let mut total = 0u64;
+            let mut bands = Vec::new();
+
+            for (index, tier) in tiers.iter().enumerate() {
+                if remaining == 0 {
+                    break;
+                }
+
+                let units = match tier.up_to {
+                    Some(bound) => {
+                        let width = bound - previous_bound;
+                        let allocated = remaining.min(width);
+                        previous_bound = bound;
+                        allocated
+                    }
+                    None => remaining,
+                };
+                remaining -= units;
+
+                if units == 0 {
+                    continue;
+                }
+
+                let amount = units
+                    .checked_mul(tier.unit)
+                    .and_then(|v| v.checked_add(tier.start))
+                    .ok_or(Error::Overflow { index })?;
+                total = total
+                    .checked_add(amount)
+                    .ok_or(Error::Overflow { index })?;
+                bands.push(Band {
+                    index,
+                    units,
+                    amount,
+                });
+            }
+
+            Ok(Charge {
+                amount: total,
+                bands,
+            })
+        }
+    }
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    let (total, bands) = match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                (0, Vec::new())
+            } else {
+                let amount = quantity
+                    .checked_mul(*unit)
+                    .and_then(|product| product.checked_add(*start))
+                    .ok_or(Error::Overflow { index: 0 })?;
+                (
+                    amount,
+                    vec![Band {
+                        index: 0,
+                        units: quantity,
+                        amount,
+                    }],
+                )
+            }
+        }
+        Price::Tiers(tiers) => {
+            match tiers.len() {
+                0 => return Err(Error::Empty),
+                65.. => return Err(Error::TooMany),
+                _ => {}
+            }
+
+            let mut last_finite = 0u64;
+            for (index, tier) in tiers.iter().enumerate() {
+                if let Some(bound) = tier.up_to {
+                    if bound <= last_finite {
+                        return Err(Error::Bound { index });
+                    }
+                    last_finite = bound;
+                } else if index != tiers.len() - 1 {
+                    return Err(Error::Unbounded { index });
+                }
+            }
+
+            if tiers[tiers.len() - 1].up_to.is_some() {
+                return Err(Error::MissingFinal);
+            }
+
+            let mut remaining = quantity;
+            let mut lower = 0u64;
+            let mut sum = 0u64;
+            let mut result_bands = Vec::new();
+
+            for (index, tier) in tiers.iter().enumerate() {
+                let units = if remaining == 0 {
+                    0
+                } else if let Some(bound) = tier.up_to {
+                    let capacity = bound - lower;
+                    lower = bound;
+                    remaining.min(capacity)
+                } else {
+                    remaining
+                };
+
+                if units == 0 {
+                    continue;
+                }
+                remaining -= units;
+
+                let charge = units
+                    .checked_mul(tier.unit)
+                    .and_then(|value| value.checked_add(tier.start))
+                    .ok_or(Error::Overflow { index })?;
+                sum = sum
+                    .checked_add(charge)
+                    .ok_or(Error::Overflow { index })?;
+                result_bands.push(Band {
+                    index,
+                    units,
+                    amount: charge,
+                });
+            }
+
+            (sum, result_bands)
+        }
+    };
+
+    Ok(Charge {
+        amount: total,
+        bands,
+    })
+}
+```

@@ -1,0 +1,186 @@
+- Empty input returns immediately; all options and validation are ignored.
+- Empty rows are checked across the whole table before ragged rows.
+- Invalid characters are found in original cells, by row, column, then UTF-8 byte offset; they take precedence over width errors.
+- Trailing ASCII spaces are trimmed before widths are measured; each width is at least 1, and 32 is allowed.
+- Borders and data rows use exact ASCII spacing and end with LF.
+- Width arithmetic uses checked operations; impossible-to-allocate output may still fail through the standard allocator.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    TooWide { column: usize, width: usize },
+}
+
+pub fn render(rows: &[Vec<String>]) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.is_empty() {
+            return Err(TableError::EmptyRow { row });
+        }
+    }
+
+    let columns = rows[0].len();
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.len() != columns {
+            return Err(TableError::Ragged {
+                row,
+                expected: columns,
+                actual: cells.len(),
+            });
+        }
+    }
+
+    let mut trimmed = Vec::with_capacity(rows.len());
+    let mut widths = vec![1usize; columns];
+
+    for (row, cells) in rows.iter().enumerate() {
+        let mut trimmed_row = Vec::with_capacity(columns);
+        for (column, cell) in cells.iter().enumerate() {
+            for (byte, ch) in cell.char_indices() {
+                if !(' '..='~').contains(&ch) {
+                    return Err(TableError::InvalidChar { row, column, byte });
+                }
+            }
+
+            let end = cell
+                .as_bytes()
+                .iter()
+                .rposition(|&b| b != b' ')
+                .map_or(0, |i| i + 1);
+            let value = &cell[..end];
+            widths[column] = widths[column].max(value.len());
+            trimmed_row.push(value);
+        }
+        trimmed.push(trimmed_row);
+    }
+
+    for (column, &width) in widths.iter().enumerate() {
+        if width > 32 {
+            return Err(TableError::TooWide { column, width });
+        }
+    }
+
+    let mut output = String::new();
+
+    fn append_border(output: &mut String, widths: &[usize]) {
+        output.push('+');
+        for &width in widths {
+            for _ in 0..width + 2 {
+                output.push('-');
+            }
+            output.push('+');
+        }
+        output.push('\n');
+    }
+
+    append_border(&mut output, &widths);
+    for row in &trimmed {
+        output.push('|');
+        for (column, value) in row.iter().enumerate() {
+            let width = widths[column];
+            output.push(' ');
+            output.push_str(value);
+            for _ in value.len()..width {
+                output.push(' ');
+            }
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+    }
+    append_border(&mut output, &widths);
+
+    Ok(output)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    TooWide { column: usize, width: usize },
+}
+
+pub fn render(rows: &[Vec<String>]) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(row) = rows.iter().position(Vec::is_empty) {
+        return Err(TableError::EmptyRow { row });
+    }
+
+    let expected = rows[0].len();
+    if let Some((row, cells)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, cells)| cells.len() != expected)
+    {
+        return Err(TableError::Ragged {
+            row,
+            expected,
+            actual: cells.len(),
+        });
+    }
+
+    let mut widths = vec![1usize; expected];
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            if let Some((byte, _)) = cell
+                .char_indices()
+                .find(|(_, ch)| !(' '..='~').contains(ch))
+            {
+                return Err(TableError::InvalidChar { row, column, byte });
+            }
+
+            let length = cell.trim_end_matches(' ').len();
+            widths[column] = widths[column].max(length);
+        }
+    }
+
+    if let Some((column, &width)) = widths.iter().enumerate().find(|(_, width)| **width > 32) {
+        return Err(TableError::TooWide { column, width });
+    }
+
+    let mut output = String::new();
+
+    let border_len = widths.iter().map(|w| w + 3).sum::<usize>() + 1;
+    let mut border = String::with_capacity(border_len + 1);
+    border.push('+');
+    for &width in &widths {
+        border.extend(std::iter::repeat_n('-', width + 2));
+        border.push('+');
+    }
+    border.push('\n');
+
+    output.push_str(&border);
+    for cells in rows {
+        output.push('|');
+        for (column, cell) in cells.iter().enumerate() {
+            let value = cell.trim_end_matches(' ');
+            let width = widths[column];
+            output.push(' ');
+            output.push_str(value);
+            output.extend(std::iter::repeat_n(' ', width - value.len()));
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+    }
+    output.push_str(&border);
+
+    Ok(output)
+}
+```

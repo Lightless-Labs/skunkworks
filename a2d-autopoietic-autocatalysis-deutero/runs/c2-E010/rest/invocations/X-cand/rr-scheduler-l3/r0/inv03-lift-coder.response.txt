@@ -1,0 +1,398 @@
+- Validation follows R3–R10 exactly, with per-row checks in the stated order.
+- Arrivals at the current time and at dispatch or run boundaries are admitted before the next selection or requeue.
+- Zero-tick jobs complete at arrival without affecting queues or the last dispatched ID.
+- Dispatch cost is charged after the head is locked; only positive idle time clears the previous ID.
+- Times use `u64`; given input bounds, all calculations fit.
+- The rules leave no material ambiguity, so Solution B uses an independent queue representation.
+
+### Solution A
+
+```rust
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=8).contains(&quanta.len()) {
+        return Err(Error::LevelCount);
+    }
+    for (level, &quantum) in quanta.iter().enumerate() {
+        if !(1..=1000).contains(&quantum) {
+            return Err(Error::Quantum { level });
+        }
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.level >= quanta.len() {
+            return Err(Error::InitialLevel { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut arrival_order: Vec<usize> = (0..jobs.len()).collect();
+    arrival_order.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut queues: Vec<VecDeque<usize>> =
+        (0..quanta.len()).map(|_| VecDeque::new()).collect();
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut levels: Vec<usize> = jobs.iter().map(|job| job.level).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+
+    let mut time = 0u64;
+    let mut next_arrival = 0usize;
+    let mut last_dispatched_id: Option<u32> = None;
+
+    let admit_through = |time: u64,
+                         next_arrival: &mut usize,
+                         queues: &mut Vec<VecDeque<usize>>,
+                         completion: &mut Vec<Option<u64>>| {
+        while *next_arrival < arrival_order.len() {
+            let index = arrival_order[*next_arrival];
+            let job = &jobs[index];
+            let arrival = u64::from(job.arrival);
+            if arrival > time {
+                break;
+            }
+            if job.ticks == 0 {
+                completion[index] = Some(arrival);
+            } else {
+                queues[job.level].push_back(index);
+            }
+            *next_arrival += 1;
+        }
+    };
+
+    while completion.iter().any(Option::is_none) {
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        let selected_level = queues.iter().position(|queue| !queue.is_empty());
+        let Some(queue_level) = selected_level else {
+            if next_arrival >= arrival_order.len() {
+                break;
+            }
+            let next_time = u64::from(jobs[arrival_order[next_arrival]].arrival);
+            if next_time > time {
+                if let Some(last) = idle.last_mut() {
+                    if last.1 == time {
+                        last.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatched_id = None;
+            }
+            continue;
+        };
+
+        let index = queues[queue_level]
+            .pop_front()
+            .expect("selected queue is nonempty");
+        let job = &jobs[index];
+        let selected_level = levels[index];
+
+        if last_dispatched_id.is_some_and(|id| id != job.id) {
+            time += u64::from(switch_cost);
+        }
+
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        let start = time;
+        let consumed = remaining[index].min(quanta[selected_level]);
+        time += u64::from(consumed);
+        remaining[index] -= consumed;
+        let finished = remaining[index] == 0;
+
+        runs.push(Run {
+            id: job.id,
+            start,
+            end: time,
+            finished,
+            level: selected_level,
+        });
+
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        if finished {
+            completion[index] = Some(time);
+        } else {
+            levels[index] = (selected_level + 1).min(quanta.len() - 1);
+            queues[levels[index]].push_back(index);
+        }
+
+        last_dispatched_id = Some(job.id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion[index].unwrap_or(0)))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    use std::collections::VecDeque;
+
+    if quanta.is_empty() || quanta.len() > 8 {
+        return Err(Error::LevelCount);
+    }
+    for level in 0..quanta.len() {
+        if quanta[level] == 0 || quanta[level] > 1000 {
+            return Err(Error::Quantum { level });
+        }
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for i in 0..jobs.len() {
+        for earlier in 0..i {
+            if jobs[i].id == jobs[earlier].id {
+                return Err(Error::DuplicateId { index: i });
+            }
+        }
+        if jobs[i].arrival > 1000 {
+            return Err(Error::Arrival { index: i });
+        }
+        if jobs[i].level >= quanta.len() {
+            return Err(Error::InitialLevel { index: i });
+        }
+        if jobs[i].ticks > 1000 {
+            return Err(Error::Ticks { index: i });
+        }
+    }
+
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by(|&a, &b| {
+        jobs[a]
+            .arrival
+            .cmp(&jobs[b].arrival)
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut ready: Vec<VecDeque<usize>> =
+        (0..quanta.len()).map(|_| VecDeque::new()).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut level_of: Vec<usize> = jobs.iter().map(|job| job.level).collect();
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+    let mut now = 0u64;
+    let mut cursor = 0usize;
+    let mut previous: Option<u32> = None;
+
+    fn admit(
+        now: u64,
+        jobs: &[Job],
+        order: &[usize],
+        cursor: &mut usize,
+        ready: &mut [std::collections::VecDeque<usize>],
+        completion: &mut [Option<u64>],
+    ) {
+        while *cursor < order.len() {
+            let i = order[*cursor];
+            let arrival = u64::from(jobs[i].arrival);
+            if arrival > now {
+                break;
+            }
+            if jobs[i].ticks == 0 {
+                completion[i] = Some(arrival);
+            } else {
+                ready[jobs[i].level].push_back(i);
+            }
+            *cursor += 1;
+        }
+    }
+
+    while completion.iter().any(Option::is_none) {
+        admit(now, jobs, &order, &mut cursor, &mut ready, &mut completion);
+
+        let Some(queue_index) = ready.iter().position(|q| !q.is_empty()) else {
+            if cursor == order.len() {
+                break;
+            }
+            let next = u64::from(jobs[order[cursor]].arrival);
+            if next > now {
+                if let Some(interval) = idle.last_mut() {
+                    if interval.1 == now {
+                        interval.1 = next;
+                    } else {
+                        idle.push((now, next));
+                    }
+                } else {
+                    idle.push((now, next));
+                }
+                now = next;
+                previous = None;
+            }
+            continue;
+        };
+
+        let i = ready[queue_index]
+            .pop_front()
+            .expect("queue selected as nonempty");
+        let run_level = level_of[i];
+
+        if previous.is_some_and(|id| id != jobs[i].id) {
+            now += u64::from(switch_cost);
+        }
+        admit(now, jobs, &order, &mut cursor, &mut ready, &mut completion);
+
+        let start = now;
+        let used = remaining[i].min(quanta[run_level]);
+        remaining[i] -= used;
+        now += u64::from(used);
+        let finished = remaining[i] == 0;
+
+        runs.push(Run {
+            id: jobs[i].id,
+            start,
+            end: now,
+            finished,
+            level: run_level,
+        });
+
+        admit(now, jobs, &order, &mut cursor, &mut ready, &mut completion);
+
+        if finished {
+            completion[i] = Some(now);
+        } else {
+            level_of[i] = (run_level + 1).min(quanta.len() - 1);
+            ready[level_of[i]].push_back(i);
+        }
+        previous = Some(jobs[i].id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, job)| (job.id, completion[i].unwrap_or(0)))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: now,
+    })
+}
+```

@@ -1,0 +1,230 @@
+- Validation order is fixed: quantum, switch cost, job count, then each row’s duplicate check before its tick check.
+- Tick count `0` is valid; zero-tick jobs complete when dequeued and create no run.
+- Switch cost is charged only before a positive-work dispatch whose ID differs from the last positive-work dispatch.
+- Completion entries follow input order, while runs follow dispatch order; adjacent runs remain separate.
+- All time arithmetic fits in `u64` under the stated bounds, and uses checked addition defensively.
+
+### Solution A
+
+```rust
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion = vec![(0u32, 0u64); jobs.len()];
+    let mut queue: VecDeque<usize> = (0..jobs.len()).collect();
+    let mut runs = Vec::new();
+    let mut time = 0u64;
+    let mut last_id: Option<u32> = None;
+
+    while let Some(index) = queue.pop_front() {
+        let job = &jobs[index];
+
+        if remaining[index] == 0 {
+            completion[index] = (job.id, time);
+            continue;
+        }
+
+        if let Some(previous_id) = last_id {
+            if previous_id != job.id {
+                time = time.checked_add(u64::from(switch_cost)).expect("time bound");
+            }
+        }
+
+        let consumed = remaining[index].min(quantum);
+        let start = time;
+        time = time
+            .checked_add(u64::from(consumed))
+            .expect("time bound");
+        remaining[index] -= consumed;
+
+        let finished = remaining[index] == 0;
+        runs.push(Run {
+            id: job.id,
+            start,
+            end: time,
+            finished,
+        });
+        last_id = Some(job.id);
+
+        if finished {
+            completion[index] = (job.id, time);
+        } else {
+            queue.push_back(index);
+        }
+    }
+
+    Ok(Schedule {
+        runs,
+        completion,
+        end: time,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if quantum < 1 || quantum > 1000 {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for i in 0..jobs.len() {
+        for j in 0..i {
+            if jobs[i].id == jobs[j].id {
+                return Err(Error::DuplicateId { index: i });
+            }
+        }
+        if jobs[i].ticks > 1000 {
+            return Err(Error::Ticks { index: i });
+        }
+    }
+
+    let mut left: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut done = vec![0u64; jobs.len()];
+    let mut completed = vec![false; jobs.len()];
+    let mut next = 0usize;
+    let mut queued = jobs.len();
+    let mut time = 0u64;
+    let mut previous: Option<u32> = None;
+    let mut runs = Vec::new();
+
+    while queued > 0 {
+        let index = next;
+        next = (next + 1) % jobs.len();
+
+        if left[index] == 0 && !completed[index] {
+            completed[index] = true;
+            done[index] = time;
+            queued -= 1;
+            continue;
+        }
+        if completed[index] {
+            continue;
+        }
+
+        let id = jobs[index].id;
+        if previous.is_some_and(|old| old != id) {
+            time = time.checked_add(u64::from(switch_cost)).expect("time bound");
+        }
+
+        let amount = left[index].min(quantum);
+        let start = time;
+        time = time.checked_add(u64::from(amount)).expect("time bound");
+        left[index] -= amount;
+        let finished = left[index] == 0;
+
+        runs.push(Run {
+            id,
+            start,
+            end: time,
+            finished,
+        });
+        previous = Some(id);
+
+        if finished {
+            completed[index] = true;
+            done[index] = time;
+            queued -= 1;
+        }
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, job)| (job.id, done[i]))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        completion,
+        end: time,
+    })
+}
+```

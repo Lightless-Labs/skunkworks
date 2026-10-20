@@ -1,0 +1,1099 @@
+SYSTEM:
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. All described API items are pub. Do not use inner attributes or inner doc comments. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Exact public API (semicolon notation denotes signatures, not literal code): pub fn encode(input: &[u8]) -> String; pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error>; pub enum Error { InvalidByte { offset: usize, byte: u8 }, BadPadding { offset: usize }, Truncated { offset: usize } }; Error must implement Debug, Clone, PartialEq, Eq.
+
+R3. Encoding uses six-bit digits, most significant bits first, with the alphabet ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/. Decode accepts bytes, not text; offsets are zero-based physical byte indices in the original encoded input.
+
+R4. Each three input bytes encode to four digits. A one-byte tail emits two digits and ==; a two-byte tail emits three digits and =. Encoded tail bits are zero; there is no newline. Empty input encodes to an empty string and decodes to an empty Vec.
+
+R5. Decode processes input left to right in groups of four non-skipped bytes. Four alphabet digits emit three bytes; xx== emits one byte; xxx= emits two bytes. x means an alphabet digit. Padding may appear only in the final group.
+
+R6. At group positions zero or one, = immediately produces BadPadding at that byte. At position two, = is held pending until the next non-skipped byte or EOF.
+
+R7. After a pending position-two =, any next non-skipped byte other than = produces BadPadding at that next byte, even if that byte would otherwise be invalid.
+
+R8. An = at position three completes a valid padded group. After any completed padded group, every further non-skipped byte produces BadPadding at that byte, even an invalid byte or more =.
+
+R9. When neither R6, R7 nor R8 applies, a byte outside the selected alphabet other than = produces InvalidByte { offset, byte }. No whitespace is skipped at this level; CR, LF, space, tab and non-ASCII bytes are invalid.
+
+R10. At EOF a pending position-two = with no fourth byte produces BadPadding at the position-two =, not Truncated.
+
+R11. At EOF any other nonempty incomplete group produces Truncated at the FIRST byte of that incomplete group; the offset is not the EOF index.
+
+R12. Errors found while scanning always win over EOF errors. The earliest immediately detectable scan error wins; do not prevalidate the length or scan for invalid characters before applying the group rules.
+
+R13. Decoding accepts nonzero unused bits in a final digit; for example Zh== decodes to f and Zm9= decodes to fo. Do not enforce canonical trailing bits at this level.
+
+R14. On success, decoding returns precisely the reconstructed bytes, including zero and bytes >=128; encoding supports every byte value.
+
+R15. The one-shot functions are stateless. An Err returns no partial decoded Vec, even if a valid group precedes the error.
+
+R16. The error precedence in a single group is terminal-padding state (R8), then pending-second-padding expectation (R7), then illegal = placement (R6), then invalid byte (R9); EOF uses R10 before R11. No error is produced for valid empty input.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn dec(b: &[u8]) -> Result<Vec<u8>, Error> {
+    decode(b)
+}
+fn enc(b: &[u8]) -> String {
+    encode(b)
+}
+// R1-R4, R14
+#[test]
+fn public_encode() {
+    assert_eq!(enc(b"Cat"), "Q2F0");
+    assert_eq!(enc(b""), "");
+}
+// R2, R5, R14-R15
+#[test]
+fn public_decode() {
+    assert_eq!(dec(b"T2s="), Ok(b"Ok".to_vec()));
+    assert_eq!(dec(b"YWJj"), Ok(b"abc".to_vec()));
+}
+// R9, R12, R16
+#[test]
+fn public_bad_character() {
+    assert_eq!(
+        dec(b"Q?=="),
+        Err(Error::InvalidByte {
+            offset: 1,
+            byte: b'?'
+        })
+    );
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let a = chunk[0];
+        let b = chunk[1];
+        let c = chunk[2];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        output.push(ALPHABET[(c & 0x3f) as usize] as char);
+    }
+
+    let tail = chunks.remainder();
+    if tail.len() == 1 {
+        let a = tail[0];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+        output.push('=');
+        output.push('=');
+    } else if tail.len() == 2 {
+        let a = tail[0];
+        let b = tail[1];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+        output.push('=');
+    }
+
+    output
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    let mut group = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut len = 0usize;
+    let mut terminal_padding = false;
+    let mut pending_second_padding: Option<usize> = None;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_second_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            // The pending '=' is at position two; this one completes xx==.
+            let a = group[0];
+            let b = group[1];
+            output.push((a << 2) | (b >> 4));
+            let _ = padding_offset;
+            pending_second_padding = None;
+            len = 0;
+            terminal_padding = true;
+            continue;
+        }
+
+        if byte == b'=' {
+            match len {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => {
+                    pending_second_padding = Some(offset);
+                    group[2] = 0;
+                    offsets[2] = offset;
+                    len = 3;
+                }
+                3 => {
+                    let a = group[0];
+                    let b = group[1];
+                    let c = group[2];
+                    output.push((a << 2) | (b >> 4));
+                    output.push((b << 4) | (c >> 2));
+                    len = 0;
+                    terminal_padding = true;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let value = digit(byte).ok_or(Error::InvalidByte { offset, byte })?;
+        group[len] = value;
+        offsets[len] = offset;
+        len += 1;
+
+        if len == 4 {
+            let a = group[0];
+            let b = group[1];
+            let c = group[2];
+            let d = group[3];
+            output.push((a << 2) | (b >> 4));
+            output.push((b << 4) | (c >> 2));
+            output.push((c << 6) | d);
+            len = 0;
+        }
+    }
+
+    if let Some(offset) = pending_second_padding {
+        return Err(Error::BadPadding { offset });
+    }
+    if len != 0 {
+        return Err(Error::Truncated {
+            offset: offsets[0],
+        });
+    }
+
+    Ok(output)
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+pub fn encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut output = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let a = chunk[0];
+        let b = chunk[1];
+        let c = chunk[2];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        output.push(ALPHABET[(c & 0x3f) as usize] as char);
+    }
+
+    match chunks.remainder() {
+        [a] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+            output.push('=');
+            output.push('=');
+        }
+        [a, b] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+            output.push('=');
+        }
+        [] => {}
+        _ => unreachable!(),
+    }
+
+    output
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut count = 0usize;
+    let mut pending_second_padding = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_second_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            group[3] = 0;
+            offsets[3] = offset;
+            pending_second_padding = None;
+            terminal_padding = true;
+
+            output.push((group[0] << 2) | (group[1] >> 4));
+            let _ = padding_offset;
+            count = 0;
+            continue;
+        }
+
+        if count < 2 && byte == b'=' {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if byte == b'=' {
+            if count == 2 {
+                pending_second_padding = Some(offset);
+                group[2] = 0;
+                offsets[2] = offset;
+                count = 3;
+                continue;
+            } else if count == 3 {
+                output.push((group[0] << 2) | (group[1] >> 4));
+                output.push((group[1] << 4) | (group[2] >> 2));
+                terminal_padding = true;
+                count = 0;
+                continue;
+            } else {
+                return Err(Error::BadPadding { offset });
+            }
+        }
+
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(Error::InvalidByte { offset, byte }),
+        };
+
+        group[count] = value;
+        offsets[count] = offset;
+        count += 1;
+
+        if count == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            count = 0;
+        }
+    }
+
+    if let Some(offset) = pending_second_padding {
+        return Err(Error::BadPadding { offset });
+    }
+    if count != 0 {
+        return Err(Error::Truncated {
+            offset: offsets[0],
+        });
+    }
+
+    Ok(output)
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+pub fn encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut output = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let n = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | chunk[2] as u32;
+        output.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        output.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        output.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        output.push(ALPHABET[(n & 63) as usize] as char);
+    }
+
+    match chunks.remainder() {
+        [a] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[((a & 3) << 4) as usize] as char);
+            output.push('=');
+            output.push('=');
+        }
+        [a, b] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[((b & 15) << 2) as usize] as char);
+            output.push('=');
+        }
+        _ => {}
+    }
+
+    output
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut values = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut position = 0usize;
+    let mut group_start = 0usize;
+    let mut pending_second_padding: Option<usize> = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if pending_second_padding.is_some() && byte != b'=' {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if byte == b'=' {
+            if position < 2 {
+                return Err(Error::BadPadding { offset });
+            }
+
+            if position == 2 {
+                pending_second_padding = Some(offset);
+                offsets[position] = offset;
+                position += 1;
+                continue;
+            }
+
+            // Position three completes either xxx= or xx==.
+            if position != 3 {
+                return Err(Error::BadPadding { offset });
+            }
+
+            if pending_second_padding.is_some() {
+                output.push((values[0] << 2) | (values[1] >> 4));
+            } else {
+                output.push((values[0] << 2) | (values[1] >> 4));
+                output.push((values[1] << 4) | (values[2] >> 2));
+            }
+            terminal_padding = true;
+            position = 0;
+            continue;
+        }
+
+        let value = digit(byte).ok_or(Error::InvalidByte { offset, byte })?;
+        offsets[position] = offset;
+        values[position] = value;
+        position += 1;
+
+        if position == 4 {
+            output.push((values[0] << 2) | (values[1] >> 4));
+            output.push((values[1] << 4) | (values[2] >> 2));
+            output.push((values[2] << 6) | values[3]);
+            position = 0;
+            group_start = offset + 1;
+            pending_second_padding = None;
+        }
+    }
+
+    if let Some(offset) = pending_second_padding {
+        return Err(Error::BadPadding { offset });
+    }
+
+    if position != 0 {
+        return Err(Error::Truncated {
+            offset: if position == 0 { group_start } else { offsets[0] },
+        });
+    }
+
+    Ok(output)
+}
+```
+
+### D.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut result = String::new();
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+
+        result.push(ALPHABET[(a >> 2) as usize] as char);
+        result.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+
+        if chunk.len() >= 2 {
+            result.push(ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char);
+        } else {
+            result.push('=');
+        }
+
+        if chunk.len() == 3 {
+            result.push(ALPHABET[(c & 63) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    if byte >= b'A' && byte <= b'Z' {
+        Some(byte - b'A')
+    } else if byte >= b'a' && byte <= b'z' {
+        Some(byte - b'a' + 26)
+    } else if byte >= b'0' && byte <= b'9' {
+        Some(byte - b'0' + 52)
+    } else {
+        match byte {
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut values = [0u8; 4];
+    let mut n = 0usize;
+    let mut start = 0usize;
+    let mut needs_equal_at_three: Option<usize> = None;
+    let mut padded = false;
+
+    for (i, &byte) in input.iter().enumerate() {
+        if padded {
+            return Err(Error::BadPadding { offset: i });
+        }
+
+        if needs_equal_at_three.is_some() {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset: i });
+            }
+            needs_equal_at_three = None;
+            padded = true;
+            output.push((values[0] << 2) | (values[1] >> 4));
+            n = 0;
+            continue;
+        }
+
+        if byte == b'=' {
+            if n < 2 {
+                return Err(Error::BadPadding { offset: i });
+            } else if n == 2 {
+                needs_equal_at_three = Some(i);
+            } else {
+                padded = true;
+                output.push((values[0] << 2) | (values[1] >> 4));
+                output.push((values[1] << 4) | (values[2] >> 2));
+                n = 0;
+            }
+            continue;
+        }
+
+        let value = digit(byte).ok_or(Error::InvalidByte { offset: i, byte })?;
+        if n == 0 {
+            start = i;
+        }
+        values[n] = value;
+        n += 1;
+
+        if n == 4 {
+            output.push((values[0] << 2) | (values[1] >> 4));
+            output.push((values[1] << 4) | (values[2] >> 2));
+            output.push((values[2] << 6) | values[3]);
+            n = 0;
+        }
+    }
+
+    if let Some(offset) = needs_equal_at_three {
+        return Err(Error::BadPadding { offset });
+    }
+    if n != 0 {
+        return Err(Error::Truncated { offset: start });
+    }
+    Ok(output)
+}
+```
+
+### E.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+pub fn encode(input: &[u8]) -> String {
+    const TABLE: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut encoded = String::new();
+    let mut i = 0;
+
+    while i + 3 <= input.len() {
+        let x = ((input[i] as u32) << 16)
+            | ((input[i + 1] as u32) << 8)
+            | input[i + 2] as u32;
+        encoded.push(TABLE[((x >> 18) & 63) as usize] as char);
+        encoded.push(TABLE[((x >> 12) & 63) as usize] as char);
+        encoded.push(TABLE[((x >> 6) & 63) as usize] as char);
+        encoded.push(TABLE[(x & 63) as usize] as char);
+        i += 3;
+    }
+
+    match input.len() - i {
+        1 => {
+            let x = input[i];
+            encoded.push(TABLE[(x >> 2) as usize] as char);
+            encoded.push(TABLE[((x & 3) << 4) as usize] as char);
+            encoded.push_str("==");
+        }
+        2 => {
+            let x = ((input[i] as u16) << 8) | input[i + 1] as u16;
+            encoded.push(TABLE[((x >> 10) & 63) as usize] as char);
+            encoded.push(TABLE[((x >> 4) & 63) as usize] as char);
+            encoded.push(TABLE[((x << 2) & 63) as usize] as char);
+            encoded.push('=');
+        }
+        _ => {}
+    }
+
+    encoded
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut values = [0u8; 4];
+    let mut positions = [0usize; 4];
+    let mut used = 0usize;
+    let mut pending = None;
+    let mut finished = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if finished {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(pad_at) = pending {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            result.push((values[0] << 2) | (values[1] >> 4));
+            pending = None;
+            finished = true;
+            let _ = pad_at;
+            used = 0;
+            continue;
+        }
+
+        if byte == b'=' {
+            match used {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => {
+                    pending = Some(offset);
+                    positions[2] = offset;
+                    values[2] = 0;
+                    used = 3;
+                }
+                3 => {
+                    result.push((values[0] << 2) | (values[1] >> 4));
+                    result.push((values[1] << 4) | (values[2] >> 2));
+                    finished = true;
+                    used = 0;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let value = digit(byte).ok_or(Error::InvalidByte { offset, byte })?;
+        values[used] = value;
+        positions[used] = offset;
+        used += 1;
+
+        if used == 4 {
+            result.push((values[0] << 2) | (values[1] >> 4));
+            result.push((values[1] << 4) | (values[2] >> 2));
+            result.push((values[2] << 6) | values[3]);
+            used = 0;
+        }
+    }
+
+    if let Some(offset) = pending {
+        return Err(Error::BadPadding { offset });
+    }
+    if used != 0 {
+        return Err(Error::Truncated {
+            offset: positions[0],
+        });
+    }
+
+    Ok(result)
+}
+```
+
+### F.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+pub fn encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut result = String::new();
+    let mut index = 0;
+    while index + 3 <= input.len() {
+        let a = input[index];
+        let b = input[index + 1];
+        let c = input[index + 2];
+        result.push(TABLE[(a >> 2) as usize] as char);
+        result.push(TABLE[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+        result.push(TABLE[(((b & 15) << 2) | (c >> 6)) as usize] as char);
+        result.push(TABLE[(c & 63) as usize] as char);
+        index += 3;
+    }
+
+    match input.len() - index {
+        1 => {
+            let a = input[index];
+            result.push(TABLE[(a >> 2) as usize] as char);
+            result.push(TABLE[((a & 3) << 4) as usize] as char);
+            result.push_str("==");
+        }
+        2 => {
+            let a = input[index];
+            let b = input[index + 1];
+            result.push(TABLE[(a >> 2) as usize] as char);
+            result.push(TABLE[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+            result.push(TABLE[((b & 15) << 2) as usize] as char);
+            result.push('=');
+        }
+        _ => {}
+    }
+
+    result
+}
+
+fn value(byte: u8) -> Option<u8> {
+    Some(match byte {
+        b'A'..=b'Z' => byte - b'A',
+        b'a'..=b'z' => byte - b'a' + 26,
+        b'0'..=b'9' => byte - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => return None,
+    })
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    let mut group = [0u8; 4];
+    let mut count = 0usize;
+    let mut group_start = 0usize;
+    let mut second_pad = None;
+    let mut ended = false;
+
+    for (i, &byte) in input.iter().enumerate() {
+        if ended {
+            return Err(Error::BadPadding { offset: i });
+        }
+        if second_pad.is_some() && byte != b'=' {
+            return Err(Error::BadPadding { offset: i });
+        }
+
+        if byte == b'=' {
+            match count {
+                0 | 1 => return Err(Error::BadPadding { offset: i }),
+                2 => {
+                    second_pad = Some(i);
+                    count = 3;
+                }
+                3 => {
+                    if second_pad.is_some() {
+                        output.push((group[0] << 2) | (group[1] >> 4));
+                    } else {
+                        output.push((group[0] << 2) | (group[1] >> 4));
+                        output.push((group[1] << 4) | (group[2] >> 2));
+                    }
+                    count = 0;
+                    ended = true;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let v = value(byte).ok_or(Error::InvalidByte { offset: i, byte })?;
+        if count == 0 {
+            group_start = i;
+        }
+        group[count] = v;
+        count += 1;
+
+        if count == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            count = 0;
+            second_pad = None;
+        }
+    }
+
+    if let Some(i) = second_pad {
+        return Err(Error::BadPadding { offset: i });
+    }
+    if count != 0 {
+        return Err(Error::Truncated { offset: group_start });
+    }
+    Ok(output)
+}
+```
+
+### G.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut index = 0;
+
+    while index + 3 <= input.len() {
+        let a = input[index];
+        let b = input[index + 1];
+        let c = input[index + 2];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char);
+        output.push(ALPHABET[(c & 63) as usize] as char);
+        index += 3;
+    }
+
+    match input.len() - index {
+        1 => {
+            let a = input[index];
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[((a & 3) << 4) as usize] as char);
+            output.push_str("==");
+        }
+        2 => {
+            let a = input[index];
+            let b = input[index + 1];
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[((b & 15) << 2) as usize] as char);
+            output.push('=');
+        }
+        _ => {}
+    }
+
+    output
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    let mut group = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut count = 0usize;
+    let mut pending = None;
+    let mut finished = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if finished {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if pending.is_some() {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            output.push((group[0] << 2) | (group[1] >> 4));
+            pending = None;
+            count = 0;
+            finished = true;
+            continue;
+        }
+
+        if byte == b'=' {
+            match count {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => {
+                    pending = Some(offset);
+                    count = 3;
+                }
+                3 => {
+                    output.push((group[0] << 2) | (group[1] >> 4));
+                    output.push((group[1] << 4) | (group[2] >> 2));
+                    count = 0;
+                    finished = true;
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            let value = match digit(byte) {
+                Some(value) => value,
+                None => return Err(Error::InvalidByte { offset, byte }),
+            };
+            group[count] = value;
+            offsets[count] = offset;
+            count += 1;
+
+            if count == 4 {
+                output.push((group[0] << 2) | (group[1] >> 4));
+                output.push((group[1] << 4) | (group[2] >> 2));
+                output.push((group[2] << 6) | group[3]);
+                count = 0;
+            }
+        }
+    }
+
+    if let Some(offset) = pending {
+        return Err(Error::BadPadding { offset });
+    }
+    if count != 0 {
+        return Err(Error::Truncated {
+            offset: offsets[0],
+        });
+    }
+    Ok(output)
+}
+```
+
+### H.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let a = chunk[0];
+        let b = chunk[1];
+        let c = chunk[2];
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        out.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        out.push(ALPHABET[(c & 0x3f) as usize] as char);
+    }
+
+    let tail = chunks.remainder();
+    if tail.len() == 1 {
+        let a = tail[0];
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if tail.len() == 2 {
+        let a = tail[0];
+        let b = tail[1];
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        out.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+        out.push('=');
+    }
+
+    out
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group = [0u8; 4];
+    let mut count = 0usize;
+    let mut group_start = 0usize;
+    let mut pending_second_padding: Option<usize> = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_second_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            pending_second_padding = None;
+            terminal_padding = true;
+            let _ = padding_offset;
+            output.push((group[0] << 2) | (group[1] >> 4));
+            count = 0;
+            continue;
+        }
+
+        if byte == b'=' {
+            match count {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => pending_second_padding = Some(offset),
+                3 => {
+                    terminal_padding = true;
+                    output.push((group[0] << 2) | (group[1] >> 4));
+                    output.push((group[1] << 4) | (group[2] >> 2));
+                    count = 0;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let value = match digit(byte) {
+            Some(value) => value,
+            None => return Err(Error::InvalidByte { offset, byte }),
+        };
+
+        if count == 0 {
+            group_start = offset;
+        }
+        group[count] = value;
+        count += 1;
+
+        if count == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            count = 0;
+        }
+    }
+
+    if let Some(offset) = pending_second_padding {
+        return Err(Error::BadPadding { offset });
+    }
+    if count != 0 {
+        return Err(Error::Truncated { offset: group_start });
+    }
+
+    Ok(output)
+}
+```

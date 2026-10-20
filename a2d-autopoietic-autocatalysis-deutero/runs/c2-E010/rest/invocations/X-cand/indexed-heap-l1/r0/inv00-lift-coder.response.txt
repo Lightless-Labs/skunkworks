@@ -1,0 +1,279 @@
+- Key validation trims only ASCII spaces; malformed keys take precedence over lookup or duplicate checks.
+- `InvalidKey.at` is the byte offset in the original input, including leading spaces.
+- Ranking uses signed priority, UTF-8 byte length, then insertion order; key never breaks ties.
+- Successful reinsertions get a new age; failed pushes leave queue state unchanged.
+- Values are stored unchanged, and returned `Item`s are owned clones.
+- Both implementations use standard-library collections and avoid priority arithmetic, so all `i64` values are safe.
+
+### Solution A
+
+```rust
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+#[derive(Debug)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    priority: i64,
+    value_len: usize,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: HashMap<String, Entry>,
+    order: BTreeSet<(Rank, String)>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: BTreeSet::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn canonical_key(input: &str) -> Result<String, Error> {
+        let bytes = input.as_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+
+        while start < end && bytes[start] == b' ' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+
+        if start == end {
+            return Err(Error::EmptyKey);
+        }
+
+        for (offset, &byte) in bytes[start..end].iter().enumerate() {
+            let valid = if offset == 0 {
+                byte.is_ascii_alphabetic()
+            } else {
+                byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+            };
+            if !valid {
+                return Err(Error::InvalidKey { at: start + offset });
+            }
+        }
+
+        Ok(input[start..end].to_ascii_lowercase())
+    }
+
+    fn rank(entry: &Entry) -> Rank {
+        Rank {
+            priority: entry.item.priority,
+            value_len: entry.item.value.len(),
+            age: entry.age,
+        }
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let canonical = Self::canonical_key(key)?;
+        if self.entries.contains_key(&canonical) {
+            return Err(Error::Duplicate { key: canonical });
+        }
+
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+
+        let item = Item {
+            key: canonical.clone(),
+            priority,
+            value: value.to_owned(),
+        };
+        let entry = Entry { item, age };
+        self.order.insert((Self::rank(&entry), canonical.clone()));
+        self.entries.insert(canonical, entry);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        let (_, key) = self.order.first()?;
+        self.entries.get(key).map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let (rank, key) = self.order.iter().next().cloned()?;
+        self.order.remove(&(rank, key.clone()));
+        self.entries.remove(&key).map(|entry| entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let canonical = Self::canonical_key(key)?;
+        Ok(self.entries.get(&canonical).map(|entry| entry.item.clone()))
+    }
+}
+```
+
+### Solution B
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: HashMap<String, Entry>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn canonical_key(input: &str) -> Result<String, Error> {
+        let bytes = input.as_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+
+        while start < end && bytes[start] == b' ' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+
+        if start == end {
+            return Err(Error::EmptyKey);
+        }
+
+        for (offset, &byte) in bytes[start..end].iter().enumerate() {
+            let valid = if offset == 0 {
+                byte.is_ascii_alphabetic()
+            } else {
+                byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+            };
+            if !valid {
+                return Err(Error::InvalidKey { at: start + offset });
+            }
+        }
+
+        Ok(input[start..end].to_ascii_lowercase())
+    }
+
+    fn is_better(left: &Entry, right: &Entry) -> bool {
+        left.item
+            .priority
+            .cmp(&right.item.priority)
+            .then_with(|| left.item.value.len().cmp(&right.item.value.len()))
+            .then_with(|| left.age.cmp(&right.age))
+            .is_lt()
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let canonical = Self::canonical_key(key)?;
+        if self.entries.contains_key(&canonical) {
+            return Err(Error::Duplicate { key: canonical });
+        }
+
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+        self.entries.insert(
+            canonical.clone(),
+            Entry {
+                item: Item {
+                    key: canonical,
+                    priority,
+                    value: value.to_owned(),
+                },
+                age,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.entries
+            .values()
+            .min_by(|a, b| {
+                a.item
+                    .priority
+                    .cmp(&b.item.priority)
+                    .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+                    .then_with(|| a.age.cmp(&b.age))
+            })
+            .map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let best_key = self
+            .entries
+            .iter()
+            .min_by(|(_, a), (_, b)| {
+                a.item
+                    .priority
+                    .cmp(&b.item.priority)
+                    .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+                    .then_with(|| a.age.cmp(&b.age))
+            })
+            .map(|(key, _)| key.clone())?;
+        self.entries.remove(&best_key).map(|entry| entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let canonical = Self::canonical_key(key)?;
+        Ok(self.entries.get(&canonical).map(|entry| entry.item.clone()))
+    }
+}
+```

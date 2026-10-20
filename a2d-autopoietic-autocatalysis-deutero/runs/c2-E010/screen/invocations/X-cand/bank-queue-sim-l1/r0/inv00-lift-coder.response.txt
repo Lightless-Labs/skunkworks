@@ -1,0 +1,297 @@
+- Validate each row in input order: zero ID first, then duplicate ID.
+- Emit a scheduled Finish before arrivals at the same tick; emit the full arrival cohort before dispatch.
+- The first dispatch always incurs wake; later dispatches incur it only after a strict idle gap.
+- Check service-time addition before wake-cost addition, and only when dispatching.
+- Zero-duration service finishes inline; zero additions at `u64::MAX` are valid.
+- Empty input succeeds without arithmetic checks. Both solutions use these readings.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut seen = HashSet::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::with_capacity(customers.len() * 3);
+    let mut waiting: VecDeque<&Customer> = VecDeque::new();
+    let mut next_arrival = 0usize;
+    let mut current_time = 0u64;
+    let mut finish: Option<(u64, u32)> = None;
+    let mut previous_finish: Option<u64> = None;
+
+    loop {
+        let next_arrival_time = arrivals.get(next_arrival).map(|c| c.arrival);
+        let next_time = match (finish, next_arrival_time) {
+            (Some((ft, _)), Some(at)) => ft.min(at),
+            (Some((ft, _)), None) => ft,
+            (None, Some(at)) => at,
+            (None, None) => break,
+        };
+        current_time = next_time;
+
+        if let Some((ft, id)) = finish {
+            if ft == current_time {
+                events.push(Event {
+                    time: current_time,
+                    customer: id,
+                    kind: Kind::Finish,
+                });
+                finish = None;
+                previous_finish = Some(current_time);
+            }
+        }
+
+        while next_arrival < arrivals.len()
+            && arrivals[next_arrival].arrival == current_time
+        {
+            let customer = arrivals[next_arrival];
+            events.push(Event {
+                time: current_time,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push_back(customer);
+            next_arrival += 1;
+        }
+
+        if finish.is_none() {
+            if let Some(customer) = waiting.pop_front() {
+                let wake = previous_finish
+                    .map(|last| current_time > last)
+                    .unwrap_or(true);
+                let service_finish = current_time.checked_add(customer.service).ok_or(
+                    Error::TimeOverflow {
+                        customer: customer.id,
+                        time: current_time,
+                    },
+                )?;
+                let occupation_finish = service_finish.checked_add(if wake { wake_cost } else { 0 })
+                    .ok_or(Error::TimeOverflow {
+                        customer: customer.id,
+                        time: current_time,
+                    })?;
+
+                events.push(Event {
+                    time: current_time,
+                    customer: customer.id,
+                    kind: Kind::Start {
+                        finish: occupation_finish,
+                        wake,
+                    },
+                });
+
+                if occupation_finish == current_time {
+                    events.push(Event {
+                        time: current_time,
+                        customer: customer.id,
+                        kind: Kind::Finish,
+                    });
+                    previous_finish = Some(current_time);
+                } else {
+                    finish = Some((occupation_finish, customer.id));
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::HashSet;
+
+    let mut ids = HashSet::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !ids.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut order: Vec<usize> = (0..customers.len()).collect();
+    order.sort_by(|&i, &j| {
+        customers[i]
+            .arrival
+            .cmp(&customers[j].arrival)
+            .then_with(|| customers[j].id.cmp(&customers[i].id))
+    });
+
+    let mut output = Vec::with_capacity(customers.len() * 3);
+    let mut queue: Vec<usize> = Vec::with_capacity(customers.len());
+    let mut head = 0usize;
+    let mut arrival_cursor = 0usize;
+    let mut occupied: Option<(u64, usize)> = None;
+    let mut last_finish: Option<u64> = None;
+
+    loop {
+        let arrival_time = order
+            .get(arrival_cursor)
+            .map(|&index| customers[index].arrival);
+        let finish_time = occupied.map(|(time, _)| time);
+        let tick = match (arrival_time, finish_time) {
+            (Some(a), Some(f)) => a.min(f),
+            (Some(a), None) => a,
+            (None, Some(f)) => f,
+            (None, None) => break,
+        };
+
+        if let Some((time, index)) = occupied {
+            if time == tick {
+                output.push(Event {
+                    time: tick,
+                    customer: customers[index].id,
+                    kind: Kind::Finish,
+                });
+                occupied = None;
+                last_finish = Some(tick);
+            }
+        }
+
+        while arrival_cursor < order.len()
+            && customers[order[arrival_cursor]].arrival == tick
+        {
+            let index = order[arrival_cursor];
+            output.push(Event {
+                time: tick,
+                customer: customers[index].id,
+                kind: Kind::Arrive,
+            });
+            queue.push(index);
+            arrival_cursor += 1;
+        }
+
+        if occupied.is_none() && head < queue.len() {
+            let index = queue[head];
+            head += 1;
+            let customer = &customers[index];
+            let wake = last_finish
+                .map(|time| tick > time)
+                .unwrap_or(true);
+
+            let after_service = tick.checked_add(customer.service).ok_or(
+                Error::TimeOverflow {
+                    customer: customer.id,
+                    time: tick,
+                },
+            )?;
+            let end = after_service.checked_add(if wake { wake_cost } else { 0 }).ok_or(
+                Error::TimeOverflow {
+                    customer: customer.id,
+                    time: tick,
+                },
+            )?;
+
+            output.push(Event {
+                time: tick,
+                customer: customer.id,
+                kind: Kind::Start { finish: end, wake },
+            });
+
+            if end == tick {
+                output.push(Event {
+                    time: tick,
+                    customer: customer.id,
+                    kind: Kind::Finish,
+                });
+                last_finish = Some(tick);
+            } else {
+                occupied = Some((end, index));
+            }
+        }
+    }
+
+    Ok(output)
+}
+```

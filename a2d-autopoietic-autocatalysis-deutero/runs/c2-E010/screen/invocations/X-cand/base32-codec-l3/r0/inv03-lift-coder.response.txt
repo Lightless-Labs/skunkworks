@@ -1,0 +1,289 @@
+- Validation follows the specified pass order: missing check, data bytes, check byte, length, trailing bits, then checksum.
+- Hyphens are skipped before reserving the final significant byte as the check; offsets remain original UTF-8 byte indices.
+- Length is based on data-symbol count modulo 8; unused low bits must be zero.
+- Checksum includes the padded final data value. Empty checked input data has remainder zero.
+- The byte API supports arbitrary input sizes without integer-width limits.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    MissingCheck { offset: usize },
+    InvalidByte { offset: usize, byte: u8 },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    CheckMismatch { offset: usize, expected: u8, found: u8 },
+}
+
+const DATA_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
+
+pub fn encode(input: &[u8], checked: bool) -> String {
+    let mut output = String::with_capacity((input.len() * 8 + 4) / 5 + usize::from(checked));
+    let mut acc: u32 = 0;
+    let mut bits: u8 = 0;
+    let mut remainder: u8 = 0;
+
+    for &byte in input {
+        acc = (acc << 8) | u32::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            let value = ((acc >> bits) & 31) as u8;
+            output.push(DATA_ALPHABET[value as usize] as char);
+            remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+            acc &= (1u32 << bits) - 1;
+        }
+    }
+
+    if bits != 0 {
+        let value = ((acc << (5 - bits)) & 31) as u8;
+        output.push(DATA_ALPHABET[value as usize] as char);
+        remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+    }
+
+    if checked {
+        output.push(CHECK_ALPHABET[remainder as usize] as char);
+    }
+    output
+}
+
+fn data_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'H' => Some(byte - b'A' + 10),
+        b'a'..=b'h' => Some(byte - b'a' + 10),
+        b'I' | b'i' | b'L' | b'l' => Some(1),
+        b'J'..=b'N' => Some(byte - b'J' + 18),
+        b'j'..=b'n' => Some(byte - b'j' + 18),
+        b'O' | b'o' => Some(0),
+        b'P'..=b'T' => Some(byte - b'P' + 22),
+        b'p'..=b't' => Some(byte - b'p' + 22),
+        b'V'..=b'Z' => Some(byte - b'V' + 27),
+        b'v'..=b'z' => Some(byte - b'v' + 27),
+        _ => None,
+    }
+}
+
+fn check_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'*' => Some(32),
+        b'~' => Some(33),
+        b'$' => Some(34),
+        b'=' => Some(35),
+        b'U' | b'u' => Some(36),
+        _ => data_value(byte),
+    }
+}
+
+pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let significant: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &b)| if b == b'-' { None } else { Some(i) })
+        .collect();
+
+    if checked && significant.is_empty() {
+        return Err(DecodeError::MissingCheck { offset: input.len() });
+    }
+
+    let data_end = if checked {
+        significant.len() - 1
+    } else {
+        significant.len()
+    };
+
+    let mut values = Vec::with_capacity(data_end);
+    for &offset in &significant[..data_end] {
+        match data_value(bytes[offset]) {
+            Some(value) => values.push(value),
+            None => return Err(DecodeError::InvalidByte { offset, byte: bytes[offset] }),
+        }
+    }
+
+    let reserved_check = if checked {
+        let offset = significant[data_end];
+        match check_value(bytes[offset]) {
+            Some(value) => Some((offset, value)),
+            None => return Err(DecodeError::InvalidByte { offset, byte: bytes[offset] }),
+        }
+    } else {
+        None
+    };
+
+    let residue = values.len() % 8;
+    if !matches!(residue, 0 | 2 | 4 | 5 | 7) {
+        return Err(DecodeError::InvalidLength { offset: input.len() });
+    }
+
+    if residue != 0 {
+        let unused = match residue {
+            2 => 2,
+            4 => 4,
+            5 => 1,
+            7 => 3,
+            _ => 0,
+        };
+        if unused != 0 && (values[values.len() - 1] & ((1 << unused) - 1)) != 0 {
+            let offset = significant[data_end - 1];
+            return Err(DecodeError::TrailingBits { offset });
+        }
+    }
+
+    let mut output = Vec::with_capacity(values.len() * 5 / 8);
+    let mut acc: u32 = 0;
+    let mut bits: u8 = 0;
+    let mut remainder: u8 = 0;
+
+    for &value in &values {
+        remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+        acc = (acc << 5) | u32::from(value);
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((acc >> bits) & 0xff) as u8);
+            acc &= (1u32 << bits) - 1;
+        }
+    }
+
+    if let Some((offset, found)) = reserved_check {
+        if found != remainder {
+            return Err(DecodeError::CheckMismatch {
+                offset,
+                expected: remainder,
+                found,
+            });
+        }
+    }
+
+    Ok(output)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    MissingCheck { offset: usize },
+    InvalidByte { offset: usize, byte: u8 },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    CheckMismatch { offset: usize, expected: u8, found: u8 },
+}
+
+const DATA: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CHECK: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
+
+pub fn encode(input: &[u8], checked: bool) -> String {
+    let groups = input.len().saturating_mul(8).saturating_add(4) / 5;
+    let mut out = String::with_capacity(groups.saturating_add(usize::from(checked)));
+    let mut rem = 0u8;
+
+    let total_bits = input.len().saturating_mul(8);
+    let mut bit_pos = 0usize;
+    while bit_pos < total_bits {
+        let available = (total_bits - bit_pos).min(5);
+        let mut value = 0u8;
+        for j in 0..available {
+            let pos = bit_pos + j;
+            let bit = (input[pos / 8] >> (7 - pos % 8)) & 1;
+            value = (value << 1) | bit;
+        }
+        value <<= 5 - available;
+        out.push(DATA[value as usize] as char);
+        rem = ((u16::from(rem) * 32 + u16::from(value)) % 37) as u8;
+        bit_pos += available;
+    }
+
+    if checked {
+        out.push(CHECK[rem as usize] as char);
+    }
+    out
+}
+
+fn value_for_data(b: u8) -> Option<u8> {
+    let upper = b.to_ascii_uppercase();
+    match upper {
+        b'I' | b'L' => Some(1),
+        b'O' => Some(0),
+        _ => DATA.iter().position(|&c| c == upper).map(|v| v as u8),
+    }
+}
+
+fn value_for_check(b: u8) -> Option<u8> {
+    match b.to_ascii_uppercase() {
+        b'*' => Some(32),
+        b'~' => Some(33),
+        b'$' => Some(34),
+        b'=' => Some(35),
+        b'U' => Some(36),
+        b => value_for_data(b),
+    }
+}
+
+pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError> {
+    let raw = input.as_bytes();
+    let indices: Vec<usize> = raw.iter().enumerate()
+        .filter_map(|(i, &b)| (b != b'-').then_some(i))
+        .collect();
+
+    if checked && indices.is_empty() {
+        return Err(DecodeError::MissingCheck { offset: raw.len() });
+    }
+
+    let count = indices.len() - usize::from(checked);
+    let mut vals = Vec::with_capacity(count);
+    for &i in &indices[..count] {
+        if let Some(v) = value_for_data(raw[i]) {
+            vals.push(v);
+        } else {
+            return Err(DecodeError::InvalidByte { offset: i, byte: raw[i] });
+        }
+    }
+
+    let check = if checked {
+        let i = indices[count];
+        match value_for_check(raw[i]) {
+            Some(v) => Some((i, v)),
+            None => return Err(DecodeError::InvalidByte { offset: i, byte: raw[i] }),
+        }
+    } else {
+        None
+    };
+
+    let residue = vals.len() % 8;
+    if residue != 0 && residue != 2 && residue != 4 && residue != 5 && residue != 7 {
+        return Err(DecodeError::InvalidLength { offset: raw.len() });
+    }
+
+    let unused = match residue { 2 => 2, 4 => 4, 5 => 1, 7 => 3, _ => 0 };
+    if unused != 0 && vals.last().copied().unwrap_or(0) & ((1 << unused) - 1) != 0 {
+        return Err(DecodeError::TrailingBits { offset: indices[count - 1] });
+    }
+
+    let mut bytes_out = Vec::with_capacity(vals.len() * 5 / 8);
+    let mut acc = 0u32;
+    let mut bit_count = 0u8;
+    let mut rem = 0u8;
+    for &v in &vals {
+        rem = ((u16::from(rem) * 32 + u16::from(v)) % 37) as u8;
+        acc = (acc << 5) | u32::from(v);
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            bytes_out.push((acc >> bit_count) as u8);
+            acc &= (1u32 << bit_count) - 1;
+        }
+    }
+
+    if let Some((offset, found)) = check {
+        if found != rem {
+            return Err(DecodeError::CheckMismatch { offset, expected: rem, found });
+        }
+    }
+    Ok(bytes_out)
+}
+```

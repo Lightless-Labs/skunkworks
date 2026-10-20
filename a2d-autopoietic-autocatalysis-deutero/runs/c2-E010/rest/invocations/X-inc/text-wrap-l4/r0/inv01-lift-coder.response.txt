@@ -1,0 +1,510 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InputTooLong { chars: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Clone)]
+struct Word {
+    chars: Vec<char>,
+    markers: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct CandidateLine {
+    text: String,
+    displayed_width: usize,
+    gap: usize,
+    pieces: usize,
+    consumed: usize,
+    marker_ended: bool,
+    raw_split: bool,
+    next_word: usize,
+    next_offset: usize,
+}
+
+#[derive(Clone)]
+struct Solution {
+    cost: u64,
+    marker_count: usize,
+    lines: Vec<CandidateLine>,
+    consumed_counts: Vec<usize>,
+    prejustify: Vec<String>,
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn append_word_prefix(out: &mut String, word: &Word, start: usize, end: usize) {
+    for i in start..end {
+        out.push(word.chars[i]);
+    }
+}
+
+fn compare_solutions(a: &Solution, b: &Solution) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    match a.cost.cmp(&b.cost) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+    match a.marker_count.cmp(&b.marker_count) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+    match a.lines.len().cmp(&b.lines.len()) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+
+    for (x, y) in a.consumed_counts.iter().zip(&b.consumed_counts) {
+        match y.cmp(x) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+
+    for (x, y) in a.prejustify.iter().zip(&b.prejustify) {
+        match x.cmp(y) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+
+    Ordering::Equal
+}
+
+fn solve_paragraph(words: &[Word], options: &WrapOptions) -> Vec<CandidateLine> {
+    use std::collections::HashMap;
+
+    #[derive(Clone, Copy, Hash, PartialEq, Eq)]
+    struct State {
+        word: usize,
+        offset: usize,
+        first: bool,
+    }
+
+    fn solve(
+        state: State,
+        words: &[Word],
+        options: &WrapOptions,
+        memo: &mut HashMap<State, Solution>,
+    ) -> Solution {
+        if state.word >= words.len() {
+            return Solution {
+                cost: 0,
+                marker_count: 0,
+                lines: Vec::new(),
+                consumed_counts: Vec::new(),
+                prejustify: Vec::new(),
+            };
+        }
+        if let Some(found) = memo.get(&state) {
+            return found.clone();
+        }
+
+        let indent = if state.first {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        let capacity = options.width - indent;
+        let word = &words[state.word];
+        let start = state.offset;
+        let remaining = word.chars.len() - start;
+        let mut candidates = Vec::new();
+
+        let mut prefix = String::new();
+        let mut cursor_word = state.word;
+        let mut cursor_offset = start;
+        let mut occupied = 0usize;
+        let mut pieces = 0usize;
+
+        loop {
+            let current_word = &words[cursor_word];
+            let suffix_start = cursor_offset;
+            let suffix_len = current_word.chars.len() - suffix_start;
+            let room_for_word = capacity.saturating_sub(occupied + usize::from(pieces > 0));
+
+            // Marker-ended alternatives in this word.
+            for &marker in &current_word.markers {
+                if marker > suffix_start
+                    && marker < current_word.chars.len()
+                    && marker - suffix_start + 1 <= room_for_word
+                {
+                    let mut content = prefix.clone();
+                    if pieces > 0 {
+                        content.push(' ');
+                    }
+                    append_word_prefix(&mut content, current_word, suffix_start, marker);
+                    content.push('-');
+                    let displayed_width = indent + content.chars().count();
+                    let gap = options.width - displayed_width;
+                    let consumed = marker - suffix_start;
+                    candidates.push(CandidateLine {
+                        text: format!("{}{}", " ".repeat(indent), content),
+                        displayed_width,
+                        gap,
+                        pieces: pieces + 1,
+                        consumed,
+                        marker_ended: true,
+                        raw_split: false,
+                        next_word: cursor_word,
+                        next_offset: marker,
+                    });
+                }
+            }
+
+            // Complete this word, then potentially continue with later words.
+            if suffix_len <= room_for_word {
+                if pieces > 0 {
+                    prefix.push(' ');
+                }
+                append_word_prefix(&mut prefix, current_word, suffix_start, current_word.chars.len());
+                let new_pieces = pieces + 1;
+                let next_word = cursor_word + 1;
+
+                candidates.push(CandidateLine {
+                    text: format!("{}{}", " ".repeat(indent), prefix),
+                    displayed_width: indent + prefix.chars().count(),
+                    gap: options.width - indent - prefix.chars().count(),
+                    pieces: new_pieces,
+                    consumed: if cursor_word == state.word {
+                        current_word.chars.len() - start
+                    } else {
+                        current_word.chars.len()
+                    },
+                    marker_ended: false,
+                    raw_split: false,
+                    next_word,
+                    next_offset: 0,
+                });
+
+                occupied = prefix.chars().count();
+                pieces = new_pieces;
+                cursor_word = next_word;
+                cursor_offset = 0;
+                if cursor_word >= words.len() {
+                    break;
+                }
+                continue;
+            }
+
+            // Raw split is allowed only at the initial, otherwise empty line,
+            // and only when no remaining marker prefix fits.
+            if cursor_word == state.word
+                && pieces == 0
+                && suffix_len > capacity
+                && !current_word.markers.iter().any(|&m| {
+                    m > start && m < current_word.chars.len() && m - start + 1 <= capacity
+                })
+            {
+                let end = start + capacity;
+                let mut content = String::new();
+                append_word_prefix(&mut content, current_word, start, end);
+                candidates.push(CandidateLine {
+                    text: format!("{}{}", " ".repeat(indent), content),
+                    displayed_width: options.width,
+                    gap: 0,
+                    pieces: 1,
+                    consumed: capacity,
+                    marker_ended: false,
+                    raw_split: true,
+                    next_word: cursor_word,
+                    next_offset: end,
+                });
+            }
+            break;
+        }
+
+        let is_final = candidates.iter().any(|c| c.next_word >= words.len());
+        let mut best: Option<Solution> = None;
+
+        for candidate in candidates {
+            let terminal = candidate.next_word >= words.len();
+            let next_state = State {
+                word: candidate.next_word,
+                offset: candidate.next_offset,
+                first: false,
+            };
+            let tail = if terminal {
+                Solution {
+                    cost: 0,
+                    marker_count: 0,
+                    lines: Vec::new(),
+                    consumed_counts: Vec::new(),
+                    prejustify: Vec::new(),
+                }
+            } else {
+                solve(next_state, words, options, memo)
+            };
+
+            let line_cost = if terminal {
+                ((candidate.gap as u64) * (candidate.gap as u64)) / 4
+            } else {
+                (candidate.gap as u64) * (candidate.gap as u64)
+            };
+            let mut cost = line_cost;
+            if candidate.marker_ended {
+                cost += options.hyphen_cost as u64;
+            }
+            if candidate.raw_split {
+                cost += (2 * options.width + 1) as u64;
+            }
+            if !terminal && candidate.pieces == 1 {
+                cost += 3;
+            }
+
+            let mut solution = Solution {
+                cost: cost + tail.cost,
+                marker_count: usize::from(candidate.marker_ended) + tail.marker_count,
+                lines: vec![candidate.clone()],
+                consumed_counts: vec![candidate.consumed],
+                prejustify: vec![candidate.text.clone()],
+            };
+            solution.lines.extend(tail.lines);
+            solution.consumed_counts.extend(tail.consumed_counts);
+            solution.prejustify.extend(tail.prejustify);
+
+            if best.as_ref().map_or(true, |old| {
+                compare_solutions(&solution, old) == std::cmp::Ordering::Less
+            }) {
+                best = Some(solution);
+            }
+        }
+
+        // This is unreachable for valid widths because raw splitting guarantees progress.
+        let result = best.unwrap_or_else(|| {
+            let _ = is_final;
+            Solution {
+                cost: 0,
+                marker_count: 0,
+                lines: Vec::new(),
+                consumed_counts: Vec::new(),
+                prejustify: Vec::new(),
+            }
+        });
+        memo.insert(state, result.clone());
+        result
+    }
+
+    let result = solve(
+        State {
+            word: 0,
+            offset: 0,
+            first: true,
+        },
+        words,
+        options,
+        &mut HashMap::new(),
+    );
+    result.lines
+}
+
+fn parse_segment(chars: &[char]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut current = Word {
+        chars: Vec::new(),
+        markers: Vec::new(),
+    };
+    let mut in_word = false;
+
+    for &c in chars {
+        if is_separator(c) {
+            if in_word {
+                words.push(current);
+                current = Word {
+                    chars: Vec::new(),
+                    markers: Vec::new(),
+                };
+                in_word = false;
+            }
+        } else if c == '~' {
+            current.markers.push(current.chars.len());
+            in_word = true;
+        } else {
+            current.chars.push(c);
+            in_word = true;
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
+}
+
+fn justify_line(line: &CandidateLine, line_index: usize, width: usize) -> String {
+    if line.pieces < 2 {
+        return line.text.clone();
+    }
+
+    let indent = line.text.chars().take_while(|&c| c == ' ').count();
+    let content: String = line.text.chars().skip(indent).collect();
+    let mut parts: Vec<String> = content.split(' ').map(str::to_owned).collect();
+    let gaps = parts.len().saturating_sub(1);
+    if gaps == 0 {
+        return line.text.clone();
+    }
+
+    let extra = width.saturating_sub(line.displayed_width);
+    let each = extra / gaps;
+    let remainder = extra % gaps;
+    let start_gap = line_index % gaps;
+
+    let mut result = " ".repeat(indent);
+    for i in 0..parts.len() {
+        result.push_str(&parts[i]);
+        if i < gaps {
+            let bonus = usize::from((i + gaps - start_gap) % gaps < remainder);
+            result.push_str(&" ".repeat(1 + each + bonus));
+        }
+    }
+    parts.clear();
+    result
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() > 512 {
+        return Err(WrapError::InputTooLong { chars: chars.len() });
+    }
+
+    let mut byte_index = 0usize;
+    for &c in &chars {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index: byte_index });
+        }
+        byte_index += c.len_utf8();
+    }
+
+    let mut byte_index = 0usize;
+    let mut marker_error = None;
+    for i in 0..chars.len() {
+        if chars[i] == '~' {
+            let left_ok = i > 0 && !is_separator(chars[i - 1]) && chars[i - 1] != '~';
+            let right_ok =
+                i + 1 < chars.len() && !is_separator(chars[i + 1]) && chars[i + 1] != '~';
+            if (!left_ok || !right_ok) && marker_error.is_none() {
+                marker_error = Some(byte_index);
+            }
+        }
+        byte_index += chars[i].len_utf8();
+    }
+    if let Some(index) = marker_error {
+        return Err(WrapError::InvalidMarker { index });
+    }
+
+    let mut normalized = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\r' {
+            normalized.push('\n');
+            if i + 1 < chars.len() && chars[i + 1] == '\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            normalized.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut output = Vec::new();
+    let mut segment = Vec::new();
+    let mut pos = 0usize;
+
+    while pos < normalized.len() {
+        if normalized[pos] == '\n' {
+            let mut end = pos;
+            while end < normalized.len() && normalized[end] == '\n' {
+                end += 1;
+            }
+            if end - pos >= 2 {
+                let words = parse_segment(&segment);
+                if !words.is_empty() {
+                    let lines = solve_paragraph(&words, options);
+                    let last = lines.len().saturating_sub(1);
+                    for (line_index, line) in lines.iter().enumerate() {
+                        let rendered = if options.justify && line_index < last && line.pieces >= 2 {
+                            justify_line(line, line_index, options.width)
+                        } else {
+                            line.text.clone()
+                        };
+                        output.push(rendered);
+                    }
+                }
+                for _ in 0..(end - pos - 1) {
+                    output.push(String::new());
+                }
+                segment.clear();
+                pos = end;
+                continue;
+            }
+        }
+        segment.push(normalized[pos]);
+        pos += 1;
+    }
+
+    let words = parse_segment(&segment);
+    if !words.is_empty() {
+        let lines = solve_paragraph(&words, options);
+        let last = lines.len().saturating_sub(1);
+        for (line_index, line) in lines.iter().enumerate() {
+            let rendered = if options.justify && line_index < last && line.pieces >= 2 {
+                justify_line(line, line_index, options.width)
+            } else {
+                line.text.clone()
+            };
+            output.push(rendered);
+        }
+    }
+
+    Ok(output)
+}
+```

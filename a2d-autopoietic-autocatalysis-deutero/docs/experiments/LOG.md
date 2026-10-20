@@ -1778,3 +1778,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **E010 (two readings per Luna call, A = most likely, B = hedge), screen: PASS** (L20, 03:21–05:45 UTC 10-20). All-pass 60/68 vs E002's 57/68 (+4.4 pp; discordant 6 vs 3); hidden fraction +0.4 pp. 0 void, integrity OK. 673 invocations: X:cand 272 Luna + 65 Sol, X:inc 274 Luna + 62 Sol.
   - DIAG, first 11 tasks: almost every call returned 2 files ([2,2,2,2]; one call returned 1), with 3–8 distinct public-green files per task, so the judge ran on every task. The pick came from a B (hedge) slot in 5 of 11.
   - The rest stage started at about 05:45. Luna today: 1,177 of 3,000.
+- **E010 full stage: PROVISIONAL KEEP** (rest 05:45–07:00 UTC 10-20). Δall-pass **+5.0 pp (SE 2.6)**, above the 3.57 pp threshold; Δhidden fraction +0.5 pp (SE 1.0). 1,386 invocations over the 140 dev tasks.
+  - The batch now has three provisional keeps: E007 +7.1 (SE 3.2), E010 +5.0 (SE 2.6) and E005 +5.0 (SE 2.8).
+- **L21 `confirm_best`** chose E007 (the largest Δ) and was **deferred by the cap**: Luna today 1,673, plus the confirmation's worst case of 1,400, exceeds 3,000.
+  - The queue waits until 00:05 UTC 10-21 (L22). L28 then confirms E007.
+  - If E007 is discarded, L29 confirms the next keep: E010, ahead of E005 on the smaller SE. At most 2 confirmations.

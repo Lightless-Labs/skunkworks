@@ -1,0 +1,270 @@
+- Validate the full tier schedule before calculating, even when quantity is zero.
+- Check each tier in input order; at a given index, apply only its relevant `Some` or `None` rule.
+- Treat finite bounds as inclusive, with each tier covering units after the previous bound.
+- Add `start` once for every tier that receives positive units, including when its unit price is zero.
+- Report overflow at the first used band whose charge or addition to the running total overflows.
+- For Solution B, use checked `u128` intermediates to detect `u64` overflow; Solution A uses checked `u64` arithmetic.
+
+### Solution A
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                return Ok(Charge {
+                    amount: 0,
+                    bands: Vec::new(),
+                });
+            }
+
+            let amount = quantity
+                .checked_mul(*unit)
+                .and_then(|product| product.checked_add(*start))
+                .ok_or(Error::Overflow { index: 0 })?;
+
+            Ok(Charge {
+                amount,
+                bands: vec![Band {
+                    index: 0,
+                    units: quantity,
+                    amount,
+                }],
+            })
+        }
+        Price::Tiers(tiers) => {
+            if tiers.is_empty() {
+                return Err(Error::Empty);
+            }
+            if tiers.len() > 64 {
+                return Err(Error::TooMany);
+            }
+
+            let mut previous_bound = 0u64;
+            for (index, tier) in tiers.iter().enumerate() {
+                match tier.up_to {
+                    Some(bound) => {
+                        if bound <= previous_bound {
+                            return Err(Error::Bound { index });
+                        }
+                        previous_bound = bound;
+                    }
+                    None => {
+                        if index + 1 != tiers.len() {
+                            return Err(Error::Unbounded { index });
+                        }
+                    }
+                }
+            }
+
+            if tiers.last().and_then(|tier| tier.up_to).is_some() {
+                return Err(Error::MissingFinal);
+            }
+
+            let mut remaining = quantity;
+            let mut previous_bound = 0u64;
+            let mut amount = 0u64;
+            let mut bands = Vec::new();
+
+            for (index, tier) in tiers.iter().enumerate() {
+                let units = match tier.up_to {
+                    Some(bound) => {
+                        let width = bound - previous_bound;
+                        previous_bound = bound;
+                        remaining.min(width)
+                    }
+                    None => remaining,
+                };
+
+                if units > 0 {
+                    let band_amount = units
+                        .checked_mul(tier.unit)
+                        .and_then(|product| product.checked_add(tier.start))
+                        .ok_or(Error::Overflow { index })?;
+                    amount = amount
+                        .checked_add(band_amount)
+                        .ok_or(Error::Overflow { index })?;
+                    bands.push(Band {
+                        index,
+                        units,
+                        amount: band_amount,
+                    });
+                    remaining -= units;
+                }
+            }
+
+            Ok(Charge { amount, bands })
+        }
+    }
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                return Ok(Charge {
+                    amount: 0,
+                    bands: Vec::new(),
+                });
+            }
+
+            let exact = (quantity as u128) * (*unit as u128) + (*start as u128);
+            if exact > u64::MAX as u128 {
+                return Err(Error::Overflow { index: 0 });
+            }
+            let amount = exact as u64;
+
+            Ok(Charge {
+                amount,
+                bands: vec![Band {
+                    index: 0,
+                    units: quantity,
+                    amount,
+                }],
+            })
+        }
+        Price::Tiers(tiers) => {
+            if tiers.is_empty() {
+                return Err(Error::Empty);
+            }
+            if tiers.len() > 64 {
+                return Err(Error::TooMany);
+            }
+
+            let mut previous_bound = 0u64;
+            for (index, tier) in tiers.iter().enumerate() {
+                match tier.up_to {
+                    Some(bound) => {
+                        if bound <= previous_bound {
+                            return Err(Error::Bound { index });
+                        }
+                        previous_bound = bound;
+                    }
+                    None => {
+                        if index + 1 != tiers.len() {
+                            return Err(Error::Unbounded { index });
+                        }
+                    }
+                }
+            }
+
+            if tiers.last().and_then(|tier| tier.up_to).is_some() {
+                return Err(Error::MissingFinal);
+            }
+
+            let mut remaining = quantity;
+            let mut previous_bound = 0u64;
+            let mut total = 0u128;
+            let mut bands = Vec::new();
+
+            for (index, tier) in tiers.iter().enumerate() {
+                let units = match tier.up_to {
+                    Some(bound) => {
+                        let width = bound - previous_bound;
+                        previous_bound = bound;
+                        remaining.min(width)
+                    }
+                    None => remaining,
+                };
+
+                if units > 0 {
+                    let band_amount =
+                        (units as u128) * (tier.unit as u128) + (tier.start as u128);
+                    total += band_amount;
+                    if band_amount > u64::MAX as u128 || total > u64::MAX as u128 {
+                        return Err(Error::Overflow { index });
+                    }
+
+                    bands.push(Band {
+                        index,
+                        units,
+                        amount: band_amount as u64,
+                    });
+                    remaining -= units;
+                }
+            }
+
+            Ok(Charge {
+                amount: total as u64,
+                bands,
+            })
+        }
+    }
+}
+```

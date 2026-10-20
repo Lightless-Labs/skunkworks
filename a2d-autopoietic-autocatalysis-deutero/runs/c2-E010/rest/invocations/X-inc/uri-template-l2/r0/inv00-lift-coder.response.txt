@@ -1,0 +1,187 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug, Clone)]
+struct Expression {
+    start: usize,
+    end: usize,
+    operator: Option<u8>,
+    names: Vec<(usize, String)>,
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'}' => return Err(Error::UnexpectedClose { pos: cursor }),
+            b'{' => {
+                let open = cursor;
+                let Some(relative_close) = bytes[open + 1..].iter().position(|&b| b == b'}') else {
+                    return Err(Error::Unclosed { pos: open });
+                };
+                let close = open + 1 + relative_close;
+
+                if let Some(relative_nested) = bytes[open + 1..close].iter().position(|&b| b == b'{') {
+                    return Err(Error::NestedOpen {
+                        pos: open + 1 + relative_nested,
+                    });
+                }
+
+                let mut content_start = open + 1;
+                let operator = if content_start < close
+                    && matches!(bytes[content_start], b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&')
+                {
+                    let op = bytes[content_start];
+                    content_start += 1;
+                    if op != b'+' && op != b'#' {
+                        return Err(Error::UnsupportedOperator { pos: open + 1 });
+                    }
+                    Some(op)
+                } else {
+                    None
+                };
+
+                if content_start == close {
+                    return Err(Error::EmptyExpression { pos: close });
+                }
+
+                let mut names = Vec::new();
+                let mut seen = Vec::<String>::new();
+                let mut spec_start = content_start;
+
+                loop {
+                    let spec_end = bytes[spec_start..close]
+                        .iter()
+                        .position(|&b| b == b',')
+                        .map(|relative| spec_start + relative)
+                        .unwrap_or(close);
+
+                    if spec_start == spec_end {
+                        return Err(Error::EmptyVariable { pos: spec_start });
+                    }
+
+                    let spec = &template[spec_start..spec_end];
+                    let spec_bytes = spec.as_bytes();
+                    for (index, &byte) in spec_bytes.iter().enumerate() {
+                        let valid = if index == 0 {
+                            byte.is_ascii_alphabetic() || byte == b'_'
+                        } else {
+                            byte.is_ascii_alphanumeric() || byte == b'_'
+                        };
+                        if !valid {
+                            return Err(Error::InvalidName { pos: spec_start + index });
+                        }
+                    }
+
+                    if seen.iter().any(|name| name == spec) {
+                        return Err(Error::DuplicateVariable { pos: spec_start });
+                    }
+
+                    let name = spec.to_owned();
+                    seen.push(name.clone());
+                    names.push((spec_start, name));
+
+                    if spec_end == close {
+                        break;
+                    }
+                    spec_start = spec_end + 1;
+                }
+
+                expressions.push(Expression {
+                    start: open,
+                    end: close + 1,
+                    operator,
+                    names,
+                });
+                cursor = close + 1;
+            }
+            _ => cursor += 1,
+        }
+    }
+
+    let mut output = String::new();
+    let mut literal_start = 0;
+
+    for expression in expressions {
+        output.push_str(&template[literal_start..expression.start]);
+
+        let mut fields = Vec::new();
+        for (_, name) in expression.names {
+            if let Some(value) = vars.iter().rev().find(|(binding, _)| *binding == name).map(|(_, value)| *value) {
+                fields.push(encode(value, expression.operator.is_some()));
+            }
+        }
+
+        if !fields.is_empty() {
+            if expression.operator == Some(b'#') {
+                output.push('#');
+            }
+            output.push_str(&fields.join(","));
+        }
+
+        literal_start = expression.end;
+    }
+
+    output.push_str(&template[literal_start..]);
+    Ok(output)
+}
+
+fn encode(value: &str, allow_reserved: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = value.as_bytes();
+    let mut result = String::new();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte == b'%' && index + 2 < bytes.len() && is_hex(bytes[index + 1]) && is_hex(bytes[index + 2]) {
+            result.push('%');
+            result.push((bytes[index + 1] as char).to_ascii_uppercase());
+            result.push((bytes[index + 2] as char).to_ascii_uppercase());
+            index += 3;
+            continue;
+        }
+
+        if is_unreserved(byte) || (allow_reserved && is_reserved(byte)) {
+            result.push(byte as char);
+        } else {
+            result.push('%');
+            result.push(HEX[(byte >> 4) as usize] as char);
+            result.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+        index += 1;
+    }
+
+    result
+}
+
+fn is_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_reserved(byte: u8) -> bool {
+    matches!(
+        byte,
+        b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\''
+            | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+    )
+}
+```

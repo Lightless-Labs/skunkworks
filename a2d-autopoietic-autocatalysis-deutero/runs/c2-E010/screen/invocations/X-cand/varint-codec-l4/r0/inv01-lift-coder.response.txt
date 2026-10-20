@@ -1,0 +1,475 @@
+- Depth limits are inclusive: root depth is 0, and depth is checked only after a nested body’s length and bounds are valid.
+- Varint integrity is checked before canonicality; canonicality is checked before interpreting keys, values, or lengths.
+- Frame headers use the input as their boundary; field content uses the current body end, even when more input follows.
+- Repeated equal tags are allowed only for consecutive wire-2 fields; retained byte fragments concatenate, while the encoder preserves each fragment.
+- Unknown fields are discarded only after validating their payloads, and nested unknown fields are validated recursively.
+- Both implementations reject depth limits above 32 before inspecting any other argument or content.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+    Nested { tag: u32, message: Message },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+    NonCanonical { offset: usize },
+    DepthExceeded { offset: usize, depth: usize },
+    InvalidDepthLimit { limit: usize },
+}
+
+fn put_varint(mut value: u64, out: &mut Vec<u8>) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn read_varint(input: &[u8], pos: &mut usize, end: usize) -> Result<u64, Error> {
+    let start = *pos;
+    let mut value = 0u64;
+    for i in 0..10 {
+        if *pos >= end {
+            return Err(Error::Truncated { offset: end, start });
+        }
+        let b = input[*pos];
+        let at = *pos;
+        *pos += 1;
+        let payload = (b & 0x7f) as u64;
+        if i == 9 && (payload > 1 || b & 0x80 != 0) {
+            return Err(Error::Overflow { offset: at, start });
+        }
+        value |= payload << (7 * i);
+        if b & 0x80 == 0 {
+            if i > 0 && payload == 0 {
+                return Err(Error::NonCanonical { offset: start });
+            }
+            return Ok(value);
+        }
+    }
+    unreachable!()
+}
+
+fn encode_body(message: &Message, depth: usize, max_depth: usize, out: &mut Vec<u8>) -> Result<(), Error> {
+    let mut previous: Option<(u32, u8)> = None;
+    for (index, field) in message.fields.iter().enumerate() {
+        let (tag, wire) = match field {
+            Field::UInt { tag, .. } => (*tag, 0),
+            Field::Bytes { tag, .. } => (*tag, 2),
+            Field::Nested { tag, .. } => (*tag, 3),
+        };
+        if !(1..=15).contains(&tag) {
+            return Err(Error::InvalidTag { offset: index, tag: tag as u64 });
+        }
+        if let Some((prev, prev_wire)) = previous {
+            if tag < prev {
+                return Err(Error::OutOfOrder { offset: index, previous: prev, tag });
+            }
+            if tag == prev && (wire != 2 || prev_wire != 2) {
+                return Err(Error::Duplicate { offset: index, tag });
+            }
+        }
+
+        let key = ((tag as u64) << 3) | wire as u64;
+        put_varint(key, out);
+        match field {
+            Field::UInt { value, .. } => put_varint(*value, out),
+            Field::Bytes { data, .. } => {
+                put_varint(data.len() as u64, out);
+                out.extend_from_slice(data);
+            }
+            Field::Nested { message, .. } => {
+                let child_depth = depth + 1;
+                if child_depth > max_depth {
+                    return Err(Error::DepthExceeded { offset: index, depth: child_depth });
+                }
+                let mut child = Vec::new();
+                encode_body(message, child_depth, max_depth, &mut child)?;
+                put_varint(child.len() as u64, out);
+                out.extend_from_slice(&child);
+            }
+        }
+        previous = Some((tag, wire));
+    }
+    Ok(())
+}
+
+pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    let mut body = Vec::new();
+    encode_body(message, 0, max_depth, &mut body)?;
+    let mut out = Vec::new();
+    put_varint(body.len() as u64, &mut out);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn decode_body(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Message, Error> {
+    let mut pos = start;
+    let mut fields: Vec<Field> = Vec::new();
+    let mut previous: Option<(u32, u8)> = None;
+
+    while pos < end {
+        let key_start = pos;
+        let key = read_varint(input, &mut pos, end)?;
+        let tag64 = key >> 3;
+        let wire = (key & 7) as u8;
+        if !(1..=255).contains(&tag64) {
+            return Err(Error::InvalidTag { offset: key_start, tag: tag64 });
+        }
+        let tag = tag64 as u32;
+        if !matches!(wire, 0 | 1 | 2 | 3 | 5) {
+            return Err(Error::InvalidWire { offset: key_start, wire });
+        }
+        if let Some((prev, prev_wire)) = previous {
+            if tag < prev {
+                return Err(Error::OutOfOrder { offset: key_start, previous: prev, tag });
+            }
+            if tag == prev && (wire != 2 || prev_wire != 2) {
+                return Err(Error::Duplicate { offset: key_start, tag });
+            }
+        }
+        previous = Some((tag, wire));
+
+        match wire {
+            0 => {
+                let value = read_varint(input, &mut pos, end)?;
+                if tag <= 15 {
+                    fields.push(Field::UInt { tag, value });
+                }
+            }
+            1 | 5 => {
+                let n = if wire == 1 { 8usize } else { 4usize };
+                if end - pos < n {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: key_start,
+                        length: n as u64,
+                    });
+                }
+                pos += n;
+            }
+            2 => {
+                let len_start = pos;
+                let length = read_varint(input, &mut pos, end)?;
+                let remaining = end - pos;
+                if length > remaining as u64 {
+                    return Err(Error::LengthOutOfBounds { offset: len_start, length });
+                }
+                let n = length as usize;
+                if tag <= 15 {
+                    let data_start = pos;
+                    let data_end = pos + n;
+                    if let Some(Field::Bytes { tag: prior_tag, data }) = fields.last_mut() {
+                        if *prior_tag == tag {
+                            data.extend_from_slice(&input[data_start..data_end]);
+                        } else {
+                            fields.push(Field::Bytes { tag, data: input[data_start..data_end].to_vec() });
+                        }
+                    } else {
+                        fields.push(Field::Bytes { tag, data: input[data_start..data_end].to_vec() });
+                    }
+                }
+                pos += n;
+            }
+            3 => {
+                let len_start = pos;
+                let length = read_varint(input, &mut pos, end)?;
+                let remaining = end - pos;
+                if length > remaining as u64 {
+                    return Err(Error::LengthOutOfBounds { offset: len_start, length });
+                }
+                let n = length as usize;
+                let child_start = pos;
+                let child_end = pos + n;
+                let child_depth = depth + 1;
+                if child_depth > max_depth {
+                    return Err(Error::DepthExceeded { offset: key_start, depth: child_depth });
+                }
+                let child = decode_body(input, child_start, child_end, child_depth, max_depth)?;
+                if tag <= 15 {
+                    fields.push(Field::Nested { tag, message: child });
+                }
+                pos = child_end;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(Message { fields })
+}
+
+pub fn decode_message(
+    input: &[u8],
+    start: usize,
+    max_depth: usize,
+) -> Result<(Message, usize), Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+    let mut pos = start;
+    let length = read_varint(input, &mut pos, input.len())?;
+    let remaining = input.len() - pos;
+    if length > remaining as u64 {
+        return Err(Error::LengthOutOfBounds { offset: start, length });
+    }
+    let n = length as usize;
+    let end = pos + n;
+    let message = decode_body(input, pos, end, 0, max_depth)?;
+    Ok((message, end))
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+    Nested { tag: u32, message: Message },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+    NonCanonical { offset: usize },
+    DepthExceeded { offset: usize, depth: usize },
+    InvalidDepthLimit { limit: usize },
+}
+
+fn b_put_varint(mut value: u64, output: &mut Vec<u8>) {
+    while value > 0x7f {
+        output.push(((value & 0x7f) as u8) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+fn b_read_varint(input: &[u8], position: &mut usize, end: usize) -> Result<u64, Error> {
+    let origin = *position;
+    let mut value = 0u64;
+    let mut shift = 0;
+    for byte_index in 0..10 {
+        if *position == end {
+            return Err(Error::Truncated { offset: end, start: origin });
+        }
+        let byte_offset = *position;
+        let byte = input[*position];
+        *position += 1;
+        let low = (byte & 0x7f) as u64;
+        if byte_index == 9 && (low > 1 || byte & 0x80 != 0) {
+            return Err(Error::Overflow { offset: byte_offset, start: origin });
+        }
+        value |= low << shift;
+        if byte & 0x80 == 0 {
+            if byte_index != 0 && low == 0 {
+                return Err(Error::NonCanonical { offset: origin });
+            }
+            return Ok(value);
+        }
+        shift += 7;
+    }
+    unreachable!()
+}
+
+fn b_encode_body(message: &Message, depth: usize, limit: usize, body: &mut Vec<u8>) -> Result<(), Error> {
+    let mut prior: Option<(u32, u8)> = None;
+    for (i, field) in message.fields.iter().enumerate() {
+        let (tag, wire) = match field {
+            Field::UInt { tag, .. } => (*tag, 0),
+            Field::Bytes { tag, .. } => (*tag, 2),
+            Field::Nested { tag, .. } => (*tag, 3),
+        };
+        if tag == 0 || tag > 15 {
+            return Err(Error::InvalidTag { offset: i, tag: tag as u64 });
+        }
+        if let Some((previous, previous_wire)) = prior {
+            if tag < previous {
+                return Err(Error::OutOfOrder { offset: i, previous, tag });
+            }
+            if tag == previous && (wire != 2 || previous_wire != 2) {
+                return Err(Error::Duplicate { offset: i, tag });
+            }
+        }
+
+        b_put_varint(((tag as u64) << 3) | wire as u64, body);
+        match field {
+            Field::UInt { value, .. } => b_put_varint(*value, body),
+            Field::Bytes { data, .. } => {
+                b_put_varint(data.len() as u64, body);
+                body.extend_from_slice(data);
+            }
+            Field::Nested { message, .. } => {
+                let next_depth = depth + 1;
+                if next_depth > limit {
+                    return Err(Error::DepthExceeded { offset: i, depth: next_depth });
+                }
+                let mut nested_body = Vec::new();
+                b_encode_body(message, next_depth, limit, &mut nested_body)?;
+                b_put_varint(nested_body.len() as u64, body);
+                body.extend_from_slice(&nested_body);
+            }
+        }
+        prior = Some((tag, wire));
+    }
+    Ok(())
+}
+
+pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    let mut body = Vec::new();
+    b_encode_body(message, 0, max_depth, &mut body)?;
+    let mut framed = Vec::new();
+    b_put_varint(body.len() as u64, &mut framed);
+    framed.extend_from_slice(&body);
+    Ok(framed)
+}
+
+fn b_decode_body(
+    input: &[u8],
+    mut cursor: usize,
+    end: usize,
+    depth: usize,
+    limit: usize,
+) -> Result<Message, Error> {
+    let mut result = Vec::new();
+    let mut prior: Option<(u32, u8)> = None;
+    while cursor != end {
+        let key_at = cursor;
+        let key = b_read_varint(input, &mut cursor, end)?;
+        let tag_value = key >> 3;
+        let wire = (key & 7) as u8;
+        if tag_value == 0 || tag_value > 255 {
+            return Err(Error::InvalidTag { offset: key_at, tag: tag_value });
+        }
+        let tag = tag_value as u32;
+        if !matches!(wire, 0 | 1 | 2 | 3 | 5) {
+            return Err(Error::InvalidWire { offset: key_at, wire });
+        }
+        if let Some((previous, previous_wire)) = prior {
+            if tag < previous {
+                return Err(Error::OutOfOrder { offset: key_at, previous, tag });
+            }
+            if tag == previous && (wire != 2 || previous_wire != 2) {
+                return Err(Error::Duplicate { offset: key_at, tag });
+            }
+        }
+        prior = Some((tag, wire));
+
+        match wire {
+            0 => {
+                let value = b_read_varint(input, &mut cursor, end)?;
+                if tag <= 15 {
+                    result.push(Field::UInt { tag, value });
+                }
+            }
+            1 | 5 => {
+                let count = if wire == 1 { 8usize } else { 4usize };
+                if end - cursor < count {
+                    return Err(Error::LengthOutOfBounds { offset: key_at, length: count as u64 });
+                }
+                cursor += count;
+            }
+            2 => {
+                let length_at = cursor;
+                let length = b_read_varint(input, &mut cursor, end)?;
+                if length > (end - cursor) as u64 {
+                    return Err(Error::LengthOutOfBounds { offset: length_at, length });
+                }
+                let count = length as usize;
+                if tag <= 15 {
+                    if let Some(Field::Bytes { tag: last_tag, data }) = result.last_mut() {
+                        if *last_tag == tag {
+                            data.extend_from_slice(&input[cursor..cursor + count]);
+                        } else {
+                            result.push(Field::Bytes { tag, data: input[cursor..cursor + count].to_vec() });
+                        }
+                    } else {
+                        result.push(Field::Bytes { tag, data: input[cursor..cursor + count].to_vec() });
+                    }
+                }
+                cursor += count;
+            }
+            3 => {
+                let length_at = cursor;
+                let length = b_read_varint(input, &mut cursor, end)?;
+                if length > (end - cursor) as u64 {
+                    return Err(Error::LengthOutOfBounds { offset: length_at, length });
+                }
+                let count = length as usize;
+                let nested_end = cursor + count;
+                let next_depth = depth + 1;
+                if next_depth > limit {
+                    return Err(Error::DepthExceeded { offset: key_at, depth: next_depth });
+                }
+                let nested = b_decode_body(input, cursor, nested_end, next_depth, limit)?;
+                if tag <= 15 {
+                    result.push(Field::Nested { tag, message: nested });
+                }
+                cursor = nested_end;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(Message { fields: result })
+}
+
+pub fn decode_message(input: &[u8], start: usize, max_depth: usize) -> Result<(Message, usize), Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+    let mut cursor = start;
+    let length = b_read_varint(input, &mut cursor, input.len())?;
+    if length > (input.len() - cursor) as u64 {
+        return Err(Error::LengthOutOfBounds { offset: start, length });
+    }
+    let frame_end = cursor + length as usize;
+    let message = b_decode_body(input, cursor, frame_end, 0, max_depth)?;
+    Ok((message, frame_end))
+}
+```

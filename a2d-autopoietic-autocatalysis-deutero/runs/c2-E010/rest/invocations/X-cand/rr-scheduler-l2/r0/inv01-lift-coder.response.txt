@@ -1,0 +1,339 @@
+- Validation precedence: check quantum, switch cost, job count, then each row’s duplicate ID, arrival, and ticks.
+- Events are processed by `(arrival, input index)`; zero-work jobs complete at arrival without entering the queue.
+- A selected job stays selected during dispatch cost; arrivals during that cost join the FIFO queue.
+- Arrivals through a run’s end are admitted before the running job is requeued.
+- Idle time clears the previous dispatch ID; dispatch cost itself is not idle.
+- Times use `u64`; the stated bounds keep all additions within range.
+
+### Solution A
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|previous| previous.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut events: Vec<usize> = (0..jobs.len()).collect();
+    events.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut ready: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+    let mut now = 0u64;
+    let mut event_cursor = 0usize;
+    let mut last_dispatched: Option<u32> = None;
+
+    let admit_through = |limit: u64,
+                         event_cursor: &mut usize,
+                         ready: &mut std::collections::VecDeque<usize>,
+                         completion: &mut Vec<Option<u64>>| {
+        while *event_cursor < events.len() {
+            let index = events[*event_cursor];
+            let arrival = u64::from(jobs[index].arrival);
+            if arrival > limit {
+                break;
+            }
+            *event_cursor += 1;
+            if jobs[index].ticks == 0 {
+                completion[index] = Some(arrival);
+            } else {
+                ready.push_back(index);
+            }
+        }
+    };
+
+    while completion.iter().any(Option::is_none) {
+        admit_through(now, &mut event_cursor, &mut ready, &mut completion);
+
+        if ready.is_empty() {
+            if event_cursor >= events.len() {
+                break;
+            }
+            let next_time = u64::from(jobs[events[event_cursor]].arrival);
+            if next_time > now {
+                if let Some((_, end)) = idle.last_mut() {
+                    if *end == now {
+                        *end = next_time;
+                    } else {
+                        idle.push((now, next_time));
+                    }
+                } else {
+                    idle.push((now, next_time));
+                }
+                now = next_time;
+                last_dispatched = None;
+            }
+            continue;
+        }
+
+        let index = ready.pop_front().expect("ready queue is nonempty");
+        let id = jobs[index].id;
+
+        if last_dispatched.is_some_and(|previous| previous != id) {
+            now += u64::from(switch_cost);
+        }
+
+        admit_through(now, &mut event_cursor, &mut ready, &mut completion);
+
+        let consumed = remaining[index].min(quantum);
+        let start = now;
+        now += u64::from(consumed);
+        remaining[index] -= consumed;
+        let finished = remaining[index] == 0;
+        runs.push(Run {
+            id,
+            start,
+            end: now,
+            finished,
+        });
+
+        admit_through(now, &mut event_cursor, &mut ready, &mut completion);
+
+        if finished {
+            completion[index] = Some(now);
+        } else {
+            ready.push_back(index);
+        }
+        last_dispatched = Some(id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion[index].expect("every job completes")))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: now,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    use std::collections::VecDeque;
+
+    if quantum == 0 || quantum > 1000 {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for i in 0..jobs.len() {
+        for j in 0..i {
+            if jobs[i].id == jobs[j].id {
+                return Err(Error::DuplicateId { index: i });
+            }
+        }
+        if jobs[i].arrival > 1000 {
+            return Err(Error::Arrival { index: i });
+        }
+        if jobs[i].ticks > 1000 {
+            return Err(Error::Ticks { index: i });
+        }
+    }
+
+    let mut event_order: Vec<usize> = (0..jobs.len()).collect();
+    event_order.sort_unstable_by(|&a, &b| {
+        jobs[a].arrival
+            .cmp(&jobs[b].arrival)
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut next_event = 0usize;
+    let mut queue = VecDeque::new();
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completed: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+    let mut time = 0u64;
+    let mut previous_id: Option<u32> = None;
+
+    while completed.iter().any(Option::is_none) {
+        while next_event < event_order.len()
+            && u64::from(jobs[event_order[next_event]].arrival) <= time
+        {
+            let i = event_order[next_event];
+            next_event += 1;
+            if jobs[i].ticks == 0 {
+                completed[i] = Some(u64::from(jobs[i].arrival));
+            } else {
+                queue.push_back(i);
+            }
+        }
+
+        if queue.is_empty() {
+            if next_event == event_order.len() {
+                break;
+            }
+            let next_time = u64::from(jobs[event_order[next_event]].arrival);
+            if next_time > time {
+                match idle.last_mut() {
+                    Some((_, end)) if *end == time => *end = next_time,
+                    _ => idle.push((time, next_time)),
+                }
+                time = next_time;
+                previous_id = None;
+            }
+            continue;
+        }
+
+        let i = queue.pop_front().unwrap();
+        let id = jobs[i].id;
+        if previous_id.map_or(false, |previous| previous != id) {
+            time += u64::from(switch_cost);
+        }
+
+        while next_event < event_order.len()
+            && u64::from(jobs[event_order[next_event]].arrival) <= time
+        {
+            let arrived = event_order[next_event];
+            next_event += 1;
+            if jobs[arrived].ticks == 0 {
+                completed[arrived] = Some(u64::from(jobs[arrived].arrival));
+            } else {
+                queue.push_back(arrived);
+            }
+        }
+
+        let start = time;
+        let slice = remaining[i].min(quantum);
+        time += u64::from(slice);
+        remaining[i] -= slice;
+        let finished = remaining[i] == 0;
+        runs.push(Run {
+            id,
+            start,
+            end: time,
+            finished,
+        });
+
+        while next_event < event_order.len()
+            && u64::from(jobs[event_order[next_event]].arrival) <= time
+        {
+            let arrived = event_order[next_event];
+            next_event += 1;
+            if jobs[arrived].ticks == 0 {
+                completed[arrived] = Some(u64::from(jobs[arrived].arrival));
+            } else {
+                queue.push_back(arrived);
+            }
+        }
+
+        if finished {
+            completed[i] = Some(time);
+        } else {
+            queue.push_back(i);
+        }
+        previous_id = Some(id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, job)| (job.id, completed[i].unwrap()))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+```

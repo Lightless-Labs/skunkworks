@@ -1,0 +1,537 @@
+- `flush(limit)` selects by dirty-write age; I use `dirty_order`, independent of LRU recency.
+- A failed flush logs `FlushErr` but leaves the entry dirty and in both orders unchanged.
+- Clean replacement flushes the old dirty value before eviction; dirty replacement coalesces it.
+- `put` validates zero weight before excess weight and does so before any mutation or callback.
+- Capacity checks use subtraction after validation, avoiding overflow; exact fits require no eviction.
+- For Solution B, I use an independent implementation with the same interpretation of the contract.
+
+### Solution A
+
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Missing { key: u64 },
+    Dirty { key: u64 },
+    FlushFailed { key: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Hit { key: u64 },
+    Miss { key: u64 },
+    Store { key: u64, dirty: bool },
+    Dirty { key: u64 },
+    FlushStart { key: u64, value: i64 },
+    FlushOk { key: u64 },
+    FlushErr { key: u64 },
+    Evict { key: u64 },
+    Remove { key: u64 },
+    Resize { capacity: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: u64,
+    used: u64,
+    entries: BTreeMap<u64, Entry>,
+    recency: VecDeque<u64>,
+    dirty_order: VecDeque<u64>,
+    events: Vec<Event>,
+}
+
+impl Cache {
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            used: 0,
+            entries: BTreeMap::new(),
+            recency: VecDeque::new(),
+            dirty_order: VecDeque::new(),
+            events: Vec::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.recency
+            .iter()
+            .filter_map(|key| self.entries.get(key).cloned())
+            .collect()
+    }
+
+    pub fn events(&self) -> Vec<Event> {
+        self.events.clone()
+    }
+
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.recency.retain(|&k| k != key);
+        self.recency.push_back(key);
+    }
+
+    fn dirty_touch(&mut self, key: u64) {
+        self.dirty_order.retain(|&k| k != key);
+        self.dirty_order.push_back(key);
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.used -= entry.weight;
+        self.recency.retain(|&k| k != key);
+        self.dirty_order.retain(|&k| k != key);
+        Some(entry)
+    }
+
+    fn flush_key<F>(&mut self, key: u64, flush: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let Some(entry) = self.entries.get(&key) else {
+            return Ok(());
+        };
+        if !entry.dirty {
+            return Ok(());
+        }
+        let value = entry.value;
+        self.events.push(Event::FlushStart { key, value });
+        if flush(key, value) {
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.dirty = false;
+            }
+            self.dirty_order.retain(|&k| k != key);
+            self.events.push(Event::FlushOk { key });
+            Ok(())
+        } else {
+            self.events.push(Event::FlushErr { key });
+            Err(Error::FlushFailed { key })
+        }
+    }
+
+    fn evict_key<F>(&mut self, key: u64, flush: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        self.flush_key(key, flush)?;
+        self.erase(key);
+        self.events.push(Event::Evict { key });
+        Ok(())
+    }
+
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        match self.entries.get(&key).map(|entry| entry.value) {
+            Some(value) => {
+                self.touch(key);
+                self.events.push(Event::Hit { key });
+                Some(value)
+            }
+            None => {
+                self.events.push(Event::Miss { key });
+                None
+            }
+        }
+    }
+
+    pub fn mark_dirty(&mut self, key: u64) -> Result<(), Error> {
+        let Some(entry) = self.entries.get_mut(&key) else {
+            return Err(Error::Missing { key });
+        };
+        entry.dirty = true;
+        self.dirty_touch(key);
+        self.events.push(Event::Dirty { key });
+        Ok(())
+    }
+
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        let Some(entry) = self.entries.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        if entry.dirty {
+            return Err(Error::Dirty { key });
+        }
+        let value = self.erase(key).expect("resident entry").value;
+        self.events.push(Event::Remove { key });
+        Ok(value)
+    }
+
+    pub fn put<F>(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        dirty: bool,
+        flush: &mut F,
+    ) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > self.capacity {
+            return Err(Error::TooHeavy {
+                weight,
+                capacity: self.capacity,
+            });
+        }
+
+        let old_weight = self.entries.get(&key).map_or(0, |entry| entry.weight);
+
+        if !dirty && self.entries.get(&key).is_some_and(|entry| entry.dirty) {
+            self.flush_key(key, flush)?;
+        }
+
+        let mut removed = Vec::new();
+        while self.used - old_weight > self.capacity - weight {
+            let victim = self
+                .recency
+                .iter()
+                .copied()
+                .find(|&candidate| candidate != key)
+                .expect("capacity invariant ensures a victim exists");
+            self.evict_key(victim, flush)?;
+            removed.push(victim);
+        }
+
+        self.erase(key);
+        self.used += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                dirty,
+            },
+        );
+        self.touch(key);
+        if dirty {
+            self.dirty_touch(key);
+        }
+        self.events.push(Event::Store { key, dirty });
+        Ok(removed)
+    }
+
+    pub fn flush<F>(&mut self, limit: usize, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut completed = Vec::new();
+        while completed.len() < limit {
+            let Some(key) = self.dirty_order.front().copied() else {
+                break;
+            };
+            self.flush_key(key, flush)?;
+            completed.push(key);
+        }
+        Ok(completed)
+    }
+
+    pub fn evict_to<F>(&mut self, target: u64, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut removed = Vec::new();
+        while self.used > target {
+            let Some(key) = self.recency.front().copied() else {
+                break;
+            };
+            self.evict_key(key, flush)?;
+            removed.push(key);
+        }
+        Ok(removed)
+    }
+
+    pub fn resize<F>(&mut self, capacity: u64, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let removed = self.evict_to(capacity, flush)?;
+        self.capacity = capacity;
+        self.events.push(Event::Resize { capacity });
+        Ok(removed)
+    }
+}
+```
+
+### Solution B
+
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Missing { key: u64 },
+    Dirty { key: u64 },
+    FlushFailed { key: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Hit { key: u64 },
+    Miss { key: u64 },
+    Store { key: u64, dirty: bool },
+    Dirty { key: u64 },
+    FlushStart { key: u64, value: i64 },
+    FlushOk { key: u64 },
+    FlushErr { key: u64 },
+    Evict { key: u64 },
+    Remove { key: u64 },
+    Resize { capacity: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: u64,
+    used: u64,
+    entries: BTreeMap<u64, Entry>,
+    lru: VecDeque<u64>,
+    write_order: VecDeque<u64>,
+    log: Vec<Event>,
+}
+
+impl Cache {
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            used: 0,
+            entries: BTreeMap::new(),
+            lru: VecDeque::new(),
+            write_order: VecDeque::new(),
+            log: Vec::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    pub fn snapshot(&self) -> Vec<Entry> {
+        let mut result = Vec::with_capacity(self.lru.len());
+        for key in &self.lru {
+            if let Some(entry) = self.entries.get(key) {
+                result.push(entry.clone());
+            }
+        }
+        result
+    }
+
+    pub fn events(&self) -> Vec<Event> {
+        self.log.clone()
+    }
+
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.log)
+    }
+
+    fn remove_from_order(order: &mut VecDeque<u64>, key: u64) {
+        order.retain(|candidate| *candidate != key);
+    }
+
+    fn lru_newest(&mut self, key: u64) {
+        Self::remove_from_order(&mut self.lru, key);
+        self.lru.push_back(key);
+    }
+
+    fn write_newest(&mut self, key: u64) {
+        Self::remove_from_order(&mut self.write_order, key);
+        self.write_order.push_back(key);
+    }
+
+    fn delete_resident(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.used -= entry.weight;
+        Self::remove_from_order(&mut self.lru, key);
+        Self::remove_from_order(&mut self.write_order, key);
+        Some(entry)
+    }
+
+    fn write_back<F>(&mut self, key: u64, callback: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let entry = match self.entries.get(&key) {
+            Some(entry) if entry.dirty => entry,
+            _ => return Ok(()),
+        };
+        let value = entry.value;
+        self.log.push(Event::FlushStart { key, value });
+        let succeeded = callback(key, value);
+        if succeeded {
+            self.entries.get_mut(&key).unwrap().dirty = false;
+            Self::remove_from_order(&mut self.write_order, key);
+            self.log.push(Event::FlushOk { key });
+            Ok(())
+        } else {
+            self.log.push(Event::FlushErr { key });
+            Err(Error::FlushFailed { key })
+        }
+    }
+
+    fn evict_one<F>(&mut self, key: u64, callback: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        self.write_back(key, callback)?;
+        self.delete_resident(key);
+        self.log.push(Event::Evict { key });
+        Ok(())
+    }
+
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        if let Some(value) = self.entries.get(&key).map(|entry| entry.value) {
+            self.lru_newest(key);
+            self.log.push(Event::Hit { key });
+            Some(value)
+        } else {
+            self.log.push(Event::Miss { key });
+            None
+        }
+    }
+
+    pub fn mark_dirty(&mut self, key: u64) -> Result<(), Error> {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.dirty = true;
+            self.write_newest(key);
+            self.log.push(Event::Dirty { key });
+            Ok(())
+        } else {
+            Err(Error::Missing { key })
+        }
+    }
+
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        match self.entries.get(&key) {
+            None => Err(Error::Missing { key }),
+            Some(entry) if entry.dirty => Err(Error::Dirty { key }),
+            Some(_) => {
+                let value = self.delete_resident(key).unwrap().value;
+                self.log.push(Event::Remove { key });
+                Ok(value)
+            }
+        }
+    }
+
+    pub fn put<F>(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        dirty: bool,
+        callback: &mut F,
+    ) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > self.capacity {
+            return Err(Error::TooHeavy { weight, capacity: self.capacity });
+        }
+
+        let old_weight = self.entries.get(&key).map_or(0, |entry| entry.weight);
+        if !dirty && self.entries.get(&key).is_some_and(|entry| entry.dirty) {
+            self.write_back(key, callback)?;
+        }
+
+        let target_used = self.capacity - weight;
+        let mut victims = Vec::new();
+        while self.used - old_weight > target_used {
+            let victim = match self.lru.iter().copied().find(|candidate| *candidate != key) {
+                Some(victim) => victim,
+                None => break,
+            };
+            self.evict_one(victim, callback)?;
+            victims.push(victim);
+        }
+
+        self.delete_resident(key);
+        self.used += weight;
+        self.entries.insert(key, Entry { key, value, weight, dirty });
+        self.lru_newest(key);
+        if dirty {
+            self.write_newest(key);
+        } else {
+            Self::remove_from_order(&mut self.write_order, key);
+        }
+        self.log.push(Event::Store { key, dirty });
+        Ok(victims)
+    }
+
+    pub fn flush<F>(&mut self, limit: usize, callback: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut flushed = Vec::new();
+        while flushed.len() < limit {
+            let Some(key) = self.write_order.front().copied() else {
+                break;
+            };
+            self.write_back(key, callback)?;
+            flushed.push(key);
+        }
+        Ok(flushed)
+    }
+
+    pub fn evict_to<F>(&mut self, target: u64, callback: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut victims = Vec::new();
+        while self.used > target {
+            let Some(key) = self.lru.front().copied() else {
+                break;
+            };
+            self.evict_one(key, callback)?;
+            victims.push(key);
+        }
+        Ok(victims)
+    }
+
+    pub fn resize<F>(&mut self, capacity: u64, callback: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let victims = self.evict_to(capacity, callback)?;
+        self.capacity = capacity;
+        self.log.push(Event::Resize { capacity });
+        Ok(victims)
+    }
+}
+```

@@ -1,0 +1,457 @@
+- Expiry happens after time admission and before every other check; backwards time changes nothing.
+- Empty keys and names are rejected before data or registry access; invalid name offsets are UTF-8 byte offsets.
+- `Some(0)` deletes immediately; positive TTL deadlines use checked `now + ttl`.
+- Scope rollback restores its parent and then purges it at the admitted time.
+- Snapshots store absolute deadlines and are not part of transaction rollback.
+- For uncertain interpretations, both solutions use the same explicit rules; Solution B uses a separate representation for entries and maps.
+
+### Solution A
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Clone)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+type Data = BTreeMap<String, Entry>;
+
+pub struct Store {
+    committed: Data,
+    scopes: Vec<Data>,
+    snapshots: BTreeMap<String, Data>,
+    clock: u64,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+            clock: 0,
+        }
+    }
+
+    fn visible(&self) -> &Data {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut Data {
+        if self.scopes.is_empty() {
+            &mut self.committed
+        } else {
+            self.scopes.last_mut().unwrap()
+        }
+    }
+
+    fn purge(data: &mut Data, now: u64) {
+        data.retain(|_, entry| entry.deadline.is_none_or(|d| d > now));
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::TimeBackwards {
+                previous: self.clock,
+                now,
+            });
+        }
+        self.clock = now;
+        Self::purge(self.visible_mut(), now);
+        Ok(())
+    }
+
+    fn validate_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (i, b) in name.bytes().enumerate() {
+            let valid = if i == 0 {
+                b.is_ascii_lowercase()
+            } else {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at: i });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        let data = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = data;
+        } else {
+            self.committed = data;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        self.scopes.pop().ok_or(Error::NoTransaction)?;
+        Self::purge(self.visible_mut(), now);
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        let deadline = match ttl {
+            None => None,
+            Some(0) => {
+                self.visible_mut().remove(key);
+                return Ok(());
+            }
+            Some(d) => Some(now.checked_add(d).ok_or(Error::DeadlineOverflow)?),
+        };
+        self.visible_mut().insert(
+            key.to_string(),
+            Entry {
+                value: value.to_string(),
+                deadline,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(self.visible().get(key).map(|entry| entry.value.clone()))
+    }
+
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.visible().values().filter(|e| e.value == value).count())
+    }
+
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.scopes.len())
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots
+            .insert(name.to_string(), self.visible().clone());
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let data = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_string()))?;
+        *self.visible_mut() = data;
+        Self::purge(self.visible_mut(), now);
+        Ok(())
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_string()))
+    }
+}
+```
+
+### Solution B
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Clone)]
+struct Entry {
+    value: String,
+    expires_at: u64,
+    permanent: bool,
+}
+
+impl Entry {
+    fn new(value: &str, deadline: Option<u64>) -> Self {
+        match deadline {
+            Some(expires_at) => Self {
+                value: value.to_string(),
+                expires_at,
+                permanent: false,
+            },
+            None => Self {
+                value: value.to_string(),
+                expires_at: 0,
+                permanent: true,
+            },
+        }
+    }
+
+    fn live_at(&self, now: u64) -> bool {
+        self.permanent || self.expires_at > now
+    }
+
+    fn deadline(&self) -> Option<u64> {
+        if self.permanent {
+            None
+        } else {
+            Some(self.expires_at)
+        }
+    }
+}
+
+type Map = BTreeMap<String, Entry>;
+
+pub struct Store {
+    base: Map,
+    transactions: Vec<Map>,
+    saved: BTreeMap<String, Map>,
+    last_time: u64,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            base: Map::new(),
+            transactions: Vec::new(),
+            saved: BTreeMap::new(),
+            last_time: 0,
+        }
+    }
+
+    fn current(&self) -> &Map {
+        match self.transactions.last() {
+            Some(map) => map,
+            None => &self.base,
+        }
+    }
+
+    fn current_mut(&mut self) -> &mut Map {
+        match self.transactions.last_mut() {
+            Some(map) => map,
+            None => &mut self.base,
+        }
+    }
+
+    fn purge_map(map: &mut Map, now: u64) {
+        map.retain(|_, entry| entry.live_at(now));
+    }
+
+    fn enter_time(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeBackwards {
+                previous: self.last_time,
+                now,
+            });
+        }
+        self.last_time = now;
+        Self::purge_map(self.current_mut(), now);
+        Ok(())
+    }
+
+    fn check_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (offset, ch) in name.char_indices() {
+            let ok = if offset == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !ok {
+                return Err(Error::NameInvalid { at: offset });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.enter_time(now)?;
+        if self.transactions.len() == 4 {
+            return Err(Error::DepthLimit);
+        }
+        let copied = self.current().clone();
+        self.transactions.push(copied);
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.enter_time(now)?;
+        let finished = match self.transactions.pop() {
+            Some(map) => map,
+            None => return Err(Error::NoTransaction),
+        };
+        if let Some(parent) = self.transactions.last_mut() {
+            *parent = finished;
+        } else {
+            self.base = finished;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.enter_time(now)?;
+        if self.transactions.pop().is_none() {
+            return Err(Error::NoTransaction);
+        }
+        Self::purge_map(self.current_mut(), now);
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.enter_time(now)?;
+        Self::check_key(key)?;
+        let deadline = match ttl {
+            None => None,
+            Some(0) => {
+                self.current_mut().remove(key);
+                return Ok(());
+            }
+            Some(delay) => Some(now.checked_add(delay).ok_or(Error::DeadlineOverflow)?),
+        };
+        self.current_mut()
+            .insert(key.to_owned(), Entry::new(value, deadline));
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.enter_time(now)?;
+        Self::check_key(key)?;
+        Ok(self.current_mut().remove(key).is_some())
+    }
+
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.enter_time(now)?;
+        Self::check_key(key)?;
+        Ok(self.current().get(key).map(|entry| entry.value.clone()))
+    }
+
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.enter_time(now)?;
+        Ok(self
+            .current()
+            .values()
+            .filter(|entry| entry.value.as_str() == value)
+            .count())
+    }
+
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.enter_time(now)?;
+        Ok(self.transactions.len())
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.enter_time(now)?;
+        Self::check_name(name)?;
+        if !self.saved.contains_key(name) && self.saved.len() == 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        let copy = self.current().clone();
+        self.saved.insert(name.to_owned(), copy);
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.enter_time(now)?;
+        Self::check_name(name)?;
+        let copy = self
+            .saved
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        *self.current_mut() = copy;
+        Self::purge_map(self.current_mut(), now);
+        Ok(())
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.enter_time(now)?;
+        Self::check_name(name)?;
+        match self.saved.remove(name) {
+            Some(_) => Ok(()),
+            None => Err(Error::SnapshotMissing(name.to_owned())),
+        }
+    }
+}
+```

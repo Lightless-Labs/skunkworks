@@ -1,0 +1,550 @@
+- Check events in slice order and stop at the first failure; the listed per-event check order controls error precedence.
+- Validate an ID’s bytes from left to right, reporting byte 24 for excess length unless an earlier byte is invalid.
+- Check `Expected` before inspecting a batch; empty successful appends return the current or initial account without creating a stream.
+- Use checked version increments, and compare deposit/withdraw amounts against remaining capacity or balance before arithmetic.
+- `history` uses one-based event versions and returns only events with version strictly greater than `after`.
+- I’m confident in these readings, so Solution B uses an independent store representation.
+
+### Solution A
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+fn initial_account() -> Account {
+    Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    }
+}
+
+fn apply(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version = account
+        .version
+        .checked_add(1)
+        .ok_or(ApplyError::VersionOverflow)?;
+    Ok(())
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut account = initial_account();
+    for (index, event) in events.iter().enumerate() {
+        if let Err(kind) = apply(&mut account, event) {
+            return Err(ReplayError { index, kind });
+        }
+    }
+    Ok(account)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict {
+        expected: Expected,
+        actual: Option<u64>,
+    },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    account: Account,
+    events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    streams: BTreeMap<String, Stream>,
+}
+
+fn validate_id(id: &str) -> Result<(), StoreError> {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() {
+        return Err(StoreError::InvalidId { byte: 0 });
+    }
+    for (i, byte) in bytes.iter().enumerate() {
+        let valid = if i == 0 {
+            byte.is_ascii_lowercase()
+        } else {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-'
+        };
+        if !valid {
+            return Err(StoreError::InvalidId { byte: i });
+        }
+    }
+    if bytes.len() > 24 {
+        return Err(StoreError::InvalidId { byte: 24 });
+    }
+    Ok(())
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            streams: BTreeMap::new(),
+        }
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        validate_id(id)?;
+
+        let existing = self.streams.get(id);
+        let actual = existing.map(|stream| stream.account.version);
+        let matches = match expected {
+            Expected::Any => true,
+            Expected::Missing => actual.is_none(),
+            Expected::Exact(version) => actual == Some(version),
+        };
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let mut account = existing
+            .map(|stream| stream.account.clone())
+            .unwrap_or_else(initial_account);
+
+        for (index, event) in events.iter().enumerate() {
+            if let Err(kind) = apply(&mut account, event) {
+                return Err(StoreError::Rejected(ReplayError { index, kind }));
+            }
+        }
+
+        if events.is_empty() {
+            return Ok(account);
+        }
+
+        match self.streams.get_mut(id) {
+            Some(stream) => {
+                stream.account = account.clone();
+                stream.events.extend_from_slice(events);
+            }
+            None => {
+                self.streams.insert(
+                    id.to_owned(),
+                    Stream {
+                        account: account.clone(),
+                        events: events.to_vec(),
+                    },
+                );
+            }
+        }
+        Ok(account)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| stream.account.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+        Ok(self.streams.get(id).map(|stream| {
+            stream
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index as u128) + 1 > after as u128)
+                .map(|(_, event)| event.clone())
+                .collect()
+        }))
+    }
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+fn initial_account() -> Account {
+    Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    }
+}
+
+fn apply(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    match event {
+        Event::Open { limit } => {
+            if *limit < 1 || *limit > 1_000_000_000 {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            if account.status == Status::New {
+                return Err(ApplyError::NotOpened);
+            }
+            if account.status == Status::Closed {
+                return Err(ApplyError::Closed);
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            if account.status == Status::New {
+                return Err(ApplyError::NotOpened);
+            }
+            if account.status == Status::Closed {
+                return Err(ApplyError::Closed);
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            if account.status == Status::New {
+                return Err(ApplyError::NotOpened);
+            }
+            if account.status == Status::Closed {
+                return Err(ApplyError::Closed);
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+    account.version = account.version.checked_add(1).ok_or(ApplyError::VersionOverflow)?;
+    Ok(())
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut result = initial_account();
+    for (i, event) in events.iter().enumerate() {
+        if let Err(kind) = apply(&mut result, event) {
+            return Err(ReplayError { index: i, kind });
+        }
+    }
+    Ok(result)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict {
+        expected: Expected,
+        actual: Option<u64>,
+    },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    account: Account,
+    events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    streams: Vec<(String, Stream)>,
+}
+
+fn validate_id(id: &str) -> Result<(), StoreError> {
+    let b = id.as_bytes();
+    for i in 0..b.len().min(24) {
+        let valid = if i == 0 {
+            b[i].is_ascii_lowercase()
+        } else {
+            b[i].is_ascii_lowercase() || b[i].is_ascii_digit() || b[i] == b'-'
+        };
+        if !valid {
+            return Err(StoreError::InvalidId { byte: i });
+        }
+    }
+    if b.is_empty() {
+        return Err(StoreError::InvalidId { byte: 0 });
+    }
+    if b.len() > 24 {
+        return Err(StoreError::InvalidId { byte: 24 });
+    }
+    Ok(())
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self { streams: Vec::new() }
+    }
+
+    fn position(&self, id: &str) -> Option<usize> {
+        self.streams.iter().position(|(key, _)| key == id)
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        validate_id(id)?;
+        let position = self.position(id);
+        let actual = position.map(|i| self.streams[i].1.account.version);
+        let matches = match &expected {
+            Expected::Any => true,
+            Expected::Missing => actual.is_none(),
+            Expected::Exact(v) => actual == Some(*v),
+        };
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let mut account = position
+            .map(|i| self.streams[i].1.account.clone())
+            .unwrap_or_else(initial_account);
+
+        for (index, event) in events.iter().enumerate() {
+            if let Err(kind) = apply(&mut account, event) {
+                return Err(StoreError::Rejected(ReplayError { index, kind }));
+            }
+        }
+
+        if events.is_empty() {
+            return Ok(account);
+        }
+
+        if let Some(i) = position {
+            self.streams[i].1.account = account.clone();
+            self.streams[i].1.events.extend_from_slice(events);
+        } else {
+            self.streams.push((
+                id.to_owned(),
+                Stream {
+                    account: account.clone(),
+                    events: events.to_vec(),
+                },
+            ));
+        }
+        Ok(account)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        validate_id(id)?;
+        Ok(self.position(id).map(|i| self.streams[i].1.account.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        validate_id(id)?;
+        Ok(self.position(id).map(|i| {
+            self.streams[i]
+                .1
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index as u128) + 1 > after as u128)
+                .map(|(_, event)| event.clone())
+                .collect()
+        }))
+    }
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

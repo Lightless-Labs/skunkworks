@@ -1,0 +1,311 @@
+- Lexical validation scans every UTF-8 byte before checking padding or length; non-ASCII errors report the first byte of that character.
+- In Required mode, any alphabet symbol after the first `=` is a padding error at that symbol; otherwise padding must exactly match the data-length residue.
+- Legal data-length residues are `0, 2, 4, 5, 7`; invalid residues report the original input length.
+- Omitted mode accepts legal unpadded lengths, but still rejects any `=` before checking length.
+- Unused bits must be zero; the error offset is the final data symbol.
+- Solution A decodes by accumulating bits; Solution B independently extracts each output byte from symbol values.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+fn alphabet_bytes(alphabet: Alphabet) -> &'static [u8; 32] {
+    match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    }
+}
+
+fn symbol_value(byte: u8, alphabet: Alphabet) -> Option<u8> {
+    alphabet_bytes(alphabet)
+        .iter()
+        .position(|&candidate| candidate == byte)
+        .map(|value| value as u8)
+}
+
+pub fn encode(input: &[u8], alphabet: Alphabet, padding: Padding) -> String {
+    let symbols = alphabet_bytes(alphabet);
+    let mut output = String::with_capacity((input.len().saturating_mul(8) + 4) / 5 + 7);
+
+    let mut accumulator: u32 = 0;
+    let mut bit_count = 0usize;
+
+    for &byte in input {
+        accumulator = (accumulator << 8) | u32::from(byte);
+        bit_count += 8;
+        while bit_count >= 5 {
+            bit_count -= 5;
+            let value = ((accumulator >> bit_count) & 0x1f) as usize;
+            output.push(symbols[value] as char);
+        }
+    }
+
+    if bit_count != 0 {
+        let value = ((accumulator << (5 - bit_count)) & 0x1f) as usize;
+        output.push(symbols[value] as char);
+    }
+
+    if padding == Padding::Required {
+        let remainder = output.len() % 8;
+        if remainder != 0 {
+            output.extend(std::iter::repeat_n('=', 8 - remainder));
+        }
+    }
+
+    output
+}
+
+pub fn decode(
+    input: &str,
+    alphabet: Alphabet,
+    padding: Padding,
+) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    // Pass 1: validate every original byte lexically.
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && symbol_value(byte, alphabet).is_none() {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    let p = bytes.iter().position(|&byte| byte == b'=').unwrap_or(n);
+
+    // Pass 2: validate padding placement by mode.
+    match padding {
+        Padding::Omitted if p != n => return Err(DecodeError::Padding { offset: p }),
+        Padding::Required if p != n => {
+            if let Some(offset) = bytes[p..].iter().position(|&byte| byte != b'=') {
+                return Err(DecodeError::Padding { offset: p + offset });
+            }
+        }
+        _ => {}
+    }
+
+    let d = p;
+
+    // Pass 3: validate data length.
+    let residue = d % 8;
+    let expected_padding = match residue {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => return Err(DecodeError::InvalidLength { offset: n }),
+    };
+
+    // Pass 4: validate Required padding shape.
+    if padding == Padding::Required {
+        let actual_padding = n - p;
+        if actual_padding != expected_padding || n % 8 != 0 {
+            return Err(DecodeError::Padding { offset: p });
+        }
+    }
+
+    // Pass 5: validate unused low bits of the final symbol.
+    let unused_bits = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+    if unused_bits != 0 {
+        let last_value = symbol_value(bytes[d - 1], alphabet).unwrap() as u32;
+        let mask = (1u32 << unused_bits) - 1;
+        if last_value & mask != 0 {
+            return Err(DecodeError::TrailingBits { offset: d - 1 });
+        }
+    }
+
+    // Pass 6: emit bytes from the validated five-bit symbols.
+    let mut output = Vec::with_capacity(d.saturating_mul(5) / 8);
+    let mut accumulator: u32 = 0;
+    let mut bit_count = 0usize;
+
+    for &byte in &bytes[..d] {
+        accumulator = (accumulator << 5) | u32::from(symbol_value(byte, alphabet).unwrap());
+        bit_count += 5;
+
+        while bit_count >= 8 {
+            bit_count -= 8;
+            output.push(((accumulator >> bit_count) & 0xff) as u8);
+        }
+    }
+
+    Ok(output)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+fn alphabet_bytes(alphabet: Alphabet) -> &'static [u8; 32] {
+    match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    }
+}
+
+fn symbol_value(byte: u8, alphabet: Alphabet) -> Option<u8> {
+    let symbols = alphabet_bytes(alphabet);
+    symbols
+        .iter()
+        .position(|&candidate| candidate == byte)
+        .map(|value| value as u8)
+}
+
+pub fn encode(input: &[u8], alphabet: Alphabet, padding: Padding) -> String {
+    let symbols = alphabet_bytes(alphabet);
+    let mut output = String::with_capacity((input.len().saturating_mul(8) + 4) / 5 + 7);
+    let mut bit_index = 0usize;
+
+    while bit_index < input.len().saturating_mul(8) {
+        let mut value = 0u8;
+        for bit_in_symbol in 0..5 {
+            value <<= 1;
+            let source_bit = bit_index + bit_in_symbol;
+            if source_bit < input.len().saturating_mul(8) {
+                let byte = input[source_bit / 8];
+                let bit = (byte >> (7 - (source_bit % 8))) & 1;
+                value |= bit;
+            }
+        }
+        output.push(symbols[value as usize] as char);
+        bit_index += 5;
+    }
+
+    if padding == Padding::Required {
+        let remainder = output.len() % 8;
+        if remainder != 0 {
+            for _ in 0..(8 - remainder) {
+                output.push('=');
+            }
+        }
+    }
+
+    output
+}
+
+pub fn decode(
+    input: &str,
+    alphabet: Alphabet,
+    padding: Padding,
+) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    // Lexical validation must complete before any padding or length checks.
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && symbol_value(byte, alphabet).is_none() {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    let p = bytes.iter().position(|&byte| byte == b'=').unwrap_or(n);
+
+    match padding {
+        Padding::Omitted if p < n => return Err(DecodeError::Padding { offset: p }),
+        Padding::Required if p < n => {
+            for (offset, &byte) in bytes[p..].iter().enumerate() {
+                if byte != b'=' {
+                    return Err(DecodeError::Padding { offset: p + offset });
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let residue = p % 8;
+    let expected_padding = match residue {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => return Err(DecodeError::InvalidLength { offset: n }),
+    };
+
+    if padding == Padding::Required && (n - p != expected_padding || n % 8 != 0) {
+        return Err(DecodeError::Padding { offset: p });
+    }
+
+    let unused_bits = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+
+    if unused_bits != 0 {
+        let last = symbol_value(bytes[p - 1], alphabet).unwrap();
+        if last & ((1u8 << unused_bits) - 1) != 0 {
+            return Err(DecodeError::TrailingBits { offset: p - 1 });
+        }
+    }
+
+    let output_len = p.saturating_mul(5) / 8;
+    let mut output = Vec::with_capacity(output_len);
+
+    for byte_index in 0..output_len {
+        let start_bit = byte_index * 8;
+        let mut value = 0u8;
+
+        for bit_offset in 0..8 {
+            let data_bit = start_bit + bit_offset;
+            let symbol_index = data_bit / 5;
+            let bit_in_symbol = data_bit % 5;
+            let symbol = symbol_value(bytes[symbol_index], alphabet).unwrap();
+            value = (value << 1) | ((symbol >> (4 - bit_in_symbol)) & 1);
+        }
+
+        output.push(value);
+    }
+
+    Ok(output)
+}
+```

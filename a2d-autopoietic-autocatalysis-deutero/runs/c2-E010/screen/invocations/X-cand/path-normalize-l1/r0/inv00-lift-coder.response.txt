@@ -1,0 +1,202 @@
+- Validation follows the specified priority: empty, then NUL, backslash, and control bytes, before component processing.
+- Offsets are UTF-8 byte positions in the original path; escape offsets point to the first slash of the offending `..` component.
+- Directory intent uses the raw trailing slash or the final nonempty component, even if reduction removes that component.
+- A parent removes only a preceding ordinary component; retained relative parents are never canceled.
+- Absolute paths have one root, and reducing to root yields `/` without a trailing addition.
+- Both implementations use checked-by-construction indexing over the input and linear-time component processing.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let bytes = path.as_bytes();
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes.last() == Some(&b'/');
+
+    let mut components: Vec<(usize, &str)> = Vec::new();
+    let mut i = 0;
+    let mut last_nonempty: Option<&str> = None;
+
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i] == b'/' {
+            i += 1;
+        }
+        if i == bytes.len() {
+            break;
+        }
+
+        let start = i;
+        while i < bytes.len() && bytes[i] != b'/' {
+            i += 1;
+        }
+        let component = &path[start..i];
+        last_nonempty = Some(component);
+
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|(_, c)| *c != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: start });
+                } else {
+                    components.push((start, component));
+                }
+            }
+            _ => components.push((start, component)),
+        }
+    }
+
+    let directory_intent =
+        directory_intent || matches!(last_nonempty, Some(".") | Some(".."));
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+
+    for (_, component) in &components {
+        if result.len() > usize::from(absolute) {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    let bytes = path.as_bytes();
+
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte == 0 {
+            return Err(PathError::Nul { at });
+        }
+    }
+
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte == b'\\' {
+            return Err(PathError::Backslash { at });
+        }
+    }
+
+    for (at, &byte) in bytes.iter().enumerate() {
+        if (1..=31).contains(&byte) || byte == 127 {
+            return Err(PathError::Control { at });
+        }
+    }
+
+    let absolute = bytes[0] == b'/';
+    let mut parts: Vec<&str> = Vec::new();
+    let mut last_nonempty: Option<&str> = None;
+
+    for (start, component) in path
+        .split('/')
+        .scan(0usize, |offset, component| {
+            let start = *offset;
+            *offset += component.len() + 1;
+            Some((start, component))
+        })
+    {
+        if component.is_empty() {
+            continue;
+        }
+        last_nonempty = Some(component);
+
+        if component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            match parts.last() {
+                Some(previous) if *previous != ".." => {
+                    parts.pop();
+                }
+                _ if absolute => {
+                    return Err(PathError::Escape { at: start });
+                }
+                _ => parts.push(component),
+            }
+        } else {
+            parts.push(component);
+        }
+    }
+
+    let directory_intent = bytes.last() == Some(&b'/')
+        || matches!(last_nonempty, Some(".") | Some(".."));
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    for component in parts {
+        if result.len() > usize::from(absolute) {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if result.is_empty() {
+        result.push('.');
+    }
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```

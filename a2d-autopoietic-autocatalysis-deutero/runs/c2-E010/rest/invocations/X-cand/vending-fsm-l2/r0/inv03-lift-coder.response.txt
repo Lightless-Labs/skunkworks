@@ -1,0 +1,523 @@
+### Solution A
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+    pub tubes: [u16; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    TubeLimit { coin: u16 },
+    NoChange { amount: u16 },
+}
+
+pub struct Machine {
+    products: HashMap<String, u16>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+    tubes: [u16; 4],
+}
+
+const DENOMINATIONS: [u16; 4] = [1, 3, 4, 10];
+
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        let mut catalog = HashMap::new();
+        for product in products {
+            if !valid_id(&product.id) {
+                return Err(Error::BadId { id: product.id });
+            }
+            if catalog.contains_key(&product.id) {
+                return Err(Error::DuplicateId { id: product.id });
+            }
+            if !(1..=100).contains(&product.price) {
+                return Err(Error::BadPrice { id: product.id });
+            }
+            catalog.insert(product.id, product.price);
+        }
+
+        for (i, &count) in tubes.iter().enumerate() {
+            if count > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        Ok(Self {
+            products: catalog,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+            tubes,
+        })
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+            tubes: self.tubes,
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        if !DENOMINATIONS.contains(&coin) {
+            return Err(Error::BadCoin { coin });
+        }
+        if u32::from(self.credit) + u32::from(coin) > 100 {
+            return Err(Error::CreditLimit);
+        }
+        self.credit += coin;
+        self.escrow.push(coin);
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        if !self.products.contains_key(id) {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        }
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+        self.selected = Some(id.to_owned());
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        let id = match self.selected.as_ref() {
+            Some(id) => id.clone(),
+            None => return Err(Error::NoSelection),
+        };
+        let price = self.products[&id];
+        if self.credit < price {
+            return Err(Error::Underpaid {
+                price,
+                credit: self.credit,
+            });
+        }
+
+        let amount = self.credit - price;
+        let change = choose_change(amount, &self.tubes)
+            .ok_or(Error::NoChange { amount })?;
+
+        let mut proposed = self.tubes;
+        for (i, &coin) in DENOMINATIONS.iter().enumerate() {
+            let count = change.iter().filter(|&&c| c == coin).count() as u16;
+            proposed[i] -= count;
+        }
+        for &coin in &self.escrow {
+            let i = denomination_index(coin).expect("escrow contains accepted coins");
+            proposed[i] += 1;
+        }
+        for (i, &count) in proposed.iter().enumerate() {
+            if count > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        self.tubes = proposed;
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+
+        Ok(Receipt { id, price, change })
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        let returned = self.escrow.iter().rev().copied().collect();
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(returned)
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    (1..=8).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+fn denomination_index(coin: u16) -> Option<usize> {
+    DENOMINATIONS.iter().position(|&d| d == coin)
+}
+
+fn choose_change(amount: u16, tubes: &[u16; 4]) -> Option<Vec<u16>> {
+    if amount == 0 {
+        return Some(Vec::new());
+    }
+
+    let descending = [10u16, 4, 3, 1];
+    let mut remaining = amount;
+    let mut greedy = Vec::new();
+    for &coin in &descending {
+        let i = denomination_index(coin).unwrap();
+        let take = tubes[i].min(remaining / coin);
+        greedy.extend(std::iter::repeat_n(coin, take as usize));
+        remaining -= take * coin;
+    }
+    if remaining == 0 {
+        return Some(greedy);
+    }
+
+    let mut best: Option<Vec<u16>> = None;
+    search_change(
+        0,
+        amount,
+        tubes,
+        &descending,
+        &mut Vec::new(),
+        &mut best,
+    );
+    best
+}
+
+fn search_change(
+    index: usize,
+    remaining: u16,
+    tubes: &[u16; 4],
+    descending: &[u16; 4],
+    current: &mut Vec<u16>,
+    best: &mut Option<Vec<u16>>,
+) {
+    if index == descending.len() {
+        if remaining == 0 {
+            let replace = match best {
+                None => true,
+                Some(old) => {
+                    current.len() < old.len()
+                        || (current.len() == old.len() && current.as_slice() > old.as_slice())
+                }
+            };
+            if replace {
+                *best = Some(current.clone());
+            }
+        }
+        return;
+    }
+
+    if best.as_ref().is_some_and(|old| current.len() >= old.len()) {
+        return;
+    }
+
+    let coin = descending[index];
+    let tube_index = denomination_index(coin).unwrap();
+    let max_take = tubes[tube_index].min(remaining / coin);
+    for take in (0..=max_take).rev() {
+        let next_remaining = remaining - take * coin;
+        current.extend(std::iter::repeat_n(coin, take as usize));
+        search_change(
+            index + 1,
+            next_remaining,
+            tubes,
+            descending,
+            current,
+            best,
+        );
+        current.truncate(current.len() - take as usize);
+    }
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+    pub tubes: [u16; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    TubeLimit { coin: u16 },
+    NoChange { amount: u16 },
+}
+
+pub struct Machine {
+    products: Vec<Product>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+    tubes: [u16; 4],
+}
+
+const DENOMINATIONS: [u16; 4] = [1, 3, 4, 10];
+const DESCENDING: [u16; 4] = [10, 4, 3, 1];
+
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        for i in 0..products.len() {
+            let product = &products[i];
+            if !valid_id(&product.id) {
+                return Err(Error::BadId {
+                    id: product.id.clone(),
+                });
+            }
+            if products[..i].iter().any(|previous| previous.id == product.id) {
+                return Err(Error::DuplicateId {
+                    id: product.id.clone(),
+                });
+            }
+            if product.price == 0 || product.price > 100 {
+                return Err(Error::BadPrice {
+                    id: product.id.clone(),
+                });
+            }
+        }
+
+        for i in 0..4 {
+            if tubes[i] > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        Ok(Self {
+            products,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+            tubes,
+        })
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+            tubes: self.tubes,
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        if !DENOMINATIONS.iter().any(|&d| d == coin) {
+            return Err(Error::BadCoin { coin });
+        }
+        if self.credit > 100 - coin {
+            return Err(Error::CreditLimit);
+        }
+        self.credit += coin;
+        self.escrow.push(coin);
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        let exists = self.products.iter().any(|product| product.id == id);
+        if !exists {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        }
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+        self.selected = Some(id.to_owned());
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        let id = match &self.selected {
+            Some(id) => id.clone(),
+            None => return Err(Error::NoSelection),
+        };
+        let price = self
+            .products
+            .iter()
+            .find(|product| product.id == id)
+            .map(|product| product.price)
+            .unwrap_or(0);
+        if self.credit < price {
+            return Err(Error::Underpaid {
+                price,
+                credit: self.credit,
+            });
+        }
+
+        let amount = self.credit - price;
+        let change = match find_change(amount, &self.tubes) {
+            Some(coins) => coins,
+            None => return Err(Error::NoChange { amount }),
+        };
+
+        let mut proposed = self.tubes;
+        for &coin in &change {
+            let index = DENOMINATIONS.iter().position(|&d| d == coin).unwrap();
+            proposed[index] -= 1;
+        }
+        for &coin in &self.escrow {
+            let index = DENOMINATIONS.iter().position(|&d| d == coin).unwrap();
+            proposed[index] += 1;
+        }
+        for i in 0..4 {
+            if proposed[i] > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        self.tubes = proposed;
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(Receipt { id, price, change })
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        let mut result = Vec::with_capacity(self.escrow.len());
+        for &coin in self.escrow.iter().rev() {
+            result.push(coin);
+        }
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(result)
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 8
+        && bytes.iter().all(|byte| (b'a'..=b'z').contains(byte))
+}
+
+fn find_change(amount: u16, tubes: &[u16; 4]) -> Option<Vec<u16>> {
+    if amount == 0 {
+        return Some(Vec::new());
+    }
+
+    let mut remaining = amount;
+    let mut greedy = Vec::new();
+    for &coin in &DESCENDING {
+        let index = DENOMINATIONS.iter().position(|&d| d == coin).unwrap();
+        let take = std::cmp::min(tubes[index], remaining / coin);
+        for _ in 0..take {
+            greedy.push(coin);
+        }
+        remaining -= take * coin;
+    }
+    if remaining == 0 {
+        return Some(greedy);
+    }
+
+    let mut best: Option<Vec<u16>> = None;
+    let mut counts = [0u16; 4];
+    let mut value = 0u16;
+    for ones in 0..=tubes[0] {
+        counts[0] = ones;
+        value = ones;
+        if value > amount {
+            break;
+        }
+        for threes in 0..=tubes[1] {
+            counts[1] = threes;
+            value = ones + 3 * threes;
+            if value > amount {
+                break;
+            }
+            for fours in 0..=tubes[2] {
+                counts[2] = fours;
+                value = ones + 3 * threes + 4 * fours;
+                if value > amount {
+                    break;
+                }
+                for tens in 0..=tubes[3] {
+                    value = ones + 3 * threes + 4 * fours + 10 * tens;
+                    if value > amount {
+                        break;
+                    }
+                    if value == amount {
+                        let mut candidate = Vec::new();
+                        for &coin in &DESCENDING {
+                            let index =
+                                DENOMINATIONS.iter().position(|&d| d == coin).unwrap();
+                            for _ in 0..counts[index] {
+                                candidate.push(coin);
+                            }
+                        }
+                        let replace = match &best {
+                            None => true,
+                            Some(old) => {
+                                candidate.len() < old.len()
+                                    || (candidate.len() == old.len()
+                                        && candidate.as_slice() > old.as_slice())
+                            }
+                        };
+                        if replace {
+                            best = Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+```

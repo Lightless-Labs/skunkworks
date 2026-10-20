@@ -1,0 +1,277 @@
+- Validation order is explicit: vertex limit, edge limit, then endpoints in input order; I follow it exactly.
+- Endpoint checks examine the source before the target, and report the original edge index, including duplicates.
+- Components are sorted by descending size, then ascending smallest vertex; IDs follow that order.
+- A component is cyclic only if it has multiple vertices or a self-loop.
+- Empty graphs and edgeless graphs follow the specified empty and singleton cases.
+- I use iterative SCC algorithms to support long paths without recursion; Solution B uses a different SCC algorithm.
+
+### Solution A
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (edge, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    let mut forward = vec![Vec::new(); n];
+    let mut reverse = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+
+    for &(source, target) in edges {
+        forward[source].push(target);
+        reverse[target].push(source);
+        if source == target {
+            self_loop[source] = true;
+        }
+    }
+
+    // Iterative depth-first search to obtain finishing order.
+    let mut visited = vec![false; n];
+    let mut finish = Vec::with_capacity(n);
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((vertex, next_index)) = stack.pop() {
+            if next_index < forward[vertex].len() {
+                stack.push((vertex, next_index + 1));
+                let next = forward[vertex][next_index];
+                if !visited[next] {
+                    visited[next] = true;
+                    stack.push((next, 0));
+                }
+            } else {
+                finish.push(vertex);
+            }
+        }
+    }
+
+    // Second pass of Kosaraju's algorithm.
+    let mut assigned = vec![false; n];
+    let mut raw_components: Vec<Vec<usize>> = Vec::new();
+    for &start in finish.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        assigned[start] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        while let Some(vertex) = stack.pop() {
+            component.push(vertex);
+            for &next in &reverse[vertex] {
+                if !assigned[next] {
+                    assigned[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        raw_components.push(component);
+    }
+
+    raw_components.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let mut component_of = vec![0; n];
+    let mut cyclic = Vec::with_capacity(raw_components.len());
+    for (component_id, component) in raw_components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = component_id;
+        }
+        cyclic.push(component.len() >= 2 || self_loop[component[0]]);
+    }
+
+    Ok(Graph {
+        components: raw_components,
+        component_of,
+        cyclic,
+    })
+}
+```
+
+### Solution B
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (edge, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    let mut graph = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+    for &(source, target) in edges {
+        graph[source].push(target);
+        if source == target {
+            self_loop[source] = true;
+        }
+    }
+
+    // Iterative Tarjan SCC traversal. Each DFS frame tracks the next edge
+    // to inspect, while the separate Tarjan stack tracks active vertices.
+    let mut index = vec![usize::MAX; n];
+    let mut lowlink = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut tarjan_stack = Vec::with_capacity(n);
+    let mut next_index = 0usize;
+    let mut components: Vec<Vec<usize>> = Vec::new();
+
+    for start in 0..n {
+        if index[start] != usize::MAX {
+            continue;
+        }
+
+        index[start] = next_index;
+        lowlink[start] = next_index;
+        next_index += 1;
+        tarjan_stack.push(start);
+        on_stack[start] = true;
+        let mut dfs = vec![(start, 0usize)];
+
+        while !dfs.is_empty() {
+            let frame_index = dfs.len() - 1;
+            let vertex = dfs[frame_index].0;
+
+            if dfs[frame_index].1 < graph[vertex].len() {
+                let edge_index = dfs[frame_index].1;
+                dfs[frame_index].1 += 1;
+                let next = graph[vertex][edge_index];
+
+                if index[next] == usize::MAX {
+                    index[next] = next_index;
+                    lowlink[next] = next_index;
+                    next_index += 1;
+                    tarjan_stack.push(next);
+                    on_stack[next] = true;
+                    dfs.push((next, 0));
+                } else if on_stack[next] {
+                    lowlink[vertex] = lowlink[vertex].min(index[next]);
+                }
+            } else {
+                dfs.pop();
+
+                if let Some(&(parent, _)) = dfs.last() {
+                    lowlink[parent] = lowlink[parent].min(lowlink[vertex]);
+                }
+
+                if lowlink[vertex] == index[vertex] {
+                    let mut component = Vec::new();
+                    loop {
+                        let member = tarjan_stack.pop().expect("active SCC vertex");
+                        on_stack[member] = false;
+                        component.push(member);
+                        if member == vertex {
+                            break;
+                        }
+                    }
+                    component.sort_unstable();
+                    components.push(component);
+                }
+            }
+        }
+    }
+
+    components.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let mut component_of = vec![0; n];
+    let mut cyclic = Vec::with_capacity(components.len());
+    for (component_id, component) in components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = component_id;
+        }
+        cyclic.push(component.len() >= 2 || self_loop[component[0]]);
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+    })
+}
+```

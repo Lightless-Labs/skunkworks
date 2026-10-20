@@ -1,0 +1,473 @@
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+}
+
+fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn decode_varint(
+    input: &[u8],
+    mut cursor: usize,
+    end: usize,
+) -> Result<(u64, usize), Error> {
+    let start = cursor;
+    let mut value = 0u64;
+
+    for index in 0..10 {
+        if cursor >= end {
+            return Err(Error::Truncated {
+                offset: end,
+                start,
+            });
+        }
+
+        let byte = input[cursor];
+        let payload = byte & 0x7f;
+        let continuation = byte & 0x80 != 0;
+
+        if index == 9 && (payload > 1 || continuation) {
+            return Err(Error::Overflow {
+                offset: cursor,
+                start,
+            });
+        }
+
+        value |= (payload as u64) << (index * 7);
+        cursor += 1;
+
+        if !continuation {
+            return Ok((value, cursor));
+        }
+    }
+
+    unreachable!()
+}
+
+pub fn encode_message(message: &Message) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    let mut previous: Option<(u32, bool)> = None;
+
+    for (index, field) in message.fields.iter().enumerate() {
+        let (tag, is_bytes) = match field {
+            Field::UInt { tag, .. } => (*tag, false),
+            Field::Bytes { tag, .. } => (*tag, true),
+        };
+
+        if !(1..=15).contains(&tag) {
+            return Err(Error::InvalidTag {
+                offset: index,
+                tag: tag as u64,
+            });
+        }
+
+        if let Some((prev_tag, prev_bytes)) = previous {
+            if tag < prev_tag {
+                return Err(Error::OutOfOrder {
+                    offset: index,
+                    previous: prev_tag,
+                    tag,
+                });
+            }
+            if tag == prev_tag && !(prev_bytes && is_bytes) {
+                return Err(Error::Duplicate { offset: index, tag });
+            }
+        }
+
+        previous = Some((tag, is_bytes));
+
+        match field {
+            Field::UInt { value, .. } => {
+                encode_varint(((tag as u64) << 3) | 0, &mut body);
+                encode_varint(*value, &mut body);
+            }
+            Field::Bytes { data, .. } => {
+                encode_varint(((tag as u64) << 3) | 2, &mut body);
+                encode_varint(data.len() as u64, &mut body);
+                body.extend_from_slice(data);
+            }
+        }
+    }
+
+    let mut frame = Vec::new();
+    encode_varint(body.len() as u64, &mut frame);
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+pub fn decode_message(input: &[u8], start: usize) -> Result<(Message, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let (body_len, body_start) = decode_varint(input, start, input.len())?;
+    let remaining = input.len() - body_start;
+    if body_len > remaining as u64 {
+        return Err(Error::LengthOutOfBounds {
+            offset: start,
+            length: body_len,
+        });
+    }
+
+    let body_len = body_len as usize;
+    let frame_end = body_start + body_len;
+    let mut cursor = body_start;
+    let mut fields = Vec::new();
+    let mut previous: Option<(u32, u8)> = None;
+
+    while cursor < frame_end {
+        let key_start = cursor;
+        let (key, after_key) = decode_varint(input, cursor, frame_end)?;
+        cursor = after_key;
+
+        let tag64 = key >> 3;
+        if !(1..=255).contains(&tag64) {
+            return Err(Error::InvalidTag {
+                offset: key_start,
+                tag: tag64,
+            });
+        }
+        let tag = tag64 as u32;
+        let wire = (key & 7) as u8;
+
+        if !matches!(wire, 0 | 1 | 2 | 5) {
+            return Err(Error::InvalidWire {
+                offset: key_start,
+                wire,
+            });
+        }
+
+        if let Some((prev_tag, prev_wire)) = previous {
+            if tag < prev_tag {
+                return Err(Error::OutOfOrder {
+                    offset: key_start,
+                    previous: prev_tag,
+                    tag,
+                });
+            }
+            if tag == prev_tag && !(prev_wire == 2 && wire == 2) {
+                return Err(Error::Duplicate {
+                    offset: key_start,
+                    tag,
+                });
+            }
+        }
+        previous = Some((tag, wire));
+
+        match wire {
+            0 => {
+                let payload_start = cursor;
+                let (value, after_value) = decode_varint(input, cursor, frame_end)?;
+                cursor = after_value;
+                if tag <= 15 {
+                    fields.push(Field::UInt { tag, value });
+                }
+                let _ = payload_start;
+            }
+            1 | 5 => {
+                let required = if wire == 1 { 8usize } else { 4usize };
+                let available = frame_end - cursor;
+                if available < required {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: key_start,
+                        length: required as u64,
+                    });
+                }
+                cursor += required;
+            }
+            2 => {
+                let length_start = cursor;
+                let (length, after_length) = decode_varint(input, cursor, frame_end)?;
+                cursor = after_length;
+                let available = frame_end - cursor;
+                if length > available as u64 {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: length_start,
+                        length,
+                    });
+                }
+                let data_len = length as usize;
+                if tag <= 15 {
+                    let bytes = &input[cursor..cursor + data_len];
+                    if let Some(Field::Bytes { tag: last_tag, data }) = fields.last_mut() {
+                        if *last_tag == tag {
+                            data.extend_from_slice(bytes);
+                        } else {
+                            fields.push(Field::Bytes {
+                                tag,
+                                data: bytes.to_vec(),
+                            });
+                        }
+                    } else {
+                        fields.push(Field::Bytes {
+                            tag,
+                            data: bytes.to_vec(),
+                        });
+                    }
+                }
+                cursor += data_len;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    Ok((Message { fields }, frame_end))
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+}
+
+fn put_varint(mut n: u64, dst: &mut Vec<u8>) {
+    loop {
+        if n < 128 {
+            dst.push(n as u8);
+            return;
+        }
+        dst.push((n as u8) | 0x80);
+        n >>= 7;
+    }
+}
+
+fn get_varint(data: &[u8], begin: usize, limit: usize) -> Result<(u64, usize), Error> {
+    let mut pos = begin;
+    let mut out = 0u64;
+
+    for step in 0..10usize {
+        if pos == limit {
+            return Err(Error::Truncated {
+                offset: limit,
+                start: begin,
+            });
+        }
+        let b = data[pos];
+        let bits = (b & 0x7f) as u64;
+        let more = b & 0x80 != 0;
+
+        if step == 9 && (bits > 1 || more) {
+            return Err(Error::Overflow {
+                offset: pos,
+                start: begin,
+            });
+        }
+        out |= bits << (step * 7);
+        pos += 1;
+        if !more {
+            return Ok((out, pos));
+        }
+    }
+
+    unreachable!()
+}
+
+pub fn encode_message(message: &Message) -> Result<Vec<u8>, Error> {
+    let mut encoded_fields = Vec::new();
+    let mut prior_tag = 0u32;
+    let mut prior_was_bytes = false;
+    let mut have_prior = false;
+
+    for (i, field) in message.fields.iter().enumerate() {
+        let (tag, bytes_kind) = match field {
+            Field::UInt { tag, .. } => (*tag, false),
+            Field::Bytes { tag, .. } => (*tag, true),
+        };
+        if tag == 0 || tag > 15 {
+            return Err(Error::InvalidTag {
+                offset: i,
+                tag: u64::from(tag),
+            });
+        }
+
+        if have_prior {
+            if tag < prior_tag {
+                return Err(Error::OutOfOrder {
+                    offset: i,
+                    previous: prior_tag,
+                    tag,
+                });
+            }
+            if tag == prior_tag && !(prior_was_bytes && bytes_kind) {
+                return Err(Error::Duplicate { offset: i, tag });
+            }
+        }
+        have_prior = true;
+        prior_tag = tag;
+        prior_was_bytes = bytes_kind;
+
+        match field {
+            Field::UInt { value, .. } => {
+                put_varint(u64::from(tag) * 8, &mut encoded_fields);
+                put_varint(*value, &mut encoded_fields);
+            }
+            Field::Bytes { data, .. } => {
+                put_varint(u64::from(tag) * 8 + 2, &mut encoded_fields);
+                put_varint(data.len() as u64, &mut encoded_fields);
+                encoded_fields.extend(data.iter().copied());
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    put_varint(encoded_fields.len() as u64, &mut output);
+    output.extend(encoded_fields);
+    Ok(output)
+}
+
+pub fn decode_message(input: &[u8], start: usize) -> Result<(Message, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+    let (length, body) = get_varint(input, start, input.len())?;
+    if length > (input.len() - body) as u64 {
+        return Err(Error::LengthOutOfBounds {
+            offset: start,
+            length,
+        });
+    }
+
+    let end = body + length as usize;
+    let mut pos = body;
+    let mut result = Vec::<Field>::new();
+    let mut prev: Option<(u32, u8)> = None;
+
+    while pos != end {
+        let key_offset = pos;
+        let (key, next) = get_varint(input, pos, end)?;
+        pos = next;
+        let tag_value = key >> 3;
+        if tag_value == 0 || tag_value > 255 {
+            return Err(Error::InvalidTag {
+                offset: key_offset,
+                tag: tag_value,
+            });
+        }
+        let tag = tag_value as u32;
+        let wire = (key & 7) as u8;
+        if wire != 0 && wire != 1 && wire != 2 && wire != 5 {
+            return Err(Error::InvalidWire {
+                offset: key_offset,
+                wire,
+            });
+        }
+
+        if let Some((old_tag, old_wire)) = prev {
+            if tag < old_tag {
+                return Err(Error::OutOfOrder {
+                    offset: key_offset,
+                    previous: old_tag,
+                    tag,
+                });
+            }
+            if tag == old_tag && (old_wire != 2 || wire != 2) {
+                return Err(Error::Duplicate {
+                    offset: key_offset,
+                    tag,
+                });
+            }
+        }
+        prev = Some((tag, wire));
+
+        match wire {
+            0 => {
+                let (value, next_value) = get_varint(input, pos, end)?;
+                pos = next_value;
+                if tag < 16 {
+                    result.push(Field::UInt { tag, value });
+                }
+            }
+            1 | 5 => {
+                let count = if wire == 1 { 8usize } else { 4usize };
+                if end - pos < count {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: key_offset,
+                        length: count as u64,
+                    });
+                }
+                pos += count;
+            }
+            2 => {
+                let length_offset = pos;
+                let (count, after_count) = get_varint(input, pos, end)?;
+                pos = after_count;
+                if count > (end - pos) as u64 {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: length_offset,
+                        length: count,
+                    });
+                }
+                let count = count as usize;
+                if tag < 16 {
+                    if let Some(Field::Bytes { tag: last_tag, data }) = result.last_mut() {
+                        if *last_tag == tag {
+                            data.extend_from_slice(&input[pos..pos + count]);
+                        } else {
+                            result.push(Field::Bytes {
+                                tag,
+                                data: input[pos..pos + count].to_vec(),
+                            });
+                        }
+                    } else {
+                        result.push(Field::Bytes {
+                            tag,
+                            data: input[pos..pos + count].to_vec(),
+                        });
+                    }
+                }
+                pos += count;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    Ok((Message { fields: result }, end))
+}
+```

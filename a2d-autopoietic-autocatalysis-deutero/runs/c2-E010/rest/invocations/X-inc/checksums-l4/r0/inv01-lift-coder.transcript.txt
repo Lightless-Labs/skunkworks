@@ -1,0 +1,699 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-51799-1792477573424773000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a157fd-33f2-7850-92e7-1e13a23cf95e
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement the following cumulative checksum contract.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (#![...]) or inner doc comments (//!).
+
+R2. All API items below are pub. Span, Hashes and all error enums must implement Debug, Clone, Copy, PartialEq, Eq. Define pub struct Span { pub start: usize, pub end: usize }, pub struct Hashes { pub crc32: u32, pub adler32: u32 }, and pub enum SpanError { Reversed { span: usize }, OutOfBounds { span: usize, offset: usize }, Overlap { span: usize } }. Indices in errors are zero based.
+
+R3. Provide pub fn crc32(data: &[u8]) -> u32. CRC-32 is reflected IEEE: initialize the internal register to 0xffffffff, xor each byte into its low bits, perform eight right shifts per byte, xoring 0xedb88320 after each shift whose old low bit was 1, then xor the final register with 0xffffffff.
+
+R4. CRC-32 of an empty slice is 0. Every byte including zero and bytes >=128 is processed as an unsigned byte; there is no text decoding or terminator.
+
+R5. Provide pub fn adler32(data: &[u8]) -> u32. Start a=1,b=0; for each byte x set a=(a+x)%65521 and then b=(b+a)%65521. Return (b<<16)|a.
+
+R6. Adler-32 of an empty slice is 1. Reductions must be mathematically exact even for long slices; machine integer overflow must not change the result.
+
+R7. Provide pub fn checksums(data: &[u8]) -> Hashes, returning exactly the results of crc32 and adler32 on that slice. All checksum outputs are numeric integers, independent of host byte order.
+
+R8. Provide pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError>. A span selects data[start..end], with end exclusive. Successful results hash the concatenation of the selected bytes in supplied order, excluding gaps, with a single initialization for the entire concatenation.
+
+R9. Validate spans in supplied order. The first failing span wins, regardless of which error categories occur in later spans. Do not sort or coalesce spans.
+
+R10. Within each span, check start>end first and return Reversed { span: its_index }. This takes precedence even when an endpoint is out of bounds.
+
+R11. After the reversed check, check start>data.len(), then end>data.len(). Return OutOfBounds { span: its_index, offset: the_offending_endpoint }. Endpoints equal to data.len() are valid.
+
+R12. After endpoint checks, for every span after the first require start>=the immediately preceding span's end, otherwise return Overlap { span: its_index }. Thus bounds errors outrank overlap at the same span.
+
+R13. Empty spans (start==end) are valid, contribute no bytes, and still participate in BOTH sides of the ordering comparison. An empty span strictly inside the preceding span is an overlap. An empty span in a gap advances the ordering boundary to its own end.
+
+R14. Adjacent spans and repeated empty spans at the same position are valid. Spans must be ordered even when they select identical byte contents.
+
+R15. No spans, or a valid collection containing only empty spans, yields Hashes { crc32: 0, adler32: 1 }, regardless of unselected data.
+
+R16. All slice APIs accept arbitrary binary data. CRC and Adler accumulation crosses span boundaries without resetting either algorithm.
+
+R17. All errors are returned as specified, never panics for malformed spans. Calls have no externally observable state and must not modify input slices.
+
+R18. Compute in time linear in selected byte count plus span count and bounded auxiliary space; do not allocate a copy of the concatenated selected bytes.
+
+R19. Keep every level-1 API and behavior above. Add pub struct Stream with private implementation fields; it must implement Debug and Clone. Add pub enum SnapshotError { Shape, Hex { offset: usize }, Adler { component: usize } }, implementing Debug, Clone, Copy, PartialEq, Eq.
+
+R20. Provide pub fn new() -> Self as an associated Stream function. Its state is the standard empty CRC/Adler state. Provide pub fn checksum(&self) -> Hashes; reading the checksum does not mutate/finalize the stored state.
+
+R21. Provide pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> as an associated Stream function. The arguments are already finalized numeric checksums. Resume CRC processing from crc32 xor 0xffffffff and Adler from a=adler32&0xffff, b=adler32>>16; do not process seed bytes or add an extra initial 1.
+
+R22. For from_seed, a and b must each be <65521. If a is invalid return Adler { component: 0 }, else if b is invalid return Adler { component: 1 }. Any u32 CRC is valid. Adler seed 0 is valid.
+
+R23. Provide pub fn update(&mut self, data: &[u8]) on Stream. It appends bytes to the current state. Results are identical under every chunking, including empty chunks; an empty update preserves even an arbitrary valid seed exactly.
+
+R24. Provide pub fn update_spans(&mut self, data: &[u8], spans: &[Span]) -> Result<(), SpanError>. Validate exactly as checksums_spans. The entire call is atomic: any error leaves BOTH checksum components unchanged even if earlier spans were valid. On success append selected bytes without resetting or padding at boundaries.
+
+R25. Provide pub fn reset(&mut self) on Stream. It returns to the standard empty state, including for streams created from a seed or restored snapshot. Cloning a stream copies its state; subsequent updates to either copy are independent.
+
+R26. Provide pub fn snapshot(&self) -> String on Stream. It returns exactly c followed by eight lowercase hexadecimal digits of the finalized CRC, then :a followed by eight lowercase hexadecimal digits of the packed Adler checksum, e.g. c00000000:a00000001. The token is exactly 19 ASCII bytes with leading zeroes and no whitespace.
+
+R27. Provide pub fn restore(token: &str) -> Result<Self, SnapshotError> as an associated Stream function. Check shape first: byte length must be 19 and bytes 0,9,10 must be c,:,a respectively; otherwise Shape. Shape errors outrank all digit/seed errors.
+
+R28. After shape passes, scan the digit bytes at offsets 1..9 then 11..19 in increasing byte-offset order. Only ASCII 0-9 and a-f are accepted; uppercase, whitespace, non-ASCII and all other bytes return Hex { offset: the_first_bad_byte_offset }. Validate ALL digit bytes before numeric seed validity.
+
+R29. After digits pass, parse the two numbers and apply from_seed, including a-before-b Adler validation. Restoring a valid snapshot must resume exactly; snapshot/checksum calls never change future updates.
+
+R30. Stream methods must be public with the exact signatures specified, and process input in time linear in the bytes/spans without retaining input copies. Snapshot/restore have constant sized state.
+
+R31. Keep all earlier APIs. Provide pub fn fletcher16(data: &[u8]) -> u16. Initialize a=b=0. For each byte x set a=(a+x)%255 then b=(b+a)%255; return (b<<8)|a. Canonical zero residues are 0, never 255. Empty input returns 0.
+
+R32. Provide pub fn fletcher32(data: &[u8]) -> u32. Initialize a=b=0; consume big-endian 16-bit words (first byte high, second byte low). An odd final byte is a word with that byte high and a zero low byte. For each word w set a=(a+w)%65535 then b=(b+a)%65535. Return (b<<16)|a with canonical zero residues 0. Empty input returns 0.
+
+R33. Provide pub fn fletcher32_spans(data: &[u8], spans: &[Span]) -> Result<u32, SpanError>. Validate exactly as checksums_spans and apply Fletcher-32 to the logical concatenation. A pending high byte carries across all span boundaries, including empty spans; pad ONLY once at the very end if the entire selected byte count is odd.
+
+R34. Provide pub enum Crc16 { Xmodem, False, X25 }, implementing Debug, Clone, Copy, PartialEq, Eq, and pub fn crc16(data: &[u8], variant: Crc16) -> u16. The name False means CCITT-FALSE.
+
+R35. Xmodem uses a 16-bit register initialized to 0. Xor each byte shifted left eight into the register, then repeat eight times: shift left one, xor 0x1021 if the old top bit was 1. Truncate each operation to 16 bits. No final xor or reflection.
+
+R36. False uses the exact Xmodem update rule but initial register 0xffff. No final xor or reflection.
+
+R37. X25 uses initial register 0xffff. Xor each byte into the low register bits and repeat eight times: shift right one, xor 0x8408 if the old low bit was 1. Final xor is 0xffff. Return the numeric register; do not swap bytes.
+
+R38. On empty input crc16 returns 0 for Xmodem, 0xffff for False and 0 for X25. All variants process arbitrary binary bytes, including high bits.
+
+R39. Provide pub struct Multi { pub base: Hashes, pub fletcher16: u16, pub fletcher32: u32, pub crc16: u16 }, implementing Debug, Clone, Copy, PartialEq, Eq, and pub fn multi_checksums(data: &[u8], spans: &[Span], variant: Crc16) -> Result<Multi, SpanError>.
+
+R40. multi_checksums validates the same spans with the same errors/precedence, then computes all five algorithms on the selected concatenation. base contains IEEE CRC-32 and Adler-32; crc16 uses the supplied variant. No per-span reset and no per-span Fletcher-32 padding.
+
+R41. Fletcher arithmetic must be exact for long inputs; neither 0xffff words nor 0xff bytes receive a special nonzero representation. Every Fletcher and multi API runs in linear time with bounded auxiliary space, without copying concatenated input.
+
+R42. Keep all earlier APIs. Provide pub fn crc32_combine(left: u32, right: u32, right_len: u64) -> u32, operating on finalized IEEE CRC-32 values. For real blocks A,B it returns crc32(A||B) from left=crc32(A), right=crc32(B), right_len=the number of bytes in B.
+
+R43. Precisely, for right_len>0 let Z(r) perform eight reflected IEEE zero-byte steps on a raw 32-bit register r (eight right shifts with polynomial 0xedb88320 when the old low bit is set). Return Z applied right_len times to left, xor right. This algebraic definition applies to ALL u32 arguments even if no known blocks correspond to them.
+
+R44. For right_len==0 return left, ignoring right entirely. Handle all 64 bits of right_len. Run in O(log(right_len+1)) time and bounded memory; never loop once per represented byte or allocate blocks.
+
+R45. Provide pub struct Part { pub crc32: u32, pub len: u64 }, implementing Debug, Clone, Copy, PartialEq, Eq. Provide pub enum CombineError { LengthOverflow { part: usize }, EmptyCrc { part: usize } }, implementing the same traits, and pub fn combine_parts(parts: &[Part]) -> Result<Part, CombineError>.
+
+R46. combine_parts first scans lengths in supplied order starting total at 0 using checked u64 addition. On the first overflow return LengthOverflow { part: index }. Complete this entire length validation before checking any CRC metadata.
+
+R47. Only after all lengths pass, scan parts in supplied order. A part with len==0 must have crc32==0; otherwise return EmptyCrc { part: index }. Nonempty parts accept every u32 CRC. Consequently any length overflow outranks any EmptyCrc, even one in an earlier part.
+
+R48. After validation combine parts in supplied order using crc32_combine, from initial empty CRC 0. Return the combined CRC and total length. Zero-length valid parts are identities; an empty list returns Part { crc32: 0, len: 0 }. Do not sort parts.
+
+R49. Provide pub fn manifest(data: &[u8], spans: &[Span]) -> Result<String, SpanError>. Validate spans exactly as before. Return the selected logical byte count and both base checksums in exactly this 48-byte ASCII format: len=LLLLLLLLLLLLLLLL;crc=CCCCCCCC;adler=AAAAAAAA. L is 16 lowercase hex digits of the byte count, C and A are eight lowercase hex digits of numeric CRC-32 and Adler-32. All fields include leading zeroes. Empty selection has length 0, CRC 0, Adler 1.
+
+R50. Provide pub enum VerifyError { Span(SpanError), Shape, Hex { offset: usize }, Length, Mismatch { field: usize, expected: u32, actual: u32 } }, implementing Debug, Clone, Copy, PartialEq, Eq, and pub fn verify(data: &[u8], spans: &[Span], token: &str) -> Result<(), VerifyError>.
+
+R51. verify first validates spans and returns Span(the_error) before looking at the token. Next check the token shape: exactly 48 bytes; bytes 0..4 equal len=, 20..25 equal ;crc=, and 33..40 equal ;adler=. Any failure is Shape, taking precedence over digits, length comparison and digest mismatches.
+
+R52. After shape, validate every digit byte left to right: offsets 4..20, 25..33, 40..48. Accept only ASCII 0-9 and a-f. The first invalid byte returns Hex { offset: its_absolute_byte_offset }; offsets are bytes, not Unicode character indices. Validate all three fields before comparing any values.
+
+R53. Parse length as u64 and digests as u32. If the parsed length differs from the selected logical byte count return Length, before comparing either checksum. A numerically large but well-formed length is a Length error, not a shape error.
+
+R54. Then compare CRC first (field 0), then Adler (field 1). Return only the first Mismatch with expected equal to the number in the token and actual equal to the computed number. If both match return Ok(()). Unlike Stream seeds, expected Adler values in tokens need not have canonical components: any eight hex digits are syntactically valid and participate in ordinary comparison.
+
+R55. Verification never normalizes case, trims whitespace, accepts prefixes/suffixes or modifies input. Gaps and empty spans affect lengths exactly as they affect checksum selection. All errors must be returned without panics, including tokens containing multibyte Unicode.
+
+R56. combine_parts runs in O(number_of_parts * 64) time and bounded auxiliary space. manifest/verify run in linear time in selected bytes plus spans with bounded auxiliary space except the returned fixed-size String. All previously specified APIs retain their behavior.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Checks R42-R44.
+#[test]
+fn public_combine_blocks() {
+assert_eq!(crc32_combine(crc32(b"left"), crc32(b"right"), 5), crc32(b"leftright"));
+assert_eq!(crc32_combine(17, 999, 0), 17);
+}
+
+// Checks R45-R48.
+#[test]
+fn public_combine_parts() {
+let p = [Part { crc32: crc32(b"a"), len: 1 }, Part { crc32: crc32(b"bc"), len: 2 }];
+assert_eq!(combine_parts(&p), Ok(Part { crc32: crc32(b"abc"), len: 3 }));
+}
+
+// Checks R49-R56.
+#[test]
+fn public_manifest_verification() {
+let ranges = &[Span { start: 0, end: 3 }];
+assert_eq!(manifest(b"hey", ranges), Ok("len=0000000000000003;crc=88d615f0;adler=027e0147".to_string()));
+assert_eq!(verify(b"hey", ranges, "len=0000000000000003;crc=88d615f0;adler=027e0147"), Ok(()));
+}
+
+// Checks R1-R41.
+#[test]
+fn public_prior_algorithms() {
+assert_eq!(multi_checksums(b"123456", &[Span { start: 0, end: 6 }], Crc16::False), Ok(Multi { base: Hashes { crc32: 0x0972d361, adler32: 0x042e0136 }, fletcher16: 0x2c36, fletcher32: 0x2f35999c, crc16: 0x2ef4 }));
+let mut s=Stream::new(); s.update(b"123456"); assert_eq!(Stream::restore(&s.snapshot()).unwrap().checksum(), checksums(b"123456"));
+assert_eq!(crc32(b"xyz"), 0xeb8eba67); assert_eq!(adler32(b"xyz"), 0x02d7016c);
+assert_eq!(checksums_spans(b"xyz", &[Span { start:0,end:3 }]), Ok(checksums(b"xyz")));
+let mut ss=Stream::from_seed(0,1).unwrap(); ss.update_spans(b"xyz", &[Span { start:0,end:3 }]).unwrap();
+let mut rr=Stream::restore(&ss.snapshot()).unwrap(); assert_eq!(rr.checksum(),checksums(b"xyz"));
+rr.reset(); assert_eq!(rr.checksum(),Stream::new().checksum());
+assert_eq!(fletcher16(b"abcd"),0xd78b); assert_eq!(fletcher32(b"abcd"),0x2629c4c6);
+assert_eq!(fletcher32_spans(b"abcd",&[Span { start:0,end:4 }]),Ok(fletcher32(b"abcd")));
+for v in [Crc16::Xmodem,Crc16::False,Crc16::X25] { assert_eq!(multi_checksums(b"abcd",&[Span { start:0,end:4 }],v).unwrap().crc16,crc16(b"abcd",v)); }
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-20T06:26:14.824124Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+I’ll inspect the workspace constraints and then produce the single-file implementation.
+codex
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    Shape,
+    Hex { offset: usize },
+    Adler { component: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Crc16 {
+    Xmodem,
+    False,
+    X25,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Multi {
+    pub base: Hashes,
+    pub fletcher16: u16,
+    pub fletcher32: u32,
+    pub crc16: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    pub crc32: u32,
+    pub len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombineError {
+    LengthOverflow { part: usize },
+    EmptyCrc { part: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    Span(SpanError),
+    Shape,
+    Hex { offset: usize },
+    Length,
+    Mismatch { field: usize, expected: u32, actual: u32 },
+}
+
+fn crc_step(mut crc: u32, byte: u8) -> u32 {
+    crc ^= byte as u32;
+    for _ in 0..8 {
+        crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb88320 } else { 0 };
+    }
+    crc
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff;
+    for &byte in data {
+        crc = crc_step(crc, byte);
+    }
+    crc ^ 0xffff_ffff
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in data {
+        a = (a + byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    Hashes {
+        crc32: crc32(data),
+        adler32: adler32(data),
+    }
+}
+
+fn validate_spans(data_len: usize, spans: &[Span]) -> Result<(), SpanError> {
+    let mut previous_end = 0usize;
+    for (i, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: i });
+        }
+        if span.start > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: i,
+                offset: span.start,
+            });
+        }
+        if span.end > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: i,
+                offset: span.end,
+            });
+        }
+        if i != 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: i });
+        }
+        previous_end = span.end;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct Stream {
+    crc_raw: u32,
+    a: u32,
+    b: u32,
+}
+
+impl Stream {
+    pub fn new() -> Self {
+        Self {
+            crc_raw: 0xffff_ffff,
+            a: 1,
+            b: 0,
+        }
+    }
+
+    pub fn checksum(&self) -> Hashes {
+        Hashes {
+            crc32: self.crc_raw ^ 0xffff_ffff,
+            adler32: (self.b << 16) | self.a,
+        }
+    }
+
+    pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> {
+        let a = adler32 & 0xffff;
+        let b = adler32 >> 16;
+        if a >= 65521 {
+            return Err(SnapshotError::Adler { component: 0 });
+        }
+        if b >= 65521 {
+            return Err(SnapshotError::Adler { component: 1 });
+        }
+        Ok(Self {
+            crc_raw: crc32 ^ 0xffff_ffff,
+            a,
+            b,
+        })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.crc_raw = crc_step(self.crc_raw, byte);
+            self.a = (self.a + byte as u32) % 65521;
+            self.b = (self.b + self.a) % 65521;
+        }
+    }
+
+    pub fn update_spans(
+        &mut self,
+        data: &[u8],
+        spans: &[Span],
+    ) -> Result<(), SpanError> {
+        validate_spans(data.len(), spans)?;
+        for span in spans {
+            self.update(&data[span.start..span.end]);
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn snapshot(&self) -> String {
+        let h = self.checksum();
+        format!("c{:08x}:a{:08x}", h.crc32, h.adler32)
+    }
+
+    pub fn restore(token: &str) -> Result<Self, SnapshotError> {
+        let bytes = token.as_bytes();
+        if bytes.len() != 19 || bytes[0] != b'c' || bytes[9] != b':' || bytes[10] != b'a' {
+            return Err(SnapshotError::Shape);
+        }
+        let crc = parse_hex(bytes, 1, 9)?;
+        let adler = parse_hex(bytes, 11, 19)?;
+        Self::from_seed(crc, adler)
+    }
+}
+
+fn parse_hex(bytes: &[u8], start: usize, end: usize) -> Result<u32, SnapshotError> {
+    let mut value = 0u32;
+    for (offset, &byte) in bytes.iter().enumerate().take(end).skip(start) {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => return Err(SnapshotError::Hex { offset }),
+        };
+        value = (value << 4) | digit as u32;
+    }
+    Ok(value)
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let mut stream = Stream::new();
+    stream.update_spans(data, spans)?;
+    Ok(stream.checksum())
+}
+
+pub fn fletcher16(data: &[u8]) -> u16 {
+    let (mut a, mut b) = (0u32, 0u32);
+    for &byte in data {
+        a = (a + byte as u32) % 255;
+        b = (b + a) % 255;
+    }
+    ((b as u16) << 8) | a as u16
+}
+
+fn crc16_update(mut crc: u16, byte: u8, variant: Crc16) -> u16 {
+    match variant {
+        Crc16::Xmodem | Crc16::False => {
+            crc ^= (byte as u16) << 8;
+            for _ in 0..8 {
+                crc = if crc & 0x8000 != 0 {
+                    (crc << 1) ^ 0x1021
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        Crc16::X25 => {
+            crc ^= byte as u16;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0x8408
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+    }
+    crc
+}
+
+pub fn crc16(data: &[u8], variant: Crc16) -> u16 {
+    let mut crc = match variant {
+        Crc16::Xmodem => 0,
+        Crc16::False | Crc16::X25 => 0xffff,
+    };
+    for &byte in data {
+        crc = crc16_update(crc, byte, variant);
+    }
+    if variant == Crc16::X25 {
+        crc ^ 0xffff
+    } else {
+        crc
+    }
+}
+
+struct Acc {
+    stream: Stream,
+    f16a: u32,
+    f16b: u32,
+    f32a: u64,
+    f32b: u64,
+    pending: Option<u8>,
+    crc16: u16,
+    variant: Crc16,
+}
+
+impl Acc {
+    fn new(variant: Crc16) -> Self {
+        Self {
+            stream: Stream::new(),
+            f16a: 0,
+            f16b: 0,
+            f32a: 0,
+            f32b: 0,
+            pending: None,
+            crc16: match variant {
+                Crc16::Xmodem => 0,
+                Crc16::False | Crc16::X25 => 0xffff,
+            },
+            variant,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.stream.update(bytes);
+        for &byte in bytes {
+            self.f16a = (self.f16a + byte as u32) % 255;
+            self.f16b = (self.f16b + self.f16a) % 255;
+            self.crc16 = crc16_update(self.crc16, byte, self.variant);
+            if let Some(high) = self.pending.take() {
+                let word = ((high as u64) << 8) | byte as u64;
+                self.f32a = (self.f32a + word) % 65535;
+                self.f32b = (self.f32b + self.f32a) % 65535;
+            } else {
+                self.pending = Some(byte);
+            }
+        }
+    }
+
+    fn result(mut self) -> Multi {
+        if let Some(high) = self.pending.take() {
+            let word = (high as u64) << 8;
+            self.f32a = (self.f32a + word) % 65535;
+            self.f32b = (self.f32b + self.f32a) % 65535;
+        }
+        let crc16 = if self.variant == Crc16::X25 {
+            self.crc16 ^ 0xffff
+        } else {
+            self.crc16
+        };
+        Multi {
+            base: self.stream.checksum(),
+            fletcher16: ((self.f16b as u16) << 8) | self.f16a as u16,
+            fletcher32: ((self.f32b as u32) << 16) | self.f32a as u32,
+            crc16,
+        }
+    }
+}
+
+pub fn fletcher32(data: &[u8]) -> u32 {
+    let mut acc = Acc::new(Crc16::Xmodem);
+    acc.feed(data);
+    acc.result().fletcher32
+}
+
+pub fn fletcher32_spans(data: &[u8], spans: &[Span]) -> Result<u32, SpanError> {
+    validate_spans(data.len(), spans)?;
+    let mut acc = Acc::new(Crc16::Xmodem);
+    for span in spans {
+        acc.feed(&data[span.start..span.end]);
+    }
+    Ok(acc.result().fletcher32)
+}
+
+pub fn multi_checksums(
+    data: &[u8],
+    spans: &[Span],
+    variant: Crc16,
+) -> Result<Multi, SpanError> {
+    validate_spans(data.len(), spans)?;
+    let mut acc = Acc::new(variant);
+    for span in spans {
+        acc.feed(&data[span.start..span.end]);
+    }
+    Ok(acc.result())
+}
+
+fn gf2_matrix_times(matrix: &[u32; 32], mut vector: u32) -> u32 {
+    let mut sum = 0;
+    let mut index = 0;
+    while vector != 0 {
+        if vector & 1 != 0 {
+            sum ^= matrix[index];
+        }
+        vector >>= 1;
+        index += 1;
+    }
+    sum
+}
+
+fn gf2_matrix_square(square: &mut [u32; 32], matrix: &[u32; 32]) {
+    for n in 0..32 {
+        square[n] = gf2_matrix_times(matrix, matrix[n]);
+    }
+}
+
+fn zero_byte_operator(value: u32) -> u32 {
+    let mut result = value;
+    for _ in 0..8 {
+        result = (result >> 1) ^ if result & 1 != 0 { 0xedb88320 } else { 0 };
+    }
+    result
+}
+
+pub fn crc32_combine(left: u32, right: u32, right_len: u64) -> u32 {
+    if right_len == 0 {
+        return left;
+    }
+
+    let mut odd = [0u32; 32];
+    odd[0] = 0xedb88320;
+    let mut row = 1u32;
+    for item in odd.iter_mut().skip(1) {
+        *item = row;
+        row <<= 1;
+    }
+
+    let mut even = [0u32; 32];
+    gf2_matrix_square(&mut even, &odd);
+
+    let mut len = right_len;
+    let mut crc = left;
+    loop {
+        gf2_matrix_square(&mut odd, &even);
+        if len & 1 != 0 {
+            crc = gf2_matrix_times(&odd, crc);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+
+        gf2_matrix_square(&mut even, &odd);
+        if len & 1 != 0 {
+            crc = gf2_matrix_times(&even, crc);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+    }
+    crc ^ right
+}
+
+pub fn combine_parts(parts: &[Part]) -> Result<Part, CombineError> {
+    let mut total = 0u64;
+    for (i, part) in parts.iter().enumerate() {
+        total = total
+            .checked_add(part.len)
+            .ok_or(CombineError::LengthOverflow { part: i })?;
+    }
+    for (i, part) in parts.iter().enumerate() {
+        if part.len == 0 && part.crc32 != 0 {
+            return Err(CombineError::EmptyCrc { part: i });
+        }
+    }
+    let mut crc = 0u32;
+    for part in parts {
+        crc = crc32_combine(crc, part.crc32, part.len);
+    }
+    Ok(Part { crc32: crc, len: total })
+}
+
+pub fn manifest(data: &[u8], spans: &[Span]) -> Result<String, SpanError> {
+    validate_spans(data.len(), spans)?;
+    let mut acc = Acc::new(Crc16::Xmodem);
+    let mut len = 0u64;
+    for span in spans {
+        acc.feed(&data[span.start..span.end]);
+        len += (span.end - span.start) as u64;
+    }
+    let hashes = acc.result().base;
+    Ok(format!(
+        "len={:016x};crc={:08x};adler={:08x}",
+        len, hashes.crc32, hashes.adler32
+    ))
+}
+
+pub fn verify(data: &[u8], spans: &[Span], token: &str) -> Result<(), VerifyError> {
+    validate_spans(data.len(), spans).map_err(VerifyError::Span)?;
+
+    let bytes = token.as_bytes();
+    if bytes.len() != 48
+        || &bytes[0..4] != b"len="
+        || &bytes[20..25] != b";crc="
+        || &bytes[33..40] != b";adler="
+    {
+        return Err(VerifyError::Shape);
+    }
+
+    let len = parse_verify_hex(bytes, 4, 20)?;
+    let crc = parse_verify_hex(bytes, 25, 33)? as u32;
+    let adler = parse_verify_hex(bytes, 40, 48)? as u32;
+
+    let mut stream = Stream::new();
+    let mut selected_len = 0u64;
+    for span in spans {
+        stream.update(&data[span.start..span.end]);
+        selected_len += (span.end - span.start) as u64;
+    }
+    if len != selected_len {
+        return Err(VerifyError::Length);
+    }
+
+    let actual = stream.checksum();
+    if crc != actual.crc32 {
+        return Err(VerifyError::Mismatch {
+            field: 0,
+            expected: crc,
+            actual: actual.crc32,
+        });
+    }
+    if adler != actual.adler32 {
+        return Err(VerifyError::Mismatch {
+            field: 1,
+            expected: adler,
+            actual: actual.adler32,
+        });
+    }
+    Ok(())
+}
+
+fn parse_verify_hex(bytes: &[u8], start: usize, end: usize) -> Result<u64, VerifyError> {
+    let mut value = 0u64;
+    for (offset, &byte) in bytes.iter().enumerate().take(end).skip(start) {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => return Err(VerifyError::Hex { offset }),
+        };
+        value = (value << 4) | digit as u64;
+    }
+    Ok(value)
+}
+```
+tokens used
+14,743

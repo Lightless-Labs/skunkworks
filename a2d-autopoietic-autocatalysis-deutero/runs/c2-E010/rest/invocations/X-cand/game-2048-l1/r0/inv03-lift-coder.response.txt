@@ -1,0 +1,249 @@
+- Check precedence: length first, then every tile in input order, then merging.
+- Accept powers of two from 2 through 2³¹; reject larger values.
+- Ignore zeroes when pairing tiles; each input tile is consumed at most once.
+- On the right, scan and pack from right to left; merge indices stay in scan order.
+- Overflow reports the first overflowing pair encountered and returns no partial result.
+- `changed` compares final cells to input; slide-only changes have score zero.
+
+### Solution A
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    RowTooLong { len: usize },
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowResult {
+    pub cells: Vec<u32>,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn slide_row(row: &[u32], side: Side) -> Result<RowResult, Error> {
+    if row.len() > 32 {
+        return Err(Error::RowTooLong { len: row.len() });
+    }
+
+    for (index, &value) in row.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    let scan: Vec<usize> = match side {
+        Side::Left => (0..row.len()).collect(),
+        Side::Right => (0..row.len()).rev().collect(),
+    };
+    let mut tiles: Vec<(usize, u32)> = scan
+        .into_iter()
+        .filter_map(|index| (row[index] != 0).then_some((index, row[index])))
+        .collect();
+
+    let mut cells = vec![0; row.len()];
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let mut output_offset = 0usize;
+    let mut input_offset = 0usize;
+
+    while input_offset < tiles.len() {
+        let (first_index, first_value) = tiles[input_offset];
+
+        if input_offset + 1 < tiles.len()
+            && tiles[input_offset + 1].1 == first_value
+        {
+            let (second_index, _) = tiles[input_offset + 1];
+            let value = first_value
+                .checked_add(first_value)
+                .ok_or(Error::MergeOverflow {
+                    first: first_index,
+                    second: second_index,
+                })?;
+
+            let to = match side {
+                Side::Left => output_offset,
+                Side::Right => row.len() - 1 - output_offset,
+            };
+            cells[to] = value;
+            merges.push(Merge {
+                from: [first_index, second_index],
+                to,
+                value,
+            });
+            score += u64::from(value);
+            input_offset += 2;
+        } else {
+            let to = match side {
+                Side::Left => output_offset,
+                Side::Right => row.len() - 1 - output_offset,
+            };
+            cells[to] = first_value;
+            input_offset += 1;
+        }
+
+        output_offset += 1;
+    }
+
+    let changed = cells.as_slice() != row;
+    Ok(RowResult {
+        cells,
+        score,
+        changed,
+        merges,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    RowTooLong { len: usize },
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowResult {
+    pub cells: Vec<u32>,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn slide_row(row: &[u32], side: Side) -> Result<RowResult, Error> {
+    if row.len() > 32 {
+        return Err(Error::RowTooLong { len: row.len() });
+    }
+
+    for (index, &value) in row.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || value & (value - 1) != 0) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    let mut cells = vec![0u32; row.len()];
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let mut out = 0usize;
+    let mut cursor = match side {
+        Side::Left => 0,
+        Side::Right => row.len(),
+    };
+
+    loop {
+        let first = match side {
+            Side::Left => {
+                while cursor < row.len() && row[cursor] == 0 {
+                    cursor += 1;
+                }
+                if cursor == row.len() {
+                    break;
+                }
+                let index = cursor;
+                cursor += 1;
+                index
+            }
+            Side::Right => {
+                while cursor > 0 && row[cursor - 1] == 0 {
+                    cursor -= 1;
+                }
+                if cursor == 0 {
+                    break;
+                }
+                cursor -= 1;
+                cursor
+            }
+        };
+
+        let mut value = row[first];
+        let mut from = [first, first];
+        let mut merged = false;
+
+        let second = match side {
+            Side::Left => {
+                let mut next = cursor;
+                while next < row.len() && row[next] == 0 {
+                    next += 1;
+                }
+                (next < row.len()).then_some(next)
+            }
+            Side::Right => {
+                let mut next = cursor;
+                while next > 0 && row[next - 1] == 0 {
+                    next -= 1;
+                }
+                (next > 0).then_some(next - 1)
+            }
+        };
+
+        if let Some(second_index) = second {
+            if row[second_index] == value {
+                let Some(doubled) = value.checked_add(value) else {
+                    return Err(Error::MergeOverflow {
+                        first,
+                        second: second_index,
+                    });
+                };
+                value = doubled;
+                from = [first, second_index];
+                merged = true;
+                cursor = match side {
+                    Side::Left => second_index + 1,
+                    Side::Right => second_index,
+                };
+            }
+        }
+
+        let to = match side {
+            Side::Left => out,
+            Side::Right => row.len() - 1 - out,
+        };
+        cells[to] = value;
+
+        if merged {
+            merges.push(Merge { from, to, value });
+            score += u64::from(value);
+        }
+        out += 1;
+    }
+
+    let changed = cells.as_slice() != row;
+    Ok(RowResult {
+        cells,
+        score,
+        changed,
+        merges,
+    })
+}
+```

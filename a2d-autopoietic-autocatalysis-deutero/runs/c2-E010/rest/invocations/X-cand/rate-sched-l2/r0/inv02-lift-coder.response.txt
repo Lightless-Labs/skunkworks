@@ -1,0 +1,364 @@
+- Layout errors take precedence over all field errors; offsets are UTF-8 byte offsets.
+- Base parsing and validation precede step parsing; a second slash is detected first.
+- Empty list items, including a trailing comma, report the item’s start.
+- Poll intervals include time zero on the first poll, then only boundaries strictly after the prior poll time.
+- `Once` chooses the latest match, while `Skip` emits only a match exactly at `now`.
+- The seven-day range is inclusive; failed polls leave the watermark unchanged.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+impl Cron {
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        let bytes = text.as_bytes();
+
+        for (i, &b) in bytes.iter().enumerate() {
+            if b.is_ascii_whitespace() && b != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+
+        let spaces: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| (b == b' ').then_some(i))
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+        let split = spaces[0];
+        if split == 0 || split + 1 == bytes.len() {
+            return Err(CronError::Layout(split));
+        }
+
+        let mut minutes = [false; 60];
+        let mut hours = [false; 24];
+
+        parse_field(text, 0, split, 60, 60, &mut minutes)?;
+        parse_field(text, split + 1, bytes.len(), 24, 24, &mut hours)?;
+
+        Ok(Self { minutes, hours })
+    }
+
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize] && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+fn syntax_at(pos: usize) -> CronError {
+    CronError::Syntax(pos)
+}
+
+fn parse_number(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    max: usize,
+) -> Result<usize, CronError> {
+    if start == end {
+        return Err(CronError::Syntax(start));
+    }
+    for i in start..end {
+        if !bytes[i].is_ascii_digit() {
+            return Err(CronError::Syntax(i));
+        }
+    }
+    if end - start > 1 && bytes[start] == b'0' {
+        return Err(CronError::Number(start));
+    }
+
+    let mut value: usize = 0;
+    for &b in &bytes[start..end] {
+        value = match value.checked_mul(10).and_then(|v| v.checked_add((b - b'0') as usize)) {
+            Some(v) if v <= max => v,
+            _ => return Err(CronError::Bounds(start)),
+        };
+    }
+    Ok(value)
+}
+
+fn parse_field(
+    text: &str,
+    field_start: usize,
+    field_end: usize,
+    max: usize,
+    max_step: usize,
+    selected: &mut [bool],
+) -> Result<(), CronError> {
+    let bytes = text.as_bytes();
+    let mut item_start = field_start;
+
+    loop {
+        let mut item_end = item_start;
+        while item_end < field_end && bytes[item_end] != b',' {
+            item_end += 1;
+        }
+        if item_start == item_end {
+            return Err(syntax_at(item_start));
+        }
+
+        let mut slash = None;
+        for i in item_start..item_end {
+            if bytes[i] == b'/' {
+                if slash.is_some() {
+                    return Err(CronError::Syntax(i));
+                }
+                slash = Some(i);
+            }
+        }
+
+        let base_end = slash.unwrap_or(item_end);
+        let step_start = slash.map(|s| s + 1);
+
+        let mut step_value = 1usize;
+        let mut range_start;
+        let mut range_end;
+
+        if bytes[item_start] == b'*' {
+            if item_start + 1 != base_end {
+                return Err(CronError::Syntax(item_start + 1));
+            }
+            range_start = 0;
+            range_end = max;
+        } else {
+            let mut dash = None;
+            for i in item_start..base_end {
+                if bytes[i] == b'-' {
+                    dash = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(dash_pos) = dash {
+                if slash.is_none() {
+                    // A range may be stepped; this branch parses its base either way.
+                }
+                range_start = parse_number(bytes, item_start, dash_pos, max)?;
+                range_end = parse_number(bytes, dash_pos + 1, base_end, max)?;
+                if range_start > range_end {
+                    return Err(CronError::Descending(dash_pos));
+                }
+            } else {
+                if let Some(s) = slash {
+                    return Err(CronError::Syntax(s));
+                }
+                range_start = parse_number(bytes, item_start, base_end, max)?;
+                range_end = range_start;
+            }
+        }
+
+        if let Some(s) = slash {
+            if bytes[item_start] != b'*' && !bytes[item_start..base_end].contains(&b'-') {
+                return Err(CronError::Syntax(s));
+            }
+            let st = step_start.unwrap();
+            step_value = parse_number(bytes, st, item_end, max_step)?;
+            if step_value == 0 || step_value > max_step {
+                return Err(CronError::Step(st));
+            }
+        }
+
+        let mut n = range_start;
+        loop {
+            selected[n] = true;
+            if range_end - n < step_value {
+                break;
+            }
+            n += step_value;
+        }
+
+        if item_end == field_end {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(())
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+impl Cron {
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        let b = text.as_bytes();
+        for (i, x) in b.iter().enumerate() {
+            if x.is_ascii_whitespace() && *x != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+        let mut space = None;
+        for (i, x) in b.iter().enumerate() {
+            if *x == b' ' {
+                if space.is_some() {
+                    return Err(CronError::Layout(i));
+                }
+                space = Some(i);
+            }
+        }
+        let s = match space {
+            Some(x) => x,
+            None => return Err(CronError::Layout(text.len())),
+        };
+        if s == 0 || s + 1 == b.len() {
+            return Err(CronError::Layout(s));
+        }
+        let mut m = [false; 60];
+        let mut h = [false; 24];
+        parse_part(b, 0, s, 59, 60, &mut m)?;
+        parse_part(b, s + 1, b.len(), 23, 24, &mut h)?;
+        Ok(Self { minutes: m, hours: h })
+    }
+
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize] && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+fn number(b: &[u8], a: usize, z: usize, max: usize) -> Result<usize, CronError> {
+    if a == z {
+        return Err(CronError::Syntax(a));
+    }
+    for i in a..z {
+        if !b[i].is_ascii_digit() {
+            return Err(CronError::Syntax(i));
+        }
+    }
+    if z - a > 1 && b[a] == b'0' {
+        return Err(CronError::Number(a));
+    }
+    let mut v = 0usize;
+    for &c in &b[a..z] {
+        v = match v.checked_mul(10).and_then(|x| x.checked_add((c - b'0') as usize)) {
+            Some(x) if x <= max => x,
+            _ => return Err(CronError::Bounds(a)),
+        };
+    }
+    Ok(v)
+}
+
+fn parse_part(
+    b: &[u8],
+    start: usize,
+    end: usize,
+    max: usize,
+    max_step: usize,
+    out: &mut [bool],
+) -> Result<(), CronError> {
+    let mut a = start;
+    while a <= end {
+        let mut z = a;
+        while z < end && b[z] != b',' {
+            z += 1;
+        }
+        if z == a {
+            return Err(CronError::Syntax(a));
+        }
+
+        let mut slash = None;
+        for i in a..z {
+            if b[i] == b'/' {
+                if slash.is_some() {
+                    return Err(CronError::Syntax(i));
+                }
+                slash = Some(i);
+            }
+        }
+        let base_end = slash.unwrap_or(z);
+        let mut lo;
+        let mut hi;
+        let mut dash = None;
+
+        if b[a] == b'*' {
+            if base_end != a + 1 {
+                return Err(CronError::Syntax(a + 1));
+            }
+            lo = 0;
+            hi = max;
+        } else {
+            for i in a..base_end {
+                if b[i] == b'-' {
+                    dash = Some(i);
+                    break;
+                }
+            }
+            if let Some(d) = dash {
+                lo = number(b, a, d, max)?;
+                hi = number(b, d + 1, base_end, max)?;
+                if lo > hi {
+                    return Err(CronError::Descending(d));
+                }
+            } else {
+                if let Some(s) = slash {
+                    return Err(CronError::Syntax(s));
+                }
+                lo = number(b, a, base_end, max)?;
+                hi = lo;
+            }
+        }
+
+        let mut step = 1;
+        if let Some(s) = slash {
+            if b[a] != b'*' && dash.is_none() {
+                return Err(CronError::Syntax(s));
+            }
+            step = number(b, s + 1, z, max_step)?;
+            if step == 0 || step > max_step {
+                return Err(CronError::Step(s + 1));
+            }
+        }
+
+        let mut n = lo;
+        loop {
+            out[n] = true;
+            if hi - n < step {
+                break;
+            }
+            n += step;
+        }
+
+        if z == end {
+            break;
+        }
+        a = z + 1;
+    }
+    Ok(())
+}
+```

@@ -1,0 +1,247 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    TooLarge { old_len: usize, new_len: usize },
+    EmbeddedNewline { side: Side, index: usize },
+}
+
+pub fn diff_lines(old: &[String], new: &[String]) -> Result<Vec<Edit>, DiffError> {
+    if old.len() > 128 || new.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old.len(),
+            new_len: new.len(),
+        });
+    }
+
+    for (index, line) in old.iter().enumerate() {
+        if line.contains('\n') || line.contains('\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::Old,
+                index,
+            });
+        }
+    }
+
+    for (index, line) in new.iter().enumerate() {
+        if line.contains('\n') || line.contains('\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::New,
+                index,
+            });
+        }
+    }
+
+    let old_len = old.len();
+    let new_len = new.len();
+    let mut lcs = vec![vec![0usize; new_len + 1]; old_len + 1];
+
+    for i in (0..old_len).rev() {
+        for j in (0..new_len).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                1 + lcs[i + 1][j + 1]
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut edits = Vec::with_capacity(old_len + new_len);
+    let (mut i, mut j) = (0, 0);
+
+    while i < old_len && j < new_len {
+        if old[i] == new[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].clone(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_lcs = lcs[i + 1][j];
+            let insert_lcs = lcs[i][j + 1];
+            if delete_lcs > insert_lcs
+                || (delete_lcs == insert_lcs && (i + j) % 2 == 0)
+            {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old[i].clone(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new[j].clone(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < old_len {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old[i].clone(),
+        });
+        i += 1;
+    }
+
+    while j < new_len {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new[j].clone(),
+        });
+        j += 1;
+    }
+
+    Ok(edits)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    TooLarge { old_len: usize, new_len: usize },
+    EmbeddedNewline { side: Side, index: usize },
+}
+
+pub fn diff_lines(old: &[String], new: &[String]) -> Result<Vec<Edit>, DiffError> {
+    if old.len() > 128 || new.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old.len(),
+            new_len: new.len(),
+        });
+    }
+
+    for (index, line) in old.iter().enumerate() {
+        if line.chars().any(|c| c == '\n' || c == '\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::Old,
+                index,
+            });
+        }
+    }
+    for (index, line) in new.iter().enumerate() {
+        if line.chars().any(|c| c == '\n' || c == '\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::New,
+                index,
+            });
+        }
+    }
+
+    let m = old.len();
+    let n = new.len();
+
+    // Build the suffix LCS table using a flat row-major allocation.
+    let width = n + 1;
+    let mut table = vec![0usize; (m + 1) * width];
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            let here = i * width + j;
+            table[here] = if old[i] == new[j] {
+                1 + table[(i + 1) * width + j + 1]
+            } else {
+                table[(i + 1) * width + j].max(table[i * width + j + 1])
+            };
+        }
+    }
+
+    let mut result = Vec::with_capacity(m + n);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < m && j < n {
+        if old[i] == new[j] {
+            result.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].clone(),
+            });
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        let after_delete = table[(i + 1) * width + j];
+        let after_insert = table[i * width + j + 1];
+        let delete = after_delete > after_insert
+            || (after_delete == after_insert && (i + j) % 2 == 0);
+
+        if delete {
+            result.push(Edit::Delete {
+                old_index: i,
+                line: old[i].clone(),
+            });
+            i += 1;
+        } else {
+            result.push(Edit::Insert {
+                new_index: j,
+                line: new[j].clone(),
+            });
+            j += 1;
+        }
+    }
+
+    for (index, line) in old.iter().enumerate().skip(i) {
+        result.push(Edit::Delete {
+            old_index: index,
+            line: line.clone(),
+        });
+    }
+    for (index, line) in new.iter().enumerate().skip(j) {
+        result.push(Edit::Insert {
+            new_index: index,
+            line: line.clone(),
+        });
+    }
+
+    Ok(result)
+}
+```

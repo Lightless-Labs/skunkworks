@@ -1,0 +1,203 @@
+- NUL preflight scans the entire input first, so it takes precedence over every syntax error.
+- Error positions are UTF-8 byte offsets; quote errors point to the opening delimiter, and trailing escapes point to the backslash.
+- A line continuation alone does not start a word, while opening quotes do, even when empty.
+- Double-quote backslashes are removed only before `"`, `\`, `$`, or LF; otherwise the backslash is preserved.
+- Only ASCII space, tab, CR, and LF delimit words outside quotes; all other Unicode scalars remain literal.
+- Both implementations use checked scalar traversal and preserve literal UTF-8 exactly; input size is bounded by available memory.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+}
+
+pub fn split(input: &str) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut chars = input.char_indices().peekable();
+    let mut quote: Option<(char, usize)> = None;
+
+    while let Some((pos, ch)) = chars.next() {
+        match quote {
+            Some(('\'', _)) => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    word.push(ch);
+                }
+            }
+            Some(('"', _)) => {
+                if ch == '"' {
+                    quote = None;
+                } else if ch == '\\' {
+                    match chars.peek().copied() {
+                        None => return Err(SplitError::TrailingEscape { pos }),
+                        Some((_, next)) if next == '"' || next == '\\' || next == '$' => {
+                            let (_, escaped) = chars.next().unwrap();
+                            word.push(escaped);
+                        }
+                        Some((_, '\n')) => {
+                            chars.next();
+                        }
+                        Some(_) => word.push('\\'),
+                    }
+                } else {
+                    word.push(ch);
+                }
+            }
+            Some((_, _)) => unreachable!(),
+            None => {
+                if ch == '\'' || ch == '"' {
+                    active = true;
+                    quote = Some((ch, pos));
+                } else if ch == '\\' {
+                    match chars.peek().copied() {
+                        None => return Err(SplitError::TrailingEscape { pos }),
+                        Some((_, '\n')) => {
+                            chars.next();
+                        }
+                        Some(_) => {
+                            let (_, escaped) = chars.next().unwrap();
+                            active = true;
+                            word.push(escaped);
+                        }
+                    }
+                } else if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+                    if active {
+                        words.push(std::mem::take(&mut word));
+                        active = false;
+                    }
+                } else {
+                    active = true;
+                    word.push(ch);
+                }
+            }
+        }
+    }
+
+    if let Some((quote_ch, pos)) = quote {
+        return Err(if quote_ch == '\'' {
+            SplitError::UnterminatedSingle { pos }
+        } else {
+            SplitError::UnterminatedDouble { pos }
+        });
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+}
+
+pub fn split(input: &str) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.as_bytes().iter().position(|&byte| byte == 0) {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut has_word = false;
+    let mut state = 0u8; // 0: bare, 1: single-quoted, 2: double-quoted
+    let mut quote_start = 0usize;
+    let mut iter = input.char_indices();
+
+    while let Some((pos, ch)) = iter.next() {
+        if state == 1 {
+            if ch == '\'' {
+                state = 0;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+
+        if state == 2 {
+            match ch {
+                '"' => state = 0,
+                '\\' => match iter.next() {
+                    None => return Err(SplitError::TrailingEscape { pos }),
+                    Some((_, '\n')) => {}
+                    Some((_, escaped @ ('"' | '\\' | '$'))) => current.push(escaped),
+                    Some((next_pos, next)) => {
+                        current.push('\\');
+                        // The next scalar is processed normally in double quotes.
+                        // Insert it directly, applying only quote closing behavior.
+                        if next == '"' {
+                            state = 0;
+                        } else {
+                            current.push(next);
+                        }
+                        let _ = next_pos;
+                    }
+                },
+                _ => current.push(ch),
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => {
+                has_word = true;
+                quote_start = pos;
+                state = 1;
+            }
+            '"' => {
+                has_word = true;
+                quote_start = pos;
+                state = 2;
+            }
+            '\\' => match iter.next() {
+                None => return Err(SplitError::TrailingEscape { pos }),
+                Some((_, '\n')) => {}
+                Some((_, escaped)) => {
+                    has_word = true;
+                    current.push(escaped);
+                }
+            },
+            ' ' | '\t' | '\r' | '\n' => {
+                if has_word {
+                    result.push(std::mem::take(&mut current));
+                    has_word = false;
+                }
+            }
+            _ => {
+                has_word = true;
+                current.push(ch);
+            }
+        }
+    }
+
+    if state == 1 {
+        return Err(SplitError::UnterminatedSingle { pos: quote_start });
+    }
+    if state == 2 {
+        return Err(SplitError::UnterminatedDouble { pos: quote_start });
+    }
+    if has_word {
+        result.push(current);
+    }
+    Ok(result)
+}
+```

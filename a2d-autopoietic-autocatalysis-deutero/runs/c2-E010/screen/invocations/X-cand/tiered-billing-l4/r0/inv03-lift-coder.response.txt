@@ -1,0 +1,470 @@
+- Tier schedules are fully validated before quantity handling or arithmetic; validation follows input order, and a final finite tier yields `MissingFinal`.
+- A band is emitted only when its allocated units are positive; tier starts are charged once per used band.
+- Volume selects the first matching bound and charges the full quantity at that tier’s price.
+- Proration validates month, period, then credits; credits are half-open, ordered, and non-overlapping.
+- All products and sums use exact wide arithmetic; overflow is reported at the specified stage and index.
+- Names are checked byte-for-byte, lines sort by UTF-8 bytes, and rendering uses the exact specified format.
+
+### Solution A
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier { pub up_to: Option<u64>, pub unit: u64, pub start: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price { Flat { unit: u64, start: u64 }, Tiers(Vec<Tier>) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band { pub index: usize, pub units: u64, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge { pub amount: u64, pub bands: Vec<Band> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode { Graduated, Volume }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill { pub charge: Charge, pub minimum_adjustment: u64, pub total: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayRange { pub start: u32, pub end: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rounding { Down, Up, HalfEven }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proration { pub active_days: u32, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Meter {
+    pub name: String, pub quantity: u64, pub price: Price, pub mode: Mode,
+    pub minimum: u64, pub monthly_fee: u64, pub days: u32, pub start: u32,
+    pub end: u32, pub credits: Vec<DayRange>, pub rounding: Rounding,
+    pub discount_bps: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceLine {
+    pub name: String, pub usage: u64, pub minimum_adjustment: u64,
+    pub monthly: u64, pub discount: u64, pub total: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invoice {
+    pub lines: Vec<InvoiceLine>, pub subtotal: u64, pub discount: u64,
+    pub credit: u64, pub total: u64, pub rendered: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Empty, TooMany, Bound { index: usize }, Unbounded { index: usize }, MissingFinal, Overflow { index: usize }, Month, Period, Credit { index: usize }, CreditOrder { index: usize }, InvoiceDiscount, InvalidName { index: usize }, DuplicateName { index: usize }, Discount, CombinedOverflow, Meter { index: usize, source: Box<Error> }, InvoiceOverflow }
+
+fn validate_tiers(tiers: &[Tier]) -> Result<(), Error> {
+    if tiers.is_empty() { return Err(Error::Empty); }
+    if tiers.len() > 64 { return Err(Error::TooMany); }
+    let mut previous = 0u64;
+    for (i, tier) in tiers.iter().enumerate() {
+        match tier.up_to {
+            Some(bound) => {
+                if bound <= previous { return Err(Error::Bound { index: i }); }
+                previous = bound;
+            }
+            None => {
+                if i + 1 != tiers.len() { return Err(Error::Unbounded { index: i }); }
+            }
+        }
+    }
+    if tiers.last().unwrap().up_to.is_some() { return Err(Error::MissingFinal); }
+    Ok(())
+}
+
+fn band_amount(units: u64, unit: u64, start: u64, index: usize) -> Result<u64, Error> {
+    let amount = (units as u128) * (unit as u128) + (start as u128);
+    if amount > u64::MAX as u128 { Err(Error::Overflow { index }) }
+    else { Ok(amount as u64) }
+}
+
+fn quote_mode(quantity: u64, price: &Price, mode: Mode) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                Ok(Charge { amount: 0, bands: Vec::new() })
+            } else {
+                let amount = band_amount(quantity, *unit, *start, 0)?;
+                Ok(Charge { amount, bands: vec![Band { index: 0, units: quantity, amount }] })
+            }
+        }
+        Price::Tiers(tiers) => {
+            validate_tiers(tiers)?;
+            if quantity == 0 { return Ok(Charge { amount: 0, bands: Vec::new() }); }
+            if mode == Mode::Volume {
+                let index = tiers.iter().position(|t| t.up_to.map_or(true, |bound| quantity <= bound)).unwrap();
+                let tier = &tiers[index];
+                let amount = band_amount(quantity, tier.unit, tier.start, index)?;
+                return Ok(Charge { amount, bands: vec![Band { index, units: quantity, amount }] });
+            }
+            let mut remaining = quantity;
+            let mut previous = 0u64;
+            let mut total = 0u64;
+            let mut bands = Vec::new();
+            for (index, tier) in tiers.iter().enumerate() {
+                let units = match tier.up_to {
+                    Some(bound) => {
+                        let width = bound - previous;
+                        previous = bound;
+                        remaining.min(width)
+                    }
+                    None => remaining,
+                };
+                if units > 0 {
+                    let amount = band_amount(units, tier.unit, tier.start, index)?;
+                    let sum = (total as u128) + (amount as u128);
+                    if sum > u64::MAX as u128 { return Err(Error::Overflow { index }); }
+                    total = sum as u64;
+                    bands.push(Band { index, units, amount });
+                    remaining -= units;
+                }
+            }
+            Ok(Charge { amount: total, bands })
+        }
+    }
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    quote_mode(quantity, price, Mode::Graduated)
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = quote_mode(quantity, price, mode)?;
+    let minimum_adjustment = if quantity > 0 { minimum.saturating_sub(charge.amount) } else { 0 };
+    let total = (charge.amount as u128) + (minimum_adjustment as u128);
+    if total > u64::MAX as u128 { return Err(Error::Overflow { index: 0 }); }
+    Ok(Bill { charge, minimum_adjustment, total: total as u64 })
+}
+
+pub fn prorate(fee: u64, days: u32, start: u32, end: u32, credits: &[DayRange], rounding: Rounding) -> Result<Proration, Error> {
+    if !(28..=31).contains(&days) { return Err(Error::Month); }
+    if start > end || end > days { return Err(Error::Period); }
+    let mut previous_end = start;
+    let mut removed = 0u32;
+    for (index, range) in credits.iter().enumerate() {
+        if range.start < start || range.start >= range.end || range.end > end {
+            return Err(Error::Credit { index });
+        }
+        if range.start < previous_end { return Err(Error::CreditOrder { index }); }
+        removed += range.end - range.start;
+        previous_end = range.end;
+    }
+    let active_days = end - start - removed;
+    let numerator = (fee as u128) * (active_days as u128);
+    let denominator = days as u128;
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let rounded = match rounding {
+        Rounding::Down => quotient,
+        Rounding::Up => quotient + u128::from(remainder != 0),
+        Rounding::HalfEven => {
+            if remainder * 2 > denominator || (remainder * 2 == denominator && quotient % 2 == 1) { quotient + 1 } else { quotient }
+        }
+    };
+    Ok(Proration { active_days, amount: rounded as u64 })
+}
+
+fn discount_amount(base: u64, bps: u32) -> u64 {
+    ((base as u128) * (bps as u128) / 10_000u128) as u64
+}
+
+pub fn invoice(meters: &[Meter], invoice_discount_bps: u32, credit: u64) -> Result<Invoice, Error> {
+    if invoice_discount_bps > 10_000 { return Err(Error::InvoiceDiscount); }
+
+    for (index, meter) in meters.iter().enumerate() {
+        let bytes = meter.name.as_bytes();
+        if bytes.is_empty() || bytes.len() > 32 ||
+            bytes.iter().any(|b| *b <= 0x1f || *b == 0x7f || *b == b'|' || *b == b':') {
+            return Err(Error::InvalidName { index });
+        }
+        if meters[..index].iter().any(|prior| prior.name == meter.name) {
+            return Err(Error::DuplicateName { index });
+        }
+    }
+
+    let mut lines = Vec::with_capacity(meters.len());
+    let mut subtotal = 0u64;
+    for (index, meter) in meters.iter().enumerate() {
+        let result = (|| {
+            if meter.discount_bps > 10_000 { return Err(Error::Discount); }
+            let bill = bill(meter.quantity, &meter.price, meter.mode.clone(), meter.minimum)?;
+            let monthly = prorate(meter.monthly_fee, meter.days, meter.start, meter.end, &meter.credits, meter.rounding.clone())?.amount;
+            let base = (bill.total as u128) + (monthly as u128);
+            if base > u64::MAX as u128 { return Err(Error::CombinedOverflow); }
+            let base = base as u64;
+            let discount = discount_amount(base, meter.discount_bps);
+            let total = base - discount;
+            Ok(InvoiceLine {
+                name: meter.name.clone(),
+                usage: bill.charge.amount,
+                minimum_adjustment: bill.minimum_adjustment,
+                monthly,
+                discount,
+                total,
+            })
+        })().map_err(|source| Error::Meter { index, source: Box::new(source) })?;
+
+        let next = subtotal as u128 + result.total as u128;
+        if next > u64::MAX as u128 { return Err(Error::InvoiceOverflow); }
+        subtotal = next as u64;
+        lines.push(result);
+    }
+
+    lines.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    let discount = discount_amount(subtotal, invoice_discount_bps);
+    let after_discount = subtotal - discount;
+    let applied_credit = credit.min(after_discount);
+    let total = after_discount - applied_credit;
+
+    let mut rendered = String::new();
+    for line in &lines {
+        use std::fmt::Write;
+        let _ = writeln!(
+            rendered,
+            "{}:{}|{}|{}|{}|{}|{}",
+            line.name.len(), line.name, line.usage, line.minimum_adjustment,
+            line.monthly, line.discount, line.total
+        );
+    }
+    use std::fmt::Write;
+    let _ = writeln!(rendered, "TOTAL|{}|{}|{}|{}", subtotal, discount, applied_credit, total);
+
+    Ok(Invoice { lines, subtotal, discount, credit: applied_credit, total, rendered })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier { pub up_to: Option<u64>, pub unit: u64, pub start: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price { Flat { unit: u64, start: u64 }, Tiers(Vec<Tier>) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band { pub index: usize, pub units: u64, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge { pub amount: u64, pub bands: Vec<Band> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode { Graduated, Volume }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill { pub charge: Charge, pub minimum_adjustment: u64, pub total: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayRange { pub start: u32, pub end: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rounding { Down, Up, HalfEven }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proration { pub active_days: u32, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Meter {
+    pub name: String, pub quantity: u64, pub price: Price, pub mode: Mode,
+    pub minimum: u64, pub monthly_fee: u64, pub days: u32, pub start: u32,
+    pub end: u32, pub credits: Vec<DayRange>, pub rounding: Rounding,
+    pub discount_bps: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceLine {
+    pub name: String, pub usage: u64, pub minimum_adjustment: u64,
+    pub monthly: u64, pub discount: u64, pub total: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invoice {
+    pub lines: Vec<InvoiceLine>, pub subtotal: u64, pub discount: u64,
+    pub credit: u64, pub total: u64, pub rendered: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Empty, TooMany, Bound { index: usize }, Unbounded { index: usize }, MissingFinal, Overflow { index: usize }, Month, Period, Credit { index: usize }, CreditOrder { index: usize }, InvoiceDiscount, InvalidName { index: usize }, DuplicateName { index: usize }, Discount, CombinedOverflow, Meter { index: usize, source: Box<Error> }, InvoiceOverflow }
+
+fn validate_tiers(tiers: &[Tier]) -> Result<(), Error> {
+    match tiers.len() {
+        0 => return Err(Error::Empty),
+        65.. => return Err(Error::TooMany),
+        _ => {}
+    }
+    let mut last_bound = 0;
+    for (index, tier) in tiers.iter().enumerate() {
+        if let Some(bound) = tier.up_to {
+            if bound <= last_bound {
+                return Err(Error::Bound { index });
+            }
+            last_bound = bound;
+        } else if index != tiers.len() - 1 {
+            return Err(Error::Unbounded { index });
+        }
+    }
+    if tiers[tiers.len() - 1].up_to.is_some() {
+        Err(Error::MissingFinal)
+    } else {
+        Ok(())
+    }
+}
+
+fn calculate(units: u64, unit: u64, start: u64, index: usize) -> Result<u64, Error> {
+    let wide = u128::from(units) * u128::from(unit) + u128::from(start);
+    u64::try_from(wide).map_err(|_| Error::Overflow { index })
+}
+
+fn quote_impl(quantity: u64, price: &Price, mode: &Mode) -> Result<Charge, Error> {
+    if let Price::Flat { unit, start } = price {
+        return if quantity == 0 {
+            Ok(Charge { amount: 0, bands: Vec::new() })
+        } else {
+            let amount = calculate(quantity, *unit, *start, 0)?;
+            Ok(Charge { amount, bands: vec![Band { index: 0, units: quantity, amount }] })
+        };
+    }
+
+    let tiers = match price { Price::Tiers(tiers) => tiers, _ => unreachable!() };
+    validate_tiers(tiers)?;
+    if quantity == 0 {
+        return Ok(Charge { amount: 0, bands: Vec::new() });
+    }
+
+    if *mode == Mode::Volume {
+        let selected = tiers.iter().enumerate().find(|(_, t)| {
+            t.up_to.map(|bound| quantity <= bound).unwrap_or(true)
+        }).unwrap();
+        let (index, tier) = selected;
+        let amount = calculate(quantity, tier.unit, tier.start, index)?;
+        return Ok(Charge { amount, bands: vec![Band { index, units: quantity, amount }] });
+    }
+
+    let mut consumed_through = 0u64;
+    let mut result = Charge { amount: 0, bands: Vec::new() };
+    for (index, tier) in tiers.iter().enumerate() {
+        let allocated = match tier.up_to {
+            Some(bound) => {
+                let width = bound - consumed_through;
+                consumed_through = bound;
+                quantity.saturating_sub(consumed_through.saturating_sub(width)).min(width)
+            }
+            None => quantity.saturating_sub(consumed_through),
+        };
+        if allocated == 0 { continue; }
+        let amount = calculate(allocated, tier.unit, tier.start, index)?;
+        let sum = u128::from(result.amount) + u128::from(amount);
+        if sum > u128::from(u64::MAX) {
+            return Err(Error::Overflow { index });
+        }
+        result.amount = sum as u64;
+        result.bands.push(Band { index, units: allocated, amount });
+    }
+    Ok(result)
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    quote_impl(quantity, price, &Mode::Graduated)
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = quote_impl(quantity, price, &mode)?;
+    let minimum_adjustment = if quantity == 0 || charge.amount >= minimum { 0 } else { minimum - charge.amount };
+    let total = u128::from(charge.amount) + u128::from(minimum_adjustment);
+    if total > u128::from(u64::MAX) {
+        return Err(Error::Overflow { index: 0 });
+    }
+    Ok(Bill { charge, minimum_adjustment, total: total as u64 })
+}
+
+pub fn prorate(fee: u64, days: u32, start: u32, end: u32, credits: &[DayRange], rounding: Rounding) -> Result<Proration, Error> {
+    if days != 28 && days != 29 && days != 30 && days != 31 { return Err(Error::Month); }
+    if start > end || end > days { return Err(Error::Period); }
+
+    let mut active_days = end - start;
+    let mut previous_end = start;
+    for (index, credit) in credits.iter().enumerate() {
+        if credit.start < start || credit.start >= credit.end || credit.end > end {
+            return Err(Error::Credit { index });
+        }
+        if credit.start < previous_end {
+            return Err(Error::CreditOrder { index });
+        }
+        active_days -= credit.end - credit.start;
+        previous_end = credit.end;
+    }
+
+    let numerator = u128::from(fee) * u128::from(active_days);
+    let denominator = u128::from(days);
+    let q = numerator / denominator;
+    let r = numerator % denominator;
+    let amount = match rounding {
+        Rounding::Down => q,
+        Rounding::Up => if r == 0 { q } else { q + 1 },
+        Rounding::HalfEven => {
+            let twice = r * 2;
+            if twice > denominator || (twice == denominator && q % 2 == 1) { q + 1 } else { q }
+        }
+    };
+    Ok(Proration { active_days, amount: amount as u64 })
+}
+
+fn discount(base: u64, bps: u32) -> u64 {
+    (u128::from(base) * u128::from(bps) / 10_000) as u64
+}
+
+pub fn invoice(meters: &[Meter], invoice_discount_bps: u32, credit: u64) -> Result<Invoice, Error> {
+    if invoice_discount_bps > 10_000 { return Err(Error::InvoiceDiscount); }
+
+    let mut seen: Vec<&str> = Vec::with_capacity(meters.len());
+    for (index, meter) in meters.iter().enumerate() {
+        let bytes = meter.name.as_bytes();
+        if bytes.is_empty() || bytes.len() > 32 || bytes.iter().any(|&b| b <= 31 || b == 127 || b == b'|' || b == b':') {
+            return Err(Error::InvalidName { index });
+        }
+        if seen.iter().any(|name| *name == meter.name) {
+            return Err(Error::DuplicateName { index });
+        }
+        seen.push(&meter.name);
+    }
+
+    let mut subtotal = 0u64;
+    let mut lines = Vec::with_capacity(meters.len());
+    for (index, meter) in meters.iter().enumerate() {
+        let line = (|| {
+            if meter.discount_bps > 10_000 { return Err(Error::Discount); }
+            let bill = bill(meter.quantity, &meter.price, meter.mode.clone(), meter.minimum)?;
+            let proration = prorate(meter.monthly_fee, meter.days, meter.start, meter.end, &meter.credits, meter.rounding.clone())?;
+            let base = bill.total.checked_add(proration.amount).ok_or(Error::CombinedOverflow)?;
+            let meter_discount = discount(base, meter.discount_bps);
+            Ok(InvoiceLine {
+                name: meter.name.clone(),
+                usage: bill.charge.amount,
+                minimum_adjustment: bill.minimum_adjustment,
+                monthly: proration.amount,
+                discount: meter_discount,
+                total: base - meter_discount,
+            })
+        })().map_err(|source| Error::Meter { index, source: Box::new(source) })?;
+
+        subtotal = subtotal.checked_add(line.total).ok_or(Error::InvoiceOverflow)?;
+        lines.push(line);
+    }
+
+    lines.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    let invoice_discount = discount(subtotal, invoice_discount_bps);
+    let remainder = subtotal - invoice_discount;
+    let applied_credit = credit.min(remainder);
+    let total = remainder - applied_credit;
+
+    let mut rendered = String::new();
+    for line in &lines {
+        rendered.push_str(&line.name.len().to_string());
+        rendered.push(':');
+        rendered.push_str(&line.name);
+        rendered.push('|');
+        rendered.push_str(&line.usage.to_string());
+        rendered.push('|');
+        rendered.push_str(&line.minimum_adjustment.to_string());
+        rendered.push('|');
+        rendered.push_str(&line.monthly.to_string());
+        rendered.push('|');
+        rendered.push_str(&line.discount.to_string());
+        rendered.push('|');
+        rendered.push_str(&line.total.to_string());
+        rendered.push('\n');
+    }
+    rendered.push_str("TOTAL|");
+    rendered.push_str(&subtotal.to_string());
+    rendered.push('|');
+    rendered.push_str(&invoice_discount.to_string());
+    rendered.push('|');
+    rendered.push_str(&applied_credit.to_string());
+    rendered.push('|');
+    rendered.push_str(&total.to_string());
+    rendered.push('\n');
+
+    Ok(Invoice { lines, subtotal, discount: invoice_discount, credit: applied_credit, total, rendered })
+}
+```

@@ -1,0 +1,608 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-51799-1792474886370310000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a157d4-3b12-7382-b04e-d642ff3c4e10
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+For this request only: reply with two complete files in two ```rust blocks (Solution A, then Solution B), as the prompt describes.
+
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items must be pub. Do not use inner attributes or inner documentation comments. 
+
+Exact public API (derive Debug, Clone, PartialEq, Eq on the enums/structs):
+pub enum WordsError { Empty, InvalidByte { index: usize }, Separator { index: usize }, InvalidWord { index: usize }, Range, NonCanonical { index: usize } }
+pub fn words_encode(value: i128) -> Result<String, WordsError>;
+pub fn words_decode(input: &str) -> Result<i128, WordsError>;
+
+R1. words_encode and words_decode support signed integers whose magnitude is at most 10^18 = 1000000000000000000 inclusive. Encode outside this interval returns Range; i128::MIN must not panic.
+R2. Output is lowercase ASCII English without commas, leading/trailing spaces, or repeated spaces.
+R3. Zero is exactly zero. There is no negative-zero spelling.
+R4. Negative values use minus followed by one space and the spelling of the positive magnitude.
+R5. One through nineteen use: one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen.
+R6. Tens 20..90 use twenty, thirty, forty, fifty, sixty, seventy, eighty, ninety.
+R7. A two-digit number 21..99 not divisible by ten uses tens, one hyphen, and its units word, e.g. forty-two.
+R8. Teens and exact multiples of ten contain no hyphen.
+R9. A group 100..999 starts with its units word, one space, hundred.
+R10. If the remainder after hundreds is nonzero, append space-and-space and the R5-R8 spelling of the remainder. An exact hundred contains no and.
+R11. Split the positive magnitude into groups of three decimal digits. From high to low the scale words are quintillion (10^18), quadrillion (10^15), trillion (10^12), billion (10^9), million (10^6), thousand (10^3), and no scale for units.
+R12. Omit every zero group completely. A nonzero scaled group is its R5-R10 spelling followed by one space and its scale word.
+R13. Join successive nonzero groups with one space, with the single exception in R14.
+R14. If a units group in 1..99 is present AND at least one higher group is present, join the last higher group to that units group with space-and-space. Never put this cross-group and before a scaled group or before a units group >=100.
+R15. Internal hundred-and and the cross-group and may both occur in one output; e.g. 101001 is one hundred and one thousand and one.
+R16. 10^18 spells one quintillion; there are no higher scale words.
+R17. words_decode accepts only the exact canonical output of words_encode. The relaxed arithmetic in R29-R35 is an error-classification procedure, not additional accepted spellings.
+R18. Input is not trimmed or lowercased. All error positions are zero-based UTF-8 byte offsets in the original input.
+R19. Empty input returns Empty.
+R20. First scan the ENTIRE input for bytes outside lowercase ASCII a..z, ASCII space, and ASCII hyphen. Return InvalidByte at the first invalid byte.
+R21. Uppercase, digits, commas, apostrophes, tabs, newlines, and non-ASCII bytes are invalid; minus is an English word, not a sign byte.
+R22. After lexical validation, inspect every space or hyphen from left to right. Each must have a lowercase letter immediately before and after it.
+R23. Return Separator at the first delimiter that violates R22, including a leading/trailing delimiter or the first delimiter of an adjacent pair.
+R24. Both spaces and hyphens delimit tokens; token positions are the byte offsets of their first letters.
+R25. After delimiter validation, scan ALL tokens in order for dictionary membership, returning InvalidWord at the first unrecognized token before performing any numeric arithmetic.
+R26. The dictionary is zero, one through nineteen, the eight tens words, hundred, thousand, million, billion, trillion, quadrillion, quintillion, and and. These spellings are exact; fourty is invalid.
+R27. minus is recognized only when it is the first token. A later minus returns InvalidWord at that token, even if the first token was also minus.
+R28. If the first token is minus, set the negative flag and remove it from the arithmetic token stream; this also applies when separated from the next token by a hyphen. A lone minus proceeds to R36 with numeric magnitude zero.
+R29. To classify remaining inputs, use nonnegative accumulators total=0 and group=0. Process tokens left to right with the operations in R30-R33.
+R30. zero contributes 0; one through nineteen and tens words add their numerical value to group. and has no arithmetic effect.
+R31. hundred multiplies the current group by 100. It does not imply a default one and does not reset group.
+R32. A scale word thousand or higher adds group multiplied by that scale value to total and resets group to zero. It does not imply a default one.
+R33. No descending-scale restriction or ordering check is performed during relaxed arithmetic; repeated or ascending scales are classified using exactly R32 and then canonical comparison.
+R34. After EVERY arithmetic token (including ignored and), if total+group exceeds 10^18, return Range. This happens before any canonical comparison, but after the entire dictionary scan.
+R35. At the end the magnitude is total+group; apply the negative flag. A zero magnitude yields signed zero even when the flag was set.
+R36. Encode the resulting signed value using R1-R16 and compare that output byte for byte to the ORIGINAL input.
+R37. If they differ, return NonCanonical at the first differing byte; if one string is a prefix of the other, use the shorter byte length.
+R38. Thus missing or redundant and, a space instead of a required hyphen, a hyphen instead of a required space, omitted group digits, repeated values, incorrect scale order, and negative zero fail canonical comparison unless an earlier specified error applies.
+R39. Complete decode precedence is Empty, InvalidByte, Separator, InvalidWord, first arithmetic Range, NonCanonical.
+R40. Lexical, delimiter and dictionary scans must finish before arithmetic; a later unknown word beats an earlier numeric range violation.
+R41. Both API functions are deterministic and maintain no state. All finite inputs must be handled without arithmetic overflow or panics.
+R42. Hyphen tokenization does not make arbitrary compounds acceptable. For example one-hundred is numerically 100 but fails NonCanonical at byte 3, and twenty one is numerically 21 but fails NonCanonical at byte 6.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R5-R10
+#[test]
+fn public_words_encode() {
+assert_eq!(words_encode(342),Ok("three hundred and forty-two".into()));
+}
+
+// R4, R11-R14, R17
+#[test]
+fn public_words_decode() {
+assert_eq!(words_decode("minus two million five thousand and six"),Ok(-2005006));
+}
+
+// R3
+#[test]
+fn public_words_zero() {
+assert_eq!(words_encode(0),Ok("zero".into())); assert_eq!(words_decode("zero"),Ok(0));
+}
+```
+
+
+## Answer format for this request: two complete files
+
+Hidden acceptance tests check every numbered requirement. A file that passes the visible tests but fails hidden ones has usually read some requirement the wrong way, so hedge:
+
+1. First, in at most six short bullet points, list the places where the requirements could be read two ways or are easy to get wrong (order of checks, boundaries, empty or zero cases, exact output text, overflow, cost on the largest sizes allowed), and say which reading you take.
+2. Then a line `### Solution A`, followed by the whole file in one ```rust block, following the readings you think most likely.
+3. Then a line `### Solution B`, followed by the whole file in one ```rust block, taking the other reading on the one to three points you are least sure of. If you are sure of every point, make B an independent implementation with a different algorithm or data structure instead.
+
+Both files must be complete, build on their own and pass the visible tests. Use no other code blocks.
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-20T05:41:29.609431Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+- Decode checks run in the specified order: whole-input byte scan, delimiter scan, full dictionary scan, arithmetic, then canonical comparison.
+- Delimiters must have lowercase letters on both sides; spaces and hyphens both split tokens.
+- A leading `minus` is special; later `minus` is an invalid word. A lone `minus` decodes arithmetically to zero, then fails canonical comparison.
+- Arithmetic uses checked operations and tests the `10^18` bound after every arithmetic token, including `and`.
+- Canonical output uses `and` inside non-exact hundreds and between a higher group and a units group from 1 to 99; the limit includes `10^18`.
+- Solution B uses a different token representation for lookup and arithmetic while preserving the same specified behavior.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WordsError {
+    Empty,
+    InvalidByte { index: usize },
+    Separator { index: usize },
+    InvalidWord { index: usize },
+    Range,
+    NonCanonical { index: usize },
+}
+
+const LIMIT: u128 = 1_000_000_000_000_000_000;
+
+const SMALL: [&str; 20] = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen",
+];
+
+const TENS: [&str; 8] = [
+    "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+const SCALES: [&str; 7] = [
+    "quintillion", "quadrillion", "trillion", "billion", "million", "thousand", "",
+];
+
+fn append_under_hundred(n: u128, out: &mut String) {
+    if n < 20 {
+        out.push_str(SMALL[n as usize]);
+    } else {
+        let tens = (n / 10) as usize - 2;
+        out.push_str(TENS[tens]);
+        if n % 10 != 0 {
+            out.push('-');
+            out.push_str(SMALL[(n % 10) as usize]);
+        }
+    }
+}
+
+fn append_group(n: u128, out: &mut String) {
+    if n >= 100 {
+        out.push_str(SMALL[(n / 100) as usize]);
+        out.push_str(" hundred");
+        let rem = n % 100;
+        if rem != 0 {
+            out.push_str(" and ");
+            append_under_hundred(rem, out);
+        }
+    } else {
+        append_under_hundred(n, out);
+    }
+}
+
+pub fn words_encode(value: i128) -> Result<String, WordsError> {
+    let magnitude = value.unsigned_abs();
+    if magnitude > LIMIT {
+        return Err(WordsError::Range);
+    }
+    if magnitude == 0 {
+        return Ok("zero".to_string());
+    }
+
+    let mut groups = [0u16; 7];
+    let mut rest = magnitude;
+    for i in (0..7).rev() {
+        groups[i] = (rest % 1000) as u16;
+        rest /= 1000;
+    }
+
+    let mut out = String::new();
+    if value < 0 {
+        out.push_str("minus ");
+    }
+
+    let nonzero: Vec<usize> = (0..7).filter(|&i| groups[i] != 0).collect();
+    for (pos, &i) in nonzero.iter().enumerate() {
+        if pos != 0 {
+            let is_final_small_units =
+                i == 6 && groups[i] < 100 && groups[i] > 0;
+            if is_final_small_units {
+                out.push_str(" and ");
+            } else {
+                out.push(' ');
+            }
+        }
+        append_group(groups[i] as u128, &mut out);
+        if !SCALES[i].is_empty() {
+            out.push(' ');
+            out.push_str(SCALES[i]);
+        }
+    }
+    Ok(out)
+}
+
+fn lookup(word: &str) -> Option<(u128, TokenKind)> {
+    match word {
+        "zero" => Some((0, TokenKind::Number)),
+        "one" => Some((1, TokenKind::Number)),
+        "two" => Some((2, TokenKind::Number)),
+        "three" => Some((3, TokenKind::Number)),
+        "four" => Some((4, TokenKind::Number)),
+        "five" => Some((5, TokenKind::Number)),
+        "six" => Some((6, TokenKind::Number)),
+        "seven" => Some((7, TokenKind::Number)),
+        "eight" => Some((8, TokenKind::Number)),
+        "nine" => Some((9, TokenKind::Number)),
+        "ten" => Some((10, TokenKind::Number)),
+        "eleven" => Some((11, TokenKind::Number)),
+        "twelve" => Some((12, TokenKind::Number)),
+        "thirteen" => Some((13, TokenKind::Number)),
+        "fourteen" => Some((14, TokenKind::Number)),
+        "fifteen" => Some((15, TokenKind::Number)),
+        "sixteen" => Some((16, TokenKind::Number)),
+        "seventeen" => Some((17, TokenKind::Number)),
+        "eighteen" => Some((18, TokenKind::Number)),
+        "nineteen" => Some((19, TokenKind::Number)),
+        "twenty" => Some((20, TokenKind::Number)),
+        "thirty" => Some((30, TokenKind::Number)),
+        "forty" => Some((40, TokenKind::Number)),
+        "fifty" => Some((50, TokenKind::Number)),
+        "sixty" => Some((60, TokenKind::Number)),
+        "seventy" => Some((70, TokenKind::Number)),
+        "eighty" => Some((80, TokenKind::Number)),
+        "ninety" => Some((90, TokenKind::Number)),
+        "hundred" => Some((100, TokenKind::Hundred)),
+        "thousand" => Some((1_000, TokenKind::Scale)),
+        "million" => Some((1_000_000, TokenKind::Scale)),
+        "billion" => Some((1_000_000_000, TokenKind::Scale)),
+        "trillion" => Some((1_000_000_000_000, TokenKind::Scale)),
+        "quadrillion" => Some((1_000_000_000_000_000, TokenKind::Scale)),
+        "quintillion" => Some((1_000_000_000_000_000_000, TokenKind::Scale)),
+        "and" => Some((0, TokenKind::And)),
+        "minus" => Some((0, TokenKind::Minus)),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TokenKind {
+    Number,
+    Hundred,
+    Scale,
+    And,
+    Minus,
+}
+
+#[derive(Clone, Copy)]
+struct Token {
+    value: u128,
+    kind: TokenKind,
+    index: usize,
+}
+
+pub fn words_decode(input: &str) -> Result<i128, WordsError> {
+    if input.is_empty() {
+        return Err(WordsError::Empty);
+    }
+
+    let bytes = input.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if !b.is_ascii_lowercase() && b != b' ' && b != b'-' {
+            return Err(WordsError::InvalidByte { index: i });
+        }
+    }
+
+    for i in 0..bytes.len() {
+        if bytes[i] == b' ' || bytes[i] == b'-' {
+            if i == 0
+                || i + 1 == bytes.len()
+                || !bytes[i - 1].is_ascii_lowercase()
+                || !bytes[i + 1].is_ascii_lowercase()
+            {
+                return Err(WordsError::Separator { index: i });
+            }
+        }
+    }
+
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut start = 0;
+    for i in 0..=bytes.len() {
+        if i == bytes.len() || bytes[i] == b' ' || bytes[i] == b'-' {
+            let word = &input[start..i];
+            let (value, kind) = lookup(word).ok_or(WordsError::InvalidWord { index: start })?;
+            tokens.push(Token { value, kind, index: start });
+            start = i + 1;
+        }
+    }
+
+    let negative = matches!(tokens.first(), Some(Token { kind: TokenKind::Minus, .. }));
+    if tokens.iter().skip(usize::from(negative)).any(|t| matches!(t.kind, TokenKind::Minus)) {
+        let t = tokens
+            .iter()
+            .skip(usize::from(negative))
+            .find(|t| matches!(t.kind, TokenKind::Minus))
+            .unwrap();
+        return Err(WordsError::InvalidWord { index: t.index });
+    }
+
+    let mut total: u128 = 0;
+    let mut group: u128 = 0;
+    for token in tokens.iter().skip(usize::from(negative)) {
+        match token.kind {
+            TokenKind::Number => {
+                group = group.checked_add(token.value).ok_or(WordsError::Range)?;
+            }
+            TokenKind::Hundred => {
+                group = group.checked_mul(100).ok_or(WordsError::Range)?;
+            }
+            TokenKind::Scale => {
+                let scaled = group.checked_mul(token.value).ok_or(WordsError::Range)?;
+                total = total.checked_add(scaled).ok_or(WordsError::Range)?;
+                group = 0;
+            }
+            TokenKind::And | TokenKind::Minus => {}
+        }
+        if total.checked_add(group).ok_or(WordsError::Range)? > LIMIT {
+            return Err(WordsError::Range);
+        }
+    }
+
+    let magnitude = total.checked_add(group).ok_or(WordsError::Range)?;
+    if magnitude > LIMIT {
+        return Err(WordsError::Range);
+    }
+    let signed = if negative {
+        -(magnitude as i128)
+    } else {
+        magnitude as i128
+    };
+
+    let canonical = words_encode(signed)?;
+    let original = input.as_bytes();
+    let encoded = canonical.as_bytes();
+    let common = original.len().min(encoded.len());
+    for i in 0..common {
+        if original[i] != encoded[i] {
+            return Err(WordsError::NonCanonical { index: i });
+        }
+    }
+    if original.len() != encoded.len() {
+        return Err(WordsError::NonCanonical { index: common });
+    }
+    Ok(signed)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WordsError {
+    Empty,
+    InvalidByte { index: usize },
+    Separator { index: usize },
+    InvalidWord { index: usize },
+    Range,
+    NonCanonical { index: usize },
+}
+
+const LIMIT: u128 = 1_000_000_000_000_000_000;
+
+fn small_word(n: usize) -> &'static str {
+    match n {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        4 => "four",
+        5 => "five",
+        6 => "six",
+        7 => "seven",
+        8 => "eight",
+        9 => "nine",
+        10 => "ten",
+        11 => "eleven",
+        12 => "twelve",
+        13 => "thirteen",
+        14 => "fourteen",
+        15 => "fifteen",
+        16 => "sixteen",
+        17 => "seventeen",
+        18 => "eighteen",
+        _ => "nineteen",
+    }
+}
+
+fn tens_word(n: usize) -> &'static str {
+    match n {
+        20 => "twenty",
+        30 => "thirty",
+        40 => "forty",
+        50 => "fifty",
+        60 => "sixty",
+        70 => "seventy",
+        80 => "eighty",
+        _ => "ninety",
+    }
+}
+
+fn encode_group(n: u16) -> String {
+    let mut s = String::new();
+    let n = n as usize;
+    if n >= 100 {
+        s.push_str(small_word(n / 100));
+        s.push_str(" hundred");
+        if n % 100 != 0 {
+            s.push_str(" and ");
+            s.push_str(&encode_group((n % 100) as u16));
+        }
+    } else if n < 20 {
+        s.push_str(small_word(n));
+    } else {
+        s.push_str(tens_word(n / 10 * 10));
+        if n % 10 != 0 {
+            s.push('-');
+            s.push_str(small_word(n % 10));
+        }
+    }
+    s
+}
+
+pub fn words_encode(value: i128) -> Result<String, WordsError> {
+    let mag = value.unsigned_abs();
+    if mag > LIMIT {
+        return Err(WordsError::Range);
+    }
+    if mag == 0 {
+        return Ok(String::from("zero"));
+    }
+
+    let mut groups = Vec::new();
+    let mut rest = mag;
+    while rest > 0 {
+        groups.push((rest % 1000) as u16);
+        rest /= 1000;
+    }
+    while groups.len() < 7 {
+        groups.push(0);
+    }
+    groups.reverse();
+
+    let scale = ["quintillion", "quadrillion", "trillion", "billion", "million", "thousand", ""];
+    let nonzero: Vec<(usize, u16)> = groups.iter().copied().enumerate().filter(|(_, g)| *g != 0).collect();
+    let mut out = String::new();
+    if value < 0 {
+        out.push_str("minus ");
+    }
+    for (j, (i, g)) in nonzero.iter().enumerate() {
+        if j != 0 {
+            if *i == 6 && *g < 100 {
+                out.push_str(" and ");
+            } else {
+                out.push(' ');
+            }
+        }
+        out.push_str(&encode_group(*g));
+        if !scale[*i].is_empty() {
+            out.push(' ');
+            out.push_str(scale[*i]);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Copy)]
+enum Op {
+    Add(u128),
+    TimesHundred,
+    TimesScale(u128),
+    Ignore,
+    Minus,
+}
+
+fn word_op(s: &str) -> Option<Op> {
+    Some(match s {
+        "zero" => Op::Add(0),
+        "one" => Op::Add(1),
+        "two" => Op::Add(2),
+        "three" => Op::Add(3),
+        "four" => Op::Add(4),
+        "five" => Op::Add(5),
+        "six" => Op::Add(6),
+        "seven" => Op::Add(7),
+        "eight" => Op::Add(8),
+        "nine" => Op::Add(9),
+        "ten" => Op::Add(10),
+        "eleven" => Op::Add(11),
+        "twelve" => Op::Add(12),
+        "thirteen" => Op::Add(13),
+        "fourteen" => Op::Add(14),
+        "fifteen" => Op::Add(15),
+        "sixteen" => Op::Add(16),
+        "seventeen" => Op::Add(17),
+        "eighteen" => Op::Add(18),
+        "nineteen" => Op::Add(19),
+        "twenty" => Op::Add(20),
+        "thirty" => Op::Add(30),
+        "forty" => Op::Add(40),
+        "fifty" => Op::Add(50),
+        "sixty" => Op::Add(60),
+        "seventy" => Op::Add(70),
+        "eighty" => Op::Add(80),
+        "ninety" => Op::Add(90),
+        "hundred" => Op::TimesHundred,
+        "thousand" => Op::TimesScale(1_000),
+        "million" => Op::TimesScale(1_000_000),
+        "billion" => Op::TimesScale(1_000_000_000),
+        "trillion" => Op::TimesScale(1_000_000_000_000),
+        "quadrillion" => Op::TimesScale(1_000_000_000_000_000),
+        "quintillion" => Op::TimesScale(1_000_000_000_000_000_000),
+        "and" => Op::Ignore,
+        "minus" => Op::Minus,
+        _ => return None,
+    })
+}
+
+pub fn words_decode(input: &str) -> Result<i128, WordsError> {
+    if input.is_empty() {
+        return Err(WordsError::Empty);
+    }
+    let b = input.as_bytes();
+    if let Some((i, _)) = b.iter().enumerate().find(|(_, c)| !(c.is_ascii_lowercase() || **c == b' ' || **c == b'-')) {
+        return Err(WordsError::InvalidByte { index: i });
+    }
+    for i in 0..b.len() {
+        if b[i] == b' ' || b[i] == b'-' {
+            if i == 0 || i + 1 == b.len() || !b[i - 1].is_ascii_lowercase() || !b[i + 1].is_ascii_lowercase() {
+                return Err(WordsError::Separator { index: i });
+            }
+        }
+    }
+
+    let mut ops = Vec::new();
+    let mut starts = Vec::new();
+    let mut begin = 0;
+    for i in 0..=b.len() {
+        if i == b.len() || b[i] == b' ' || b[i] == b'-' {
+            let op = word_op(&input[begin..i]).ok_or(WordsError::InvalidWord { index: begin })?;
+            ops.push(op);
+            starts.push(begin);
+            begin = i + 1;
+        }
+    }
+
+    let negative = matches!(ops.first(), Some(Op::Minus));
+    for i in usize::from(negative)..ops.len() {
+        if matches!(ops[i], Op::Minus) {
+            return Err(WordsError::InvalidWord { index: starts[i] });
+        }
+    }
+
+    let mut total = 0u128;
+    let mut group = 0u128;
+    for op in ops.iter().skip(usize::from(negative)) {
+        match *op {
+            Op::Add(v) => group = group.checked_add(v).ok_or(WordsError::Range)?,
+            Op::TimesHundred => group = group.checked_mul(100).ok_or(WordsError::Range)?,
+            Op::TimesScale(scale) => {
+                total = total
+                    .checked_add(group.checked_mul(scale).ok_or(WordsError::Range)?)
+                    .ok_or(WordsError::Range)?;
+                group = 0;
+            }
+            Op::Ignore | Op::Minus => {}
+        }
+        if total.checked_add(group).ok_or(WordsError::Range)? > LIMIT {
+            return Err(WordsError::Range);
+        }
+    }
+
+    let mag = total.checked_add(group).ok_or(WordsError::Range)?;
+    if mag > LIMIT {
+        return Err(WordsError::Range);
+    }
+    let result = if negative { -(mag as i128) } else { mag as i128 };
+    let canonical = words_encode(result)?;
+    let a = input.as_bytes();
+    let c = canonical.as_bytes();
+    let n = a.len().min(c.len());
+    for i in 0..n {
+        if a[i] != c[i] {
+            return Err(WordsError::NonCanonical { index: i });
+        }
+    }
+    if a.len() != c.len() {
+        return Err(WordsError::NonCanonical { index: n });
+    }
+    Ok(result)
+}
+```
+tokens used
+7,546

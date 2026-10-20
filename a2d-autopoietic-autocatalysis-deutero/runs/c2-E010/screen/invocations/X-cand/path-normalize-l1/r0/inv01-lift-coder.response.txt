@@ -1,0 +1,215 @@
+- Validation scans the entire original string before component processing; error priority is NUL, backslash, then control.
+- Offsets are UTF-8 byte offsets into the original input.
+- Leading `//` still means one absolute root; repeated slashes collapse.
+- Relative `..` components are retained unless they can remove an ordinary component; absolute attempts above root return `Escape`.
+- Directory intent comes from a trailing slash or a final nonempty `.`/`..` component; `.` and `/` remain untrailed.
+- For Solution B, I use a reverse scan to reduce components; escape is still reported at the earliest offending parent in traversal order.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let bytes = path.as_bytes();
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes[bytes.len() - 1] == b'/'
+        || path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<(usize, &str)> = Vec::new();
+
+    let mut start = 0;
+    while start < path.len() {
+        while start < path.len() && bytes[start] == b'/' {
+            start += 1;
+        }
+        if start == path.len() {
+            break;
+        }
+
+        let end = path[start..]
+            .find('/')
+            .map_or(path.len(), |offset| start + offset);
+        let component = &path[start..end];
+
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|(_, c)| *c != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: start });
+                } else {
+                    components.push((start, component));
+                }
+            }
+            _ => components.push((start, component)),
+        }
+
+        start = end;
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+
+    for (_, component) in &components {
+        if !result.is_empty() && !result.ends_with('/') {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    let bytes = path.as_bytes();
+    for (kind, predicate) in [
+        (0u8, 0u8),
+        (1u8, 0u8),
+        (2u8, 0u8),
+    ] {
+        let first = bytes.iter().position(|&b| match kind {
+            0 => b == 0,
+            1 => b == b'\\',
+            _ => (1..=31).contains(&b) || b == 127,
+        });
+        if let Some(at) = first {
+            return Err(match kind {
+                0 => PathError::Nul { at },
+                1 => PathError::Backslash { at },
+                _ => PathError::Control { at },
+            });
+        }
+        let _ = predicate;
+    }
+
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes[bytes.len() - 1] == b'/'
+        || path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .is_some_and(|component| matches!(component, "." | ".."));
+
+    let raw_components: Vec<(usize, &str)> = {
+        let mut out = Vec::new();
+        let mut start = 0;
+        while start < path.len() {
+            while start < path.len() && bytes[start] == b'/' {
+                start += 1;
+            }
+            if start == path.len() {
+                break;
+            }
+            let end = path[start..]
+                .find('/')
+                .map_or(path.len(), |offset| start + offset);
+            out.push((start, &path[start..end]));
+            start = end;
+        }
+        out
+    };
+
+    let mut reduced_reversed: Vec<&str> = Vec::new();
+    let mut unmatched_parents = 0usize;
+
+    for &(_, component) in raw_components.iter().rev() {
+        match component {
+            "." => {}
+            ".." => {
+                if let Some(index) = reduced_reversed.iter().position(|&c| c != "..") {
+                    reduced_reversed.remove(index);
+                } else if absolute {
+                    unmatched_parents += 1;
+                } else {
+                    reduced_reversed.push("..");
+                }
+            }
+            _ => reduced_reversed.push(component),
+        }
+    }
+
+    if absolute && unmatched_parents > 0 {
+        let at = raw_components
+            .iter()
+            .find(|(_, component)| *component == "..")
+            .map(|(at, _)| *at)
+            .unwrap_or(0);
+        return Err(PathError::Escape { at });
+    }
+
+    reduced_reversed.reverse();
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    for component in reduced_reversed {
+        if !result.is_empty() && !result.ends_with('/') {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+    if result.is_empty() {
+        result.push('.');
+    }
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+    Ok(result)
+}
+```

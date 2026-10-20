@@ -1,0 +1,221 @@
+- NUL preflight scans the entire input first, so it outranks any earlier syntax error.
+- Error positions are byte offsets in the original UTF-8 input; quote errors point to the opening quote.
+- Only ASCII space, tab, CR, and LF separate words.
+- Empty quotes activate a word; a line continuation alone does not.
+- At EOF, a trailing escape takes precedence over an unclosed double quote.
+- Environment strings are not involved; dollar signs and backticks remain literal.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+}
+
+pub fn split(input: &str) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.as_bytes().iter().position(|&b| b == 0) {
+        return Err(SplitError::Nul { pos });
+    }
+
+    #[derive(Clone, Copy)]
+    enum State {
+        Bare,
+        Single(usize),
+        Double(usize),
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut state = State::Bare;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((pos, ch)) = chars.next() {
+        match state {
+            State::Bare => match ch {
+                ' ' | '\t' | '\r' | '\n' => {
+                    if active {
+                        words.push(std::mem::take(&mut word));
+                        active = false;
+                    }
+                }
+                '\'' => {
+                    active = true;
+                    state = State::Single(pos);
+                }
+                '"' => {
+                    active = true;
+                    state = State::Double(pos);
+                }
+                '\\' => match chars.peek().copied() {
+                    None => return Err(SplitError::TrailingEscape { pos }),
+                    Some((_, '\n')) => {
+                        chars.next();
+                    }
+                    Some((_, next)) => {
+                        chars.next();
+                        word.push(next);
+                        active = true;
+                    }
+                },
+                _ => {
+                    word.push(ch);
+                    active = true;
+                }
+            },
+            State::Single(open_pos) => {
+                if ch == '\'' {
+                    state = State::Bare;
+                } else {
+                    word.push(ch);
+                    active = true;
+                    let _ = open_pos;
+                }
+            }
+            State::Double(open_pos) => match ch {
+                '"' => state = State::Bare,
+                '\\' => match chars.peek().copied() {
+                    None => return Err(SplitError::TrailingEscape { pos }),
+                    Some((_, next @ ('"' | '\\' | '$'))) => {
+                        chars.next();
+                        word.push(next);
+                        active = true;
+                    }
+                    Some((_, '\n')) => {
+                        chars.next();
+                    }
+                    Some(_) => {
+                        word.push('\\');
+                        active = true;
+                    }
+                },
+                _ => {
+                    word.push(ch);
+                    active = true;
+                }
+            },
+        }
+        if let State::Double(open_pos) = state {
+            let _ = open_pos;
+        }
+    }
+
+    match state {
+        State::Bare => {}
+        State::Single(pos) => return Err(SplitError::UnterminatedSingle { pos }),
+        State::Double(pos) => return Err(SplitError::UnterminatedDouble { pos }),
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+}
+
+pub fn split(input: &str) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.as_bytes().iter().position(|&byte| byte == 0) {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut result = Vec::<String>::new();
+    let mut current = String::new();
+    let mut word_started = false;
+    let mut mode = 0u8; // 0: bare, 1: single quoted, 2: double quoted
+    let mut quote_start = 0usize;
+    let mut iter = input.char_indices().peekable();
+
+    while let Some((byte_pos, c)) = iter.next() {
+        if mode == 1 {
+            if c == '\'' {
+                mode = 0;
+            } else {
+                current.push(c);
+            }
+            continue;
+        }
+
+        if mode == 2 {
+            match c {
+                '"' => mode = 0,
+                '\\' => {
+                    let Some((_, next)) = iter.peek().copied() else {
+                        return Err(SplitError::TrailingEscape { pos: byte_pos });
+                    };
+                    match next {
+                        '"' | '\\' | '$' => {
+                            iter.next();
+                            current.push(next);
+                        }
+                        '\n' => {
+                            iter.next();
+                        }
+                        _ => current.push('\\'),
+                    }
+                }
+                _ => current.push(c),
+            }
+            continue;
+        }
+
+        match c {
+            ' ' | '\t' | '\r' | '\n' => {
+                if word_started {
+                    result.push(std::mem::take(&mut current));
+                    word_started = false;
+                }
+            }
+            '\'' => {
+                mode = 1;
+                quote_start = byte_pos;
+                word_started = true;
+            }
+            '"' => {
+                mode = 2;
+                quote_start = byte_pos;
+                word_started = true;
+            }
+            '\\' => {
+                let Some((_, next)) = iter.peek().copied() else {
+                    return Err(SplitError::TrailingEscape { pos: byte_pos });
+                };
+                iter.next();
+                if next != '\n' {
+                    current.push(next);
+                    word_started = true;
+                }
+            }
+            _ => {
+                current.push(c);
+                word_started = true;
+            }
+        }
+    }
+
+    match mode {
+        1 => return Err(SplitError::UnterminatedSingle { pos: quote_start }),
+        2 => return Err(SplitError::UnterminatedDouble { pos: quote_start }),
+        _ => {}
+    }
+
+    if word_started {
+        result.push(current);
+    }
+    Ok(result)
+}
+```

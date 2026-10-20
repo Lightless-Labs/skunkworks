@@ -1,0 +1,235 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text[..text.len() - 1].split('\n').collect()
+    }
+}
+
+fn validate(text: &str, side: Side) -> Result<(), DiffError> {
+    if let Some(byte) = text.as_bytes().iter().position(|&b| b == b'\r') {
+        return Err(DiffError::CarriageReturn { side, byte });
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side });
+    }
+    Ok(())
+}
+
+fn edits(old: &[&str], new: &[&str]) -> Vec<Edit> {
+    let mut lcs = [[0usize; 129]; 129];
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                1 + lcs[i + 1][j + 1]
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::new();
+    while i < old.len() && j < new.len() {
+        if old[i] == new[j] {
+            out.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].to_string(),
+            });
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] > lcs[i][j + 1]
+            || (lcs[i + 1][j] == lcs[i][j + 1] && (i + j) % 2 == 0)
+        {
+            out.push(Edit::Delete {
+                old_index: i,
+                line: old[i].to_string(),
+            });
+            i += 1;
+        } else {
+            out.push(Edit::Insert {
+                new_index: j,
+                line: new[j].to_string(),
+            });
+            j += 1;
+        }
+    }
+    while i < old.len() {
+        out.push(Edit::Delete {
+            old_index: i,
+            line: old[i].to_string(),
+        });
+        i += 1;
+    }
+    while j < new.len() {
+        out.push(Edit::Insert {
+            new_index: j,
+            line: new[j].to_string(),
+        });
+        j += 1;
+    }
+    out
+}
+
+fn is_keep(edit: &Edit) -> bool {
+    matches!(edit, Edit::Keep { .. })
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+    validate(old, Side::Old)?;
+    validate(new, Side::New)?;
+
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+    if old_lines.len() > 128 || new_lines.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old_lines.len(),
+            new_len: new_lines.len(),
+        });
+    }
+
+    let script = edits(&old_lines, &new_lines);
+    let changed: Vec<usize> = script
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| (!is_keep(e)).then_some(i))
+        .collect();
+    if changed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let merge_gap = 2 * context;
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut start = changed[0];
+    let mut end = changed[0];
+    for &idx in &changed[1..] {
+        let keep_gap = script[end + 1..idx].iter().filter(|e| is_keep(e)).count();
+        if keep_gap <= merge_gap {
+            end = idx;
+        } else {
+            groups.push((start, end));
+            start = idx;
+            end = idx;
+        }
+    }
+    groups.push((start, end));
+
+    let mut hunks = Vec::<(usize, usize)>::new();
+    for (gs, ge) in groups {
+        let hs = gs.saturating_sub(context);
+        let mut he = (ge + context + 1).min(script.len());
+        while he > ge + 1 && !is_keep(&script[he - 1]) {
+            break;
+        }
+        if let Some(last) = hunks.last_mut() {
+            if hs <= last.1 {
+                last.1 = last.1.max(he);
+                continue;
+            }
+        }
+        hunks.push((hs, he));
+    }
+
+    let mut result = String::from("--- before\n+++ after\n");
+    for (hs, he) in hunks {
+        let mut old_count = 0usize;
+        let mut new_count = 0usize;
+        let mut old_before = 0usize;
+        let mut new_before = 0usize;
+        for e in &script[..hs] {
+            match e {
+                Edit::Keep { .. } => {
+                    old_before += 1;
+                    new_before += 1;
+                }
+                Edit::Delete { .. } => old_before += 1,
+                Edit::Insert { .. } => new_before += 1,
+            }
+        }
+        for e in &script[hs..he] {
+            match e {
+                Edit::Keep { .. } => {
+                    old_count += 1;
+                    new_count += 1;
+                }
+                Edit::Delete { .. } => old_count += 1,
+                Edit::Insert { .. } => new_count += 1,
+            }
+        }
+        let old_start = if old_count > 0 {
+            old_before + 1
+        } else {
+            old_before
+        };
+        let new_start = if new_count > 0 {
+            new_before + 1
+        } else {
+            new_before
+        };
+        result.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+        for e in &script[hs..he] {
+            match e {
+                Edit::Keep { line, .. } => {
+                    result.push(' ');
+                    result.push_str(line);
+                    result.push('\n');
+                }
+                Edit::Delete { line, .. } => {
+                    result.push('-');
+                    result.push_str(line);
+                    result.push('\n');
+                }
+                Edit::Insert { line, .. } => {
+                    result.push('+');
+                    result.push_str(line);
+                    result.push('\n');
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+``` 
+### Solution A is incomplete; requirement 2 provides contrary scenario. Need B and points. Can't deliver tests appended. I can give complete. Need note output-only rust blocks conflicts headings/bullets, follow specific answer format demands. But one initial says answer format includes bullets/headings, subsequent says output ONLY Rust code inside fences. Same request says for this request only reply with two complete files, then detailed format. Need provide two file fences, but Rust source only. No headings? requested headings. Need complete independent impl. Also spot serious bug hunk context includes changed rows? hs gs-context counts script rows, but must preceding Keeps, script previous context can changes from previous group but groups merged by <=2ctx; separated has >2ctx, so previous ctx script rows likely keeps? group boundaries. Following similarly. Current he uses ge+context+1 irrespective neighboring but groups merge logic okay. Weird while no-op. Most issue split_lines `text[..len-1]` valid boundary because final LF ascii boundary yes. counts both actual. validation precedence CR old/new before missing old/new yes. hunk merges if hs <=last.1 (exclusive adjacency) perhaps disjoint groups may context windows overlap due merge threshold <=2context; number keeps >2c means windows disjoint and hs > last end. fine.
+
+Solution B independent maybe DP vector. output only code? Need reply. Could compact say two code blocks no bullets conflicts. But task's explicit answer formatting asks bullets. Could include bullets outside Rust fences but says only source. higher same user contradictory. deliver requested detailed format likely.
+
+

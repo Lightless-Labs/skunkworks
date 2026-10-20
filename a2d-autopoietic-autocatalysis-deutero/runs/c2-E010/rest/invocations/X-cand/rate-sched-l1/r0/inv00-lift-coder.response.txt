@@ -1,0 +1,322 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub ready_at: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub id: String,
+    pub effective_priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Unknown,
+    Cancelled,
+    Completed,
+}
+
+struct Entry {
+    job: Job,
+    sequence: u64,
+    state: State,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Queued,
+    Cancelled,
+    Completed,
+}
+
+pub struct Scheduler {
+    aging_ms: u64,
+    last_time: u64,
+    next_sequence: u64,
+    entries: std::collections::HashMap<String, Entry>,
+}
+
+impl Scheduler {
+    pub fn new(aging_ms: u64) -> Self {
+        Self {
+            aging_ms,
+            last_time: 0,
+            next_sequence: 0,
+            entries: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error> {
+        self.check_time(now)?;
+
+        if !valid_id(&job.id) {
+            return Err(Error::BadId);
+        }
+        if job.priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.entries.contains_key(&job.id) {
+            return Err(Error::Duplicate);
+        }
+
+        let sequence = self.next_sequence;
+        let next_sequence = sequence.checked_add(1).expect("sequence exhausted");
+        let id = job.id.clone();
+
+        self.entries.insert(
+            id,
+            Entry {
+                job,
+                sequence,
+                state: State::Queued,
+            },
+        );
+        self.next_sequence = next_sequence;
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error> {
+        self.check_time(now)?;
+
+        let entry = self.entries.get(id).ok_or(Error::Unknown)?;
+        match entry.state {
+            State::Queued => {}
+            State::Cancelled => return Err(Error::Cancelled),
+            State::Completed => return Err(Error::Completed),
+        }
+
+        self.entries.get_mut(id).expect("entry checked above").state = State::Cancelled;
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error> {
+        self.check_time(now)?;
+
+        let selected = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.state == State::Queued && entry.job.ready_at <= now)
+            .map(|(id, entry)| {
+                (
+                    id.clone(),
+                    effective_priority(&entry.job, now, self.aging_ms),
+                    entry.sequence,
+                )
+            })
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+
+        self.last_time = now;
+
+        let Some((id, effective_priority, _)) = selected else {
+            return Ok(None);
+        };
+
+        self.entries.get_mut(&id).expect("selected entry exists").state = State::Completed;
+        Ok(Some(Dispatch {
+            id,
+            effective_priority,
+        }))
+    }
+
+    fn check_time(&self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            Err(Error::TimeReversed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=16).contains(&bytes.len())
+        && bytes.iter().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-'
+        })
+}
+
+fn effective_priority(job: &Job, now: u64, aging_ms: u64) -> u8 {
+    if aging_ms == 0 {
+        return job.priority;
+    }
+
+    let increments = (now - job.ready_at) / aging_ms;
+    let room = (9 - job.priority) as u64;
+    if increments >= room {
+        9
+    } else {
+        job.priority + increments as u8
+    }
+}
+```
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub ready_at: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub id: String,
+    pub effective_priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Unknown,
+    Cancelled,
+    Completed,
+}
+
+enum Status {
+    Waiting,
+    Cancelled,
+    Done,
+}
+
+struct Record {
+    job: Job,
+    order: u64,
+    status: Status,
+}
+
+pub struct Scheduler {
+    aging_ms: u64,
+    last_time: u64,
+    order: u64,
+    records: HashMap<String, Record>,
+}
+
+impl Scheduler {
+    pub fn new(aging_ms: u64) -> Self {
+        Self {
+            aging_ms,
+            last_time: 0,
+            order: 0,
+            records: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error> {
+        self.ensure_time(now)?;
+        if !valid_id(&job.id) {
+            return Err(Error::BadId);
+        }
+        if job.priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.records.contains_key(&job.id) {
+            return Err(Error::Duplicate);
+        }
+
+        let order = self.order;
+        let following_order = order.checked_add(1).expect("insertion sequence exhausted");
+        self.records.insert(
+            job.id.clone(),
+            Record {
+                job,
+                order,
+                status: Status::Waiting,
+            },
+        );
+        self.order = following_order;
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error> {
+        self.ensure_time(now)?;
+        let Some(record) = self.records.get_mut(id) else {
+            return Err(Error::Unknown);
+        };
+
+        match record.status {
+            Status::Waiting => record.status = Status::Cancelled,
+            Status::Cancelled => return Err(Error::Cancelled),
+            Status::Done => return Err(Error::Completed),
+        }
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error> {
+        self.ensure_time(now)?;
+
+        let mut best: Option<(&String, &Record, u8)> = None;
+        for (id, record) in &self.records {
+            if !matches!(record.status, Status::Waiting) || record.job.ready_at > now {
+                continue;
+            }
+
+            let priority = effective_priority(&record.job, now, self.aging_ms);
+            let replace = match best {
+                None => true,
+                Some((_, previous, previous_priority)) => {
+                    priority > previous_priority
+                        || (priority == previous_priority && record.order < previous.order)
+                }
+            };
+            if replace {
+                best = Some((id, record, priority));
+            }
+        }
+
+        self.last_time = now;
+        let Some((id, _, effective_priority)) = best else {
+            return Ok(None);
+        };
+        let id = id.clone();
+        self.records.get_mut(&id).expect("selected record exists").status = Status::Done;
+        Ok(Some(Dispatch {
+            id,
+            effective_priority,
+        }))
+    }
+
+    fn ensure_time(&self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            Err(Error::TimeReversed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 16
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+fn effective_priority(job: &Job, now: u64, aging_ms: u64) -> u8 {
+    if aging_ms == 0 {
+        job.priority
+    } else {
+        let elapsed = now - job.ready_at;
+        let levels = elapsed / aging_ms;
+        let room = (9 - job.priority) as u64;
+        job.priority + levels.min(room) as u8
+    }
+}
+```

@@ -1,0 +1,381 @@
+- Validation order: vertex limit, edge limit, then endpoints; source precedes target.
+- Limits are inclusive, and `usize::MAX` is an ordinary invalid endpoint.
+- Empty graphs and isolated vertices produce empty output and singleton components, respectively.
+- SCCs are sorted by descending size, then ascending minimum vertex; IDs follow that order.
+- Every input occurrence counts toward internal or condensation-edge counts; witnesses use original indices.
+- Counts fit `usize` under the stated edge limit; both implementations avoid recursion for large paths.
+
+### Solution A
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adj = vec![Vec::new(); n];
+    let mut rev = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adj[from].push(to);
+        rev[to].push(from);
+    }
+
+    // Iterative DFS finishing order.
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adj[*v].len() {
+                let w = adj[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                let (v, _) = stack.pop().unwrap();
+                order.push(v);
+            }
+        }
+    }
+
+    // Reverse-graph traversal assigns provisional SCCs.
+    let mut provisional = vec![usize::MAX; n];
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for &root in order.iter().rev() {
+        if provisional[root] != usize::MAX {
+            continue;
+        }
+        let id = groups.len();
+        let mut group = Vec::new();
+        let mut stack = vec![root];
+        provisional[root] = id;
+        while let Some(v) = stack.pop() {
+            group.push(v);
+            for &w in &rev[v] {
+                if provisional[w] == usize::MAX {
+                    provisional[w] = id;
+                    stack.push(w);
+                }
+            }
+        }
+        group.sort_unstable();
+        groups.push(group);
+    }
+
+    let mut permutation: Vec<usize> = (0..groups.len()).collect();
+    permutation.sort_by(|&a, &b| {
+        groups[b]
+            .len()
+            .cmp(&groups[a].len())
+            .then_with(|| groups[a][0].cmp(&groups[b][0]))
+    });
+
+    let mut remap = vec![0usize; groups.len()];
+    let mut components = Vec::with_capacity(groups.len());
+    for (new_id, &old_id) in permutation.iter().enumerate() {
+        remap[old_id] = new_id;
+        components.push(std::mem::take(&mut groups[old_id]));
+    }
+
+    let mut component_of = vec![0usize; n];
+    for (id, component) in components.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let mut cyclic: Vec<bool> = components
+        .iter()
+        .map(|component| component.len() >= 2)
+        .collect();
+    let mut internal_edges = vec![0usize; components.len()];
+    let mut arc_data = std::collections::BTreeMap::<(usize, usize), (usize, usize)>::new();
+
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        let a = component_of[from];
+        let b = component_of[to];
+        if a == b {
+            internal_edges[a] += 1;
+            if from == to {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = arc_data.entry((a, b)).or_insert((0, i));
+            entry.0 += 1;
+            if i < entry.1 {
+                entry.1 = i;
+            }
+        }
+    }
+
+    let mut arcs: Vec<Arc> = arc_data
+        .into_iter()
+        .map(|((from, to), (multiplicity, first_edge))| Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        })
+        .collect();
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+    })
+}
+```
+
+### Solution B
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        if u >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: u,
+            });
+        }
+        if v >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: v,
+            });
+        }
+    }
+
+    // Iterative Tarjan SCC algorithm.
+    let mut adjacency = vec![Vec::<usize>::new(); n];
+    for &(u, v) in edges {
+        adjacency[u].push(v);
+    }
+    let mut index = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut tarjan_stack = Vec::<usize>::new();
+    let mut raw_components = Vec::<Vec<usize>>::new();
+    let mut next_index = 0usize;
+
+    for root in 0..n {
+        if index[root] != usize::MAX {
+            continue;
+        }
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        tarjan_stack.push(root);
+        on_stack[root] = true;
+
+        let mut dfs = vec![(root, 0usize)];
+        while let Some((v, next_edge)) = dfs.last_mut() {
+            if *next_edge < adjacency[*v].len() {
+                let w = adjacency[*v][*next_edge];
+                *next_edge += 1;
+                if index[w] == usize::MAX {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    tarjan_stack.push(w);
+                    on_stack[w] = true;
+                    dfs.push((w, 0));
+                } else if on_stack[w] {
+                    low[*v] = low[*v].min(index[w]);
+                }
+            } else {
+                let (finished, _) = dfs.pop().unwrap();
+                if let Some(&(parent, _)) = dfs.last() {
+                    low[parent] = low[parent].min(low[finished]);
+                }
+                if low[finished] == index[finished] {
+                    let mut component = Vec::new();
+                    loop {
+                        let w = tarjan_stack.pop().unwrap();
+                        on_stack[w] = false;
+                        component.push(w);
+                        if w == finished {
+                            break;
+                        }
+                    }
+                    component.sort_unstable();
+                    raw_components.push(component);
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<usize> = (0..raw_components.len()).collect();
+    order.sort_by(|&a, &b| {
+        raw_components[b]
+            .len()
+            .cmp(&raw_components[a].len())
+            .then_with(|| raw_components[a][0].cmp(&raw_components[b][0]))
+    });
+
+    let mut old_to_new = vec![0usize; raw_components.len()];
+    let mut components = Vec::with_capacity(raw_components.len());
+    for (new_id, &old_id) in order.iter().enumerate() {
+        old_to_new[old_id] = new_id;
+        components.push(std::mem::take(&mut raw_components[old_id]));
+    }
+
+    // Recover each vertex's canonical component ID.
+    let mut component_of = vec![0usize; n];
+    for (id, component) in components.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let mut cyclic: Vec<bool> = components
+        .iter()
+        .map(|component| component.len() > 1)
+        .collect();
+    let mut internal_edges = vec![0usize; components.len()];
+    let mut arcs = Vec::<Arc>::new();
+
+    // Accumulate arcs in a dense component-pair table; component count is at most 4096.
+    let count = components.len();
+    let mut table = vec![None::<(usize, usize)>; count.saturating_mul(count)];
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        let a = component_of[u];
+        let b = component_of[v];
+        if a == b {
+            internal_edges[a] += 1;
+            if u == v {
+                cyclic[a] = true;
+            }
+        } else {
+            let slot = &mut table[a * count + b];
+            match slot {
+                Some((multiplicity, first)) => {
+                    *multiplicity += 1;
+                    *first = (*first).min(i);
+                }
+                None => *slot = Some((1, i)),
+            }
+        }
+    }
+    for a in 0..count {
+        for b in 0..count {
+            if let Some((multiplicity, first_edge)) = table[a * count + b] {
+                arcs.push(Arc {
+                    from: a,
+                    to: b,
+                    multiplicity,
+                    first_edge,
+                });
+            }
+        }
+    }
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+    })
+}
+```

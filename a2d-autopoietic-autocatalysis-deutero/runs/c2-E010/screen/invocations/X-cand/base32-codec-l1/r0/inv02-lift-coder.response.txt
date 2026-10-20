@@ -1,0 +1,237 @@
+- Validation follows the specified pass order: lexical, padding placement, data length, padding shape, then trailing bits.
+- Offsets count UTF-8 bytes; the length error points to the input byte length, and trailing bits point to the last data symbol.
+- Empty input encodes and decodes as empty; symbols are uppercase only.
+- Padding must match the residue-specific count and make the total length divisible by eight.
+- Both solutions use checked, linear-time processing and avoid allocating decoded output until validation succeeds.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut out = String::new();
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+
+    for &byte in input {
+        acc = (acc << 8) | u32::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((acc >> bits) & 31) as usize] as char);
+            if bits == 0 {
+                acc = 0;
+            } else {
+                acc &= (1u32 << bits) - 1;
+            }
+        }
+    }
+
+    if bits != 0 {
+        out.push(ALPHABET[((acc << (5 - bits)) & 31) as usize] as char);
+    }
+
+    if !out.is_empty() {
+        while out.len() % 8 != 0 {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'2'..=b'7' => Some(byte - b'2' + 26),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && value(byte).is_none() {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    let p = bytes.iter().position(|&b| b == b'=').unwrap_or(n);
+
+    if let Some(offset) = (p..n).find(|&i| bytes[i] != b'=') {
+        return Err(DecodeError::Padding { offset });
+    }
+
+    let d = p;
+    let residue = d % 8;
+    let required_padding = match residue {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => return Err(DecodeError::InvalidLength { offset: n }),
+    };
+
+    let actual_padding = n - p;
+    if actual_padding != required_padding || n % 8 != 0 {
+        return Err(DecodeError::Padding { offset: p });
+    }
+
+    let unused = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+    if unused != 0 {
+        let last = value(bytes[d - 1]).unwrap();
+        if last & ((1u8 << unused) - 1) != 0 {
+            return Err(DecodeError::TrailingBits { offset: d - 1 });
+        }
+    }
+
+    let mut output = Vec::with_capacity(d * 5 / 8);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+
+    for &byte in &bytes[..d] {
+        acc = (acc << 5) | u32::from(value(byte).unwrap());
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((acc >> bits) & 0xff) as u8);
+            if bits == 0 {
+                acc = 0;
+            } else {
+                acc &= (1u32 << bits) - 1;
+            }
+        }
+    }
+
+    Ok(output)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut result = String::new();
+    let mut bit_index = 0usize;
+    let total_bits = input.len() * 8;
+
+    while bit_index < total_bits {
+        let mut value = 0u8;
+        for shift in (0..5).rev() {
+            value <<= 1;
+            if bit_index < total_bits {
+                let byte = input[bit_index / 8];
+                let bit = (byte >> (7 - bit_index % 8)) & 1;
+                value |= bit;
+                bit_index += 1;
+            }
+        }
+        result.push(ALPHABET[value as usize] as char);
+    }
+
+    if !result.is_empty() {
+        while result.len() % 8 != 0 {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn symbol_value(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&symbol| symbol == byte).map(|v| v as u8)
+}
+
+pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && symbol_value(byte).is_none() {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    let p = bytes.iter().position(|&b| b == b'=').unwrap_or(n);
+    for offset in p..n {
+        if bytes[offset] != b'=' {
+            return Err(DecodeError::Padding { offset });
+        }
+    }
+
+    let residue = p % 8;
+    let required = match residue {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => return Err(DecodeError::InvalidLength { offset: n }),
+    };
+
+    if n - p != required || n % 8 != 0 {
+        return Err(DecodeError::Padding { offset: p });
+    }
+
+    let unused = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+    if unused > 0 {
+        let final_value = symbol_value(bytes[p - 1]).unwrap();
+        if final_value & ((1 << unused) - 1) != 0 {
+            return Err(DecodeError::TrailingBits { offset: p - 1 });
+        }
+    }
+
+    let mut result = Vec::with_capacity(p * 5 / 8);
+    let mut current = 0u8;
+    let mut filled = 0u8;
+
+    for &byte in &bytes[..p] {
+        let value = symbol_value(byte).unwrap();
+        for bit in (0..5).rev() {
+            current = (current << 1) | ((value >> bit) & 1);
+            filled += 1;
+            if filled == 8 {
+                result.push(current);
+                current = 0;
+                filled = 0;
+            }
+        }
+    }
+
+    Ok(result)
+}
+```

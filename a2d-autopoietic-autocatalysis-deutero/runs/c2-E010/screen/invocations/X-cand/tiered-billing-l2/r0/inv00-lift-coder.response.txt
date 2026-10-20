@@ -1,0 +1,408 @@
+- Schedule length is checked first: empty yields `Empty`, and more than 64 tiers yields `TooMany`, before examining tier bounds.
+- Bounds are scanned in order; the applicable `Bound` or `Unbounded` error at an index precedes `MissingFinal`.
+- The final tier must be unbounded; finite tier bounds are inclusive, and a bound exactly reached does not activate the next tier.
+- Zero quantity still validates the full schedule, then returns no bands; flat prices need no validation.
+- Overflow is checked per used band, including its start and addition to the running total; exact `u64::MAX` succeeds.
+- Minimum is applied after pricing only for positive quantity, and cannot rescue an overflow.
+
+### Solution A
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Graduated,
+    Volume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill {
+    pub charge: Charge,
+    pub minimum_adjustment: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+fn validate_tiers(tiers: &[Tier]) -> Result<(), Error> {
+    if tiers.is_empty() {
+        return Err(Error::Empty);
+    }
+    if tiers.len() > 64 {
+        return Err(Error::TooMany);
+    }
+
+    let mut previous_bound = 0u64;
+    for (index, tier) in tiers.iter().enumerate() {
+        match tier.up_to {
+            Some(bound) => {
+                if bound <= previous_bound {
+                    return Err(Error::Bound { index });
+                }
+                previous_bound = bound;
+            }
+            None => {
+                if index + 1 != tiers.len() {
+                    return Err(Error::Unbounded { index });
+                }
+            }
+        }
+    }
+
+    if tiers.last().and_then(|tier| tier.up_to).is_some() {
+        return Err(Error::MissingFinal);
+    }
+    Ok(())
+}
+
+fn band_amount(units: u64, unit: u64, start: u64, index: usize) -> Result<u64, Error> {
+    units
+        .checked_mul(unit)
+        .and_then(|product| product.checked_add(start))
+        .ok_or(Error::Overflow { index })
+}
+
+fn graduated_charge(quantity: u64, tiers: &[Tier]) -> Result<Charge, Error> {
+    validate_tiers(tiers)?;
+
+    let mut remaining = quantity;
+    let mut previous_bound = 0u64;
+    let mut total = 0u64;
+    let mut bands = Vec::new();
+
+    for (index, tier) in tiers.iter().enumerate() {
+        let units = match tier.up_to {
+            Some(bound) => {
+                let width = bound - previous_bound;
+                previous_bound = bound;
+                remaining.min(width)
+            }
+            None => remaining,
+        };
+
+        if units > 0 {
+            let amount = band_amount(units, tier.unit, tier.start, index)?;
+            total = total
+                .checked_add(amount)
+                .ok_or(Error::Overflow { index })?;
+            bands.push(Band {
+                index,
+                units,
+                amount,
+            });
+            remaining -= units;
+        }
+    }
+
+    Ok(Charge {
+        amount: total,
+        bands,
+    })
+}
+
+fn volume_charge(quantity: u64, tiers: &[Tier]) -> Result<Charge, Error> {
+    validate_tiers(tiers)?;
+
+    if quantity == 0 {
+        return Ok(Charge {
+            amount: 0,
+            bands: Vec::new(),
+        });
+    }
+
+    let (index, tier) = tiers
+        .iter()
+        .enumerate()
+        .find(|(_, tier)| tier.up_to.map_or(true, |bound| quantity <= bound))
+        .expect("validated schedule has a final unbounded tier");
+
+    let amount = band_amount(quantity, tier.unit, tier.start, index)?;
+    Ok(Charge {
+        amount,
+        bands: vec![Band {
+            index,
+            units: quantity,
+            amount,
+        }],
+    })
+}
+
+fn flat_charge(quantity: u64, unit: u64, start: u64) -> Result<Charge, Error> {
+    if quantity == 0 {
+        return Ok(Charge {
+            amount: 0,
+            bands: Vec::new(),
+        });
+    }
+
+    let amount = band_amount(quantity, unit, start, 0)?;
+    Ok(Charge {
+        amount,
+        bands: vec![Band {
+            index: 0,
+            units: quantity,
+            amount,
+        }],
+    })
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => flat_charge(quantity, *unit, *start),
+        Price::Tiers(tiers) => graduated_charge(quantity, tiers),
+    }
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = match price {
+        Price::Flat { unit, start } => flat_charge(quantity, *unit, *start)?,
+        Price::Tiers(tiers) => match mode {
+            Mode::Graduated => graduated_charge(quantity, tiers)?,
+            Mode::Volume => volume_charge(quantity, tiers)?,
+        },
+    };
+
+    let minimum_adjustment = if quantity > 0 && minimum > charge.amount {
+        minimum - charge.amount
+    } else {
+        0
+    };
+    let total = charge
+        .amount
+        .checked_add(minimum_adjustment)
+        .ok_or(Error::Overflow { index: 0 })?;
+
+    Ok(Bill {
+        charge,
+        minimum_adjustment,
+        total,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier {
+    pub up_to: Option<u64>,
+    pub unit: u64,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price {
+    Flat { unit: u64, start: u64 },
+    Tiers(Vec<Tier>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub index: usize,
+    pub units: u64,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge {
+    pub amount: u64,
+    pub bands: Vec<Band>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Graduated,
+    Volume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill {
+    pub charge: Charge,
+    pub minimum_adjustment: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    TooMany,
+    Bound { index: usize },
+    Unbounded { index: usize },
+    MissingFinal,
+    Overflow { index: usize },
+}
+
+fn checked_band(units: u64, unit: u64, start: u64, index: usize) -> Result<u64, Error> {
+    let product = units.checked_mul(unit).ok_or(Error::Overflow { index })?;
+    product.checked_add(start).ok_or(Error::Overflow { index })
+}
+
+fn checked_total(total: u64, amount: u64, index: usize) -> Result<u64, Error> {
+    total.checked_add(amount).ok_or(Error::Overflow { index })
+}
+
+fn validate(tiers: &[Tier]) -> Result<(), Error> {
+    match tiers.len() {
+        0 => return Err(Error::Empty),
+        65.. => return Err(Error::TooMany),
+        _ => {}
+    }
+
+    let mut last_finite = 0;
+    for (index, tier) in tiers.iter().enumerate() {
+        if let Some(bound) = tier.up_to {
+            if bound <= last_finite {
+                return Err(Error::Bound { index });
+            }
+            last_finite = bound;
+        } else if index != tiers.len() - 1 {
+            return Err(Error::Unbounded { index });
+        }
+    }
+
+    if tiers[tiers.len() - 1].up_to.is_some() {
+        Err(Error::MissingFinal)
+    } else {
+        Ok(())
+    }
+}
+
+fn empty_charge() -> Charge {
+    Charge {
+        amount: 0,
+        bands: Vec::new(),
+    }
+}
+
+fn flat(quantity: u64, unit: u64, start: u64) -> Result<Charge, Error> {
+    if quantity == 0 {
+        return Ok(empty_charge());
+    }
+    let amount = checked_band(quantity, unit, start, 0)?;
+    Ok(Charge {
+        amount,
+        bands: vec![Band {
+            index: 0,
+            units: quantity,
+            amount,
+        }],
+    })
+}
+
+fn tiers_charge(quantity: u64, tiers: &[Tier], volume: bool) -> Result<Charge, Error> {
+    validate(tiers)?;
+    if quantity == 0 {
+        return Ok(empty_charge());
+    }
+
+    if volume {
+        let index = tiers
+            .iter()
+            .position(|tier| tier.up_to.is_none_or(|bound| quantity <= bound))
+            .expect("validation guarantees a final unbounded tier");
+        let tier = &tiers[index];
+        let amount = checked_band(quantity, tier.unit, tier.start, index)?;
+        return Ok(Charge {
+            amount,
+            bands: vec![Band {
+                index,
+                units: quantity,
+                amount,
+            }],
+        });
+    }
+
+    let mut previous = 0u64;
+    let mut remaining = quantity;
+    let mut total = 0u64;
+    let mut bands = Vec::new();
+
+    for (index, tier) in tiers.iter().enumerate() {
+        let units = if let Some(bound) = tier.up_to {
+            let width = bound - previous;
+            previous = bound;
+            remaining.min(width)
+        } else {
+            remaining
+        };
+
+        if units != 0 {
+            let amount = checked_band(units, tier.unit, tier.start, index)?;
+            total = checked_total(total, amount, index)?;
+            bands.push(Band {
+                index,
+                units,
+                amount,
+            });
+            remaining -= units;
+        }
+    }
+
+    Ok(Charge { amount: total, bands })
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => flat(quantity, *unit, *start),
+        Price::Tiers(tiers) => tiers_charge(quantity, tiers, false),
+    }
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = match price {
+        Price::Flat { unit, start } => flat(quantity, *unit, *start)?,
+        Price::Tiers(tiers) => {
+            tiers_charge(quantity, tiers, matches!(mode, Mode::Volume))?
+        }
+    };
+
+    let minimum_adjustment = if quantity > 0 {
+        minimum.saturating_sub(charge.amount)
+    } else {
+        0
+    };
+    let total = charge
+        .amount
+        .checked_add(minimum_adjustment)
+        .ok_or(Error::Overflow { index: 0 })?;
+
+    Ok(Bill {
+        charge,
+        minimum_adjustment,
+        total,
+    })
+}
+```

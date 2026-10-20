@@ -1,0 +1,216 @@
+- Validation is per span in input order; each span checks reversed, then bounds, then overlap.
+- Endpoints equal to `data.len()` are valid.
+- Empty spans contribute no bytes but still update and obey the ordering boundary.
+- CRC and Adler state carry across spans without resetting.
+- Adler reductions happen per byte, so accumulation stays exact without overflow.
+- Both implementations use bounded auxiliary space and allocate no selected-byte copy.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let low_bit = crc & 1;
+            crc >>= 1;
+            if low_bit != 0 {
+                crc ^= 0xedb8_8320;
+            }
+        }
+    }
+    crc ^ 0xffff_ffff
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    const MOD: u64 = 65_521;
+    let mut a = 1u64;
+    let mut b = 0u64;
+
+    for &byte in data {
+        a = (a + byte as u64) % MOD;
+        b = (b + a) % MOD;
+    }
+
+    ((b as u32) << 16) | a as u32
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    Hashes {
+        crc32: crc32(data),
+        adler32: adler32(data),
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let mut crc = 0xffff_ffffu32;
+    let mut a = 1u64;
+    let mut b = 0u64;
+    let mut previous_end = 0usize;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data.len() {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+
+        for &byte in &data[span.start..span.end] {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let low_bit = crc & 1;
+                crc >>= 1;
+                if low_bit != 0 {
+                    crc ^= 0xedb8_8320;
+                }
+            }
+
+            a = (a + byte as u64) % 65_521;
+            b = (b + a) % 65_521;
+        }
+
+        previous_end = span.end;
+    }
+
+    Ok(Hashes {
+        crc32: crc ^ 0xffff_ffff,
+        adler32: ((b as u32) << 16) | a as u32,
+    })
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+fn update_crc(mut crc: u32, byte: u8) -> u32 {
+    crc ^= byte as u32;
+    for _ in 0..8 {
+        crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb8_8320 } else { 0 };
+    }
+    crc
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in data {
+        crc = update_crc(crc, byte);
+    }
+    !crc
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65_521;
+    let (mut a, mut b) = (1u32, 0u32);
+
+    for &byte in data {
+        a = (a + byte as u32) % MOD;
+        b = (b + a) % MOD;
+    }
+
+    (b << 16) | a
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    let (mut crc, mut a, mut b) = (0xffff_ffffu32, 1u32, 0u32);
+
+    for &byte in data {
+        crc = update_crc(crc, byte);
+        a = (a + byte as u32) % 65_521;
+        b = (b + a) % 65_521;
+    }
+
+    Hashes {
+        crc32: !crc,
+        adler32: (b << 16) | a,
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    let (mut crc, mut a, mut b) = (0xffff_ffffu32, 1u32, 0u32);
+    let mut boundary = 0usize;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+
+        for endpoint in [span.start, span.end] {
+            if endpoint > data.len() {
+                return Err(SpanError::OutOfBounds {
+                    span: index,
+                    offset: endpoint,
+                });
+            }
+        }
+
+        if index != 0 && span.start < boundary {
+            return Err(SpanError::Overlap { span: index });
+        }
+
+        for &byte in data[span.start..span.end].iter() {
+            crc = update_crc(crc, byte);
+            a = (a + byte as u32) % 65_521;
+            b = (b + a) % 65_521;
+        }
+
+        boundary = span.end;
+    }
+
+    Ok(Hashes {
+        crc32: !crc,
+        adler32: (b << 16) | a,
+    })
+}
+```

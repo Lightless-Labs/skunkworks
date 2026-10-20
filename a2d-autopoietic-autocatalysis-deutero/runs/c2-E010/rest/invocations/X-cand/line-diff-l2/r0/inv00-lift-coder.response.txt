@@ -1,0 +1,448 @@
+- **Validation order:** I check context, CR in Old/New, missing final LF in Old/New, then line limits, as specified.
+- **Empty input:** Empty text has zero lines and does not require a final LF.
+- **Hunk merging:** Change groups merge when the Keep rows between them are at most `2 * context`; equality merges.
+- **Zero-count starts:** A zero-count hunk starts at the number of lines consumed before it; positive counts start one line later.
+- **Exact output:** Headers, prefixes, and final LFs follow the specified format; unchanged inputs produce an empty string.
+- **Size and overflow:** At most 128 lines per side keeps the LCS table small; counts and indices use `usize`.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep { old_index: usize, new_index: usize, line: String },
+    Delete { old_index: usize, line: String },
+    Insert { new_index: usize, line: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn first_cr(s: &str) -> Option<usize> {
+    s.as_bytes().iter().position(|&b| b == b'\r')
+}
+
+fn lines(s: &str) -> Vec<&str> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let body = s.strip_suffix('\n').unwrap_or(s);
+    body.split('\n').collect()
+}
+
+fn canonical_script(old: &[&str], new: &[&str]) -> Vec<Edit> {
+    let m = old.len();
+    let n = new.len();
+    let width = n + 1;
+    let mut lcs = vec![0usize; (m + 1) * (n + 1)];
+
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            let value = if old[i] == new[j] {
+                1 + lcs[(i + 1) * width + j + 1]
+            } else {
+                lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+            };
+            lcs[i * width + j] = value;
+        }
+    }
+
+    let mut edits = Vec::with_capacity(m + n);
+    let (mut i, mut j) = (0, 0);
+    while i < m && j < n {
+        if old[i] == new[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].to_owned(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_score = lcs[(i + 1) * width + j];
+            let insert_score = lcs[i * width + j + 1];
+            if delete_score > insert_score
+                || (delete_score == insert_score && (i + j) % 2 == 0)
+            {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old[i].to_owned(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new[j].to_owned(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < m {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old[i].to_owned(),
+        });
+        i += 1;
+    }
+    while j < n {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new[j].to_owned(),
+        });
+        j += 1;
+    }
+    edits
+}
+
+fn row_is_change(edit: &Edit) -> bool {
+    !matches!(edit, Edit::Keep { .. })
+}
+
+fn consumed_before(edits: &[Edit], end: usize) -> (usize, usize) {
+    let mut old = 0;
+    let mut new = 0;
+    for edit in &edits[..end] {
+        match edit {
+            Edit::Keep { .. } => {
+                old += 1;
+                new += 1;
+            }
+            Edit::Delete { .. } => old += 1,
+            Edit::Insert { .. } => new += 1,
+        }
+    }
+    (old, new)
+}
+
+fn render_hunk(out: &mut String, edits: &[Edit], start: usize, end: usize) {
+    let (old_before, new_before) = consumed_before(edits, start);
+    let mut old_count = 0usize;
+    let mut new_count = 0usize;
+
+    for edit in &edits[start..end] {
+        match edit {
+            Edit::Keep { .. } => {
+                old_count += 1;
+                new_count += 1;
+            }
+            Edit::Delete { .. } => old_count += 1,
+            Edit::Insert { .. } => new_count += 1,
+        }
+    }
+
+    let old_start = if old_count > 0 { old_before + 1 } else { old_before };
+    let new_start = if new_count > 0 { new_before + 1 } else { new_before };
+    out.push_str(&format!(
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+    ));
+
+    for edit in &edits[start..end] {
+        let (prefix, line) = match edit {
+            Edit::Keep { line, .. } => (' ', line),
+            Edit::Delete { line, .. } => ('-', line),
+            Edit::Insert { line, .. } => ('+', line),
+        };
+        out.push(prefix);
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+    if let Some(byte) = first_cr(old) {
+        return Err(DiffError::CarriageReturn { side: Side::Old, byte });
+    }
+    if let Some(byte) = first_cr(new) {
+        return Err(DiffError::CarriageReturn { side: Side::New, byte });
+    }
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let old_lines = lines(old);
+    let new_lines = lines(new);
+    if old_lines.len() > 128 || new_lines.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old_lines.len(),
+            new_len: new_lines.len(),
+        });
+    }
+
+    let edits = canonical_script(&old_lines, &new_lines);
+    if edits.iter().all(|edit| !row_is_change(edit)) {
+        return Ok(String::new());
+    }
+
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut k = 0;
+    while k < edits.len() {
+        if row_is_change(&edits[k]) {
+            let start = k;
+            while k < edits.len() && row_is_change(&edits[k]) {
+                k += 1;
+            }
+            groups.push((start, k));
+        } else {
+            k += 1;
+        }
+    }
+
+    let merge_gap = 2 * context;
+    let mut merged = Vec::<(usize, usize)>::new();
+    for (start, end) in groups {
+        if let Some(last) = merged.last_mut() {
+            let keep_gap = start - last.1;
+            if keep_gap <= merge_gap {
+                last.1 = end;
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    let mut out = String::from("--- before\n+++ after\n");
+    for (group_start, group_end) in merged {
+        let mut start = group_start;
+        let mut before = context;
+        while start > 0 && before > 0 {
+            if matches!(edits[start - 1], Edit::Keep { .. }) {
+                start -= 1;
+                before -= 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut end = group_end;
+        let mut after = context;
+        while end < edits.len() && after > 0 {
+            if matches!(edits[end], Edit::Keep { .. }) {
+                end += 1;
+                after -= 1;
+            } else {
+                break;
+            }
+        }
+
+        render_hunk(&mut out, &edits, start, end);
+    }
+    Ok(out)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep { old_index: usize, new_index: usize, line: String },
+    Delete { old_index: usize, line: String },
+    Insert { new_index: usize, line: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn split_lines(s: &str) -> Vec<&str> {
+    if s.is_empty() {
+        return vec![];
+    }
+    s[..s.len() - 1].split('\n').collect()
+}
+
+fn has_cr(s: &str) -> Option<usize> {
+    s.bytes().position(|b| b == b'\r')
+}
+
+fn script(a: &[&str], b: &[&str]) -> Vec<Edit> {
+    let (m, n) = (a.len(), b.len());
+    let mut dp = vec![0usize; (m + 1) * (n + 1)];
+    let at = |i: usize, j: usize| i * (n + 1) + j;
+
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            dp[at(i, j)] = if a[i] == b[j] {
+                dp[at(i + 1, j + 1)] + 1
+            } else {
+                dp[at(i + 1, j)].max(dp[at(i, j + 1)])
+            };
+        }
+    }
+
+    let mut result = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < m && j < n {
+        if a[i] == b[j] {
+            result.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: a[i].to_string(),
+            });
+            i += 1;
+            j += 1;
+        } else if dp[at(i + 1, j)] > dp[at(i, j + 1)]
+            || (dp[at(i + 1, j)] == dp[at(i, j + 1)] && (i + j) % 2 == 0)
+        {
+            result.push(Edit::Delete {
+                old_index: i,
+                line: a[i].to_string(),
+            });
+            i += 1;
+        } else {
+            result.push(Edit::Insert {
+                new_index: j,
+                line: b[j].to_string(),
+            });
+            j += 1;
+        }
+    }
+    while i < m {
+        result.push(Edit::Delete { old_index: i, line: a[i].to_string() });
+        i += 1;
+    }
+    while j < n {
+        result.push(Edit::Insert { new_index: j, line: b[j].to_string() });
+        j += 1;
+    }
+    result
+}
+
+fn is_keep(e: &Edit) -> bool {
+    matches!(e, Edit::Keep { .. })
+}
+
+fn counts(rows: &[Edit]) -> (usize, usize) {
+    let mut old = 0;
+    let mut new = 0;
+    for e in rows {
+        match e {
+            Edit::Keep { .. } => { old += 1; new += 1; }
+            Edit::Delete { .. } => old += 1,
+            Edit::Insert { .. } => new += 1,
+        }
+    }
+    (old, new)
+}
+
+fn render(out: &mut String, rows: &[Edit], first: usize, last: usize) {
+    let (old_before, new_before) = counts(&rows[..first]);
+    let (old_count, new_count) = counts(&rows[first..last]);
+    let old_start = if old_count == 0 { old_before } else { old_before + 1 };
+    let new_start = if new_count == 0 { new_before } else { new_before + 1 };
+    out.push_str(&format!(
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+    ));
+    for e in &rows[first..last] {
+        let (prefix, line) = match e {
+            Edit::Keep { line, .. } => (' ', line),
+            Edit::Delete { line, .. } => ('-', line),
+            Edit::Insert { line, .. } => ('+', line),
+        };
+        out.push(prefix);
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+    if let Some(byte) = has_cr(old) {
+        return Err(DiffError::CarriageReturn { side: Side::Old, byte });
+    }
+    if let Some(byte) = has_cr(new) {
+        return Err(DiffError::CarriageReturn { side: Side::New, byte });
+    }
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let a = split_lines(old);
+    let b = split_lines(new);
+    if a.len() > 128 || b.len() > 128 {
+        return Err(DiffError::TooLarge { old_len: a.len(), new_len: b.len() });
+    }
+
+    let rows = script(&a, &b);
+    if rows.iter().all(is_keep) {
+        return Ok(String::new());
+    }
+
+    let mut groups = Vec::new();
+    let mut pos = 0;
+    while pos < rows.len() {
+        if is_keep(&rows[pos]) {
+            pos += 1;
+            continue;
+        }
+        let start = pos;
+        while pos < rows.len() && !is_keep(&rows[pos]) {
+            pos += 1;
+        }
+        groups.push((start, pos));
+    }
+
+    let mut combined: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in groups {
+        if let Some(prev) = combined.last_mut() {
+            if start - prev.1 <= context * 2 {
+                prev.1 = end;
+                continue;
+            }
+        }
+        combined.push((start, end));
+    }
+
+    let mut output = String::from("--- before\n+++ after\n");
+    for (start, end) in combined {
+        let mut first = start;
+        let mut remaining = context;
+        while first > 0 && remaining > 0 && is_keep(&rows[first - 1]) {
+            first -= 1;
+            remaining -= 1;
+        }
+        let mut last = end;
+        remaining = context;
+        while last < rows.len() && remaining > 0 && is_keep(&rows[last]) {
+            last += 1;
+            remaining -= 1;
+        }
+        render(&mut output, &rows, first, last);
+    }
+    Ok(output)
+}
+```

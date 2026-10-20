@@ -1,0 +1,444 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+#[derive(Clone, Copy)]
+struct Byte {
+    value: u8,
+    pos: usize,
+}
+
+struct Run {
+    start: usize,
+    end: usize,
+    at: usize,
+}
+
+fn parse_email(input: &str) -> Result<Address, EmailError> {
+    use EmailError::*;
+
+    let raw = input.as_bytes();
+    if raw.is_empty() {
+        return Err(EmptyInput);
+    }
+    if let Some(at) = raw.iter().position(|&b| b >= 128) {
+        return Err(NonAscii { at });
+    }
+
+    let mut clean: Vec<Byte> = Vec::new();
+    let mut runs: Vec<Run> = Vec::new();
+    let mut i = 0;
+    let mut protected = false;
+    let mut quote_open = false;
+    let mut depth = 0usize;
+    let mut outer_open = 0usize;
+    let mut comment_stack: Vec<usize> = Vec::new();
+
+    while i < raw.len() {
+        let b = raw[i];
+
+        if protected {
+            clean.push(Byte { value: b, pos: i });
+            if b == b'\\' {
+                if i + 1 < raw.len() {
+                    i += 1;
+                    clean.push(Byte { value: raw[i], pos: i });
+                }
+            } else if b == b'"' {
+                protected = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if depth > 0 {
+            let start = i;
+            let mut run_end = i;
+            loop {
+                if i >= raw.len() {
+                    break;
+                }
+                let c = raw[i];
+                if c == b' ' || c == b'\t' {
+                    i += 1;
+                    continue;
+                }
+                if c == b'\r' || c == b'\n' {
+                    if c != b'\r' || i + 2 >= raw.len() || raw[i + 1] != b'\n'
+                        || !(raw[i + 2] == b' ' || raw[i + 2] == b'\t')
+                    {
+                        return Err(BadFold { at: i });
+                    }
+                    i += 2;
+                    while i < raw.len() && (raw[i] == b' ' || raw[i] == b'\t') {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if c == b'\\' {
+                    if i + 1 >= raw.len()
+                        || !(0x20..=0x7e).contains(&raw[i + 1])
+                    {
+                        return Err(CommentEscape { at: i });
+                    }
+                    i += 2;
+                    continue;
+                }
+                if c == b'(' {
+                    if depth == 3 {
+                        return Err(CommentDepth { at: i });
+                    }
+                    depth += 1;
+                    comment_stack.push(i);
+                    i += 1;
+                    continue;
+                }
+                if c == b')' {
+                    depth -= 1;
+                    comment_stack.pop();
+                    i += 1;
+                    if depth == 0 {
+                        run_end = i;
+                        break;
+                    }
+                    continue;
+                }
+                if (0x20..=0x7e).contains(&c) {
+                    i += 1;
+                    continue;
+                }
+                return Err(CommentChar { at: i });
+            }
+            if depth == 0 {
+                runs.push(Run { start, end: run_end, at: 0 });
+            }
+            continue;
+        }
+
+        if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' || b == b'(' {
+            let start = i;
+            loop {
+                if i >= raw.len() {
+                    break;
+                }
+                let c = raw[i];
+                if c == b' ' || c == b'\t' {
+                    i += 1;
+                    continue;
+                }
+                if c == b'\r' || c == b'\n' {
+                    if c != b'\r' || i + 2 >= raw.len() || raw[i + 1] != b'\n'
+                        || !(raw[i + 2] == b' ' || raw[i + 2] == b'\t')
+                    {
+                        return Err(BadFold { at: i });
+                    }
+                    i += 2;
+                    while i < raw.len() && (raw[i] == b' ' || raw[i] == b'\t') {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if c == b'(' {
+                    outer_open = i;
+                    depth = 1;
+                    comment_stack.push(i);
+                    i += 1;
+                    break;
+                }
+                break;
+            }
+            if depth == 0 {
+                runs.push(Run { start, end: i, at: 0 });
+            } else {
+                // The comment and adjacent whitespace form the same CFWS run.
+                let mut run_end = i;
+                loop {
+                    if i >= raw.len() {
+                        break;
+                    }
+                    let c = raw[i];
+                    if c == b' ' || c == b'\t' {
+                        i += 1;
+                        continue;
+                    }
+                    if c == b'\r' || c == b'\n' {
+                        if c != b'\r' || i + 2 >= raw.len() || raw[i + 1] != b'\n'
+                            || !(raw[i + 2] == b' ' || raw[i + 2] == b'\t')
+                        {
+                            return Err(BadFold { at: i });
+                        }
+                        i += 2;
+                        while i < raw.len() && (raw[i] == b' ' || raw[i] == b'\t') {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if c == b'\\' {
+                        if i + 1 >= raw.len() || !(0x20..=0x7e).contains(&raw[i + 1]) {
+                            return Err(CommentEscape { at: i });
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    if c == b'(' {
+                        if depth == 3 {
+                            return Err(CommentDepth { at: i });
+                        }
+                        depth += 1;
+                        comment_stack.push(i);
+                        i += 1;
+                        continue;
+                    }
+                    if c == b')' {
+                        depth -= 1;
+                        comment_stack.pop();
+                        i += 1;
+                        if depth == 0 {
+                            run_end = i;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (0x20..=0x7e).contains(&c) {
+                        i += 1;
+                        continue;
+                    }
+                    return Err(CommentChar { at: i });
+                }
+                if depth == 0 {
+                    runs.push(Run { start, end: run_end, at: 0 });
+                }
+            }
+            continue;
+        }
+
+        if b == b')' {
+            return Err(UnexpectedClose { at: i });
+        }
+
+        if b == b'"' && clean.is_empty() {
+            protected = true;
+            quote_open = true;
+        }
+        clean.push(Byte { value: b, pos: i });
+        i += 1;
+    }
+
+    if depth > 0 {
+        return Err(UnclosedComment { at: outer_open });
+    }
+    let _ = quote_open;
+
+    for r in &mut runs {
+        let left_at = clean.iter().find(|b| b.pos >= r.end).map(|b| b.value == b'@').unwrap_or(false);
+        let right_at = clean.iter().rev().find(|b| b.pos < r.start).map(|b| b.value == b'@').unwrap_or(false);
+        r.at = usize::from(left_at || right_at);
+    }
+    for r in &runs {
+        let before = clean.iter().any(|b| b.pos < r.start);
+        let after = clean.iter().any(|b| b.pos >= r.end);
+        if before && after && r.at == 0 {
+            return Err(CfwsBoundary { at: r.start });
+        }
+    }
+
+    if clean.is_empty() {
+        return Err(EmptyInput);
+    }
+
+    let mut quote_close = None;
+    if clean[0].value == b'"' {
+        let mut j = 1;
+        while j < clean.len() {
+            if clean[j].value == b'\\' {
+                j += 2;
+            } else if clean[j].value == b'"' {
+                quote_close = Some(j);
+                break;
+            } else {
+                j += 1;
+            }
+        }
+        if quote_close.is_none() {
+            return Err(UnclosedQuote { at: clean[0].pos });
+        }
+    }
+
+    let mut separators = Vec::new();
+    let mut j = 0;
+    while j < clean.len() {
+        if quote_close.map_or(false, |q| j <= q) {
+            j += 1;
+            continue;
+        }
+        if clean[j].value == b'@' {
+            separators.push(j);
+        }
+        j += 1;
+    }
+    if separators.is_empty() {
+        return Err(MissingAt);
+    }
+    if separators.len() > 1 {
+        return Err(MultipleAt { at: clean[separators[1]].pos });
+    }
+    let sep = separators[0];
+    if sep == 0 {
+        return Err(EmptyLocal { at: clean[sep].pos });
+    }
+
+    let (local, quoted) = if let Some(q) = quote_close {
+        if q >= sep {
+            return Err(TrailingLocal { at: clean[q].pos + 1 });
+        }
+        if q + 1 != sep {
+            return Err(TrailingLocal { at: clean[q].pos + 1 });
+        }
+        let mut decoded = Vec::new();
+        let mut k = 1;
+        while k < q {
+            let b = clean[k].value;
+            if b == b'\\' {
+                if k + 1 >= q || !matches!(clean[k + 1].value, b'"' | b'\\' | b'@') {
+                    return Err(BadEscape { at: clean[k].pos });
+                }
+                decoded.push((clean[k + 1].value, clean[k].pos));
+                k += 2;
+            } else {
+                if !(0x20..=0x7e).contains(&b) {
+                    return Err(QuotedChar { at: clean[k].pos });
+                }
+                decoded.push((b, clean[k].pos));
+                k += 1;
+            }
+        }
+        if decoded.is_empty() {
+            return Err(EmptyLocal { at: clean[q].pos });
+        }
+        if decoded.len() > 64 {
+            return Err(LocalTooLong { at: decoded[64].1 });
+        }
+        (decoded.into_iter().map(|x| x.0 as char).collect(), true)
+    } else {
+        if sep > 64 {
+            return Err(LocalTooLong { at: clean[64].pos });
+        }
+        for k in 0..sep {
+            let b = clean[k].value;
+            if b == b'.' {
+                if k == 0 || k + 1 == sep || clean[k - 1].value == b'.' {
+                    return Err(LocalDot { at: clean[k].pos });
+                }
+            } else if !b.is_ascii_alphanumeric()
+                && !b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+            {
+                return Err(LocalChar { at: clean[k].pos });
+            }
+        }
+        (clean[..sep].iter().map(|b| b.value as char).collect(), false)
+    };
+
+    let domain_start_idx = sep + 1;
+    let domain_start = clean.get(domain_start_idx).map(|b| b.pos).unwrap_or(input.len());
+    if domain_start_idx >= clean.len() {
+        return Err(EmptyDomain { at: domain_start });
+    }
+    let mut end = clean.len();
+    if clean[end - 1].value == b'.' {
+        end -= 1;
+    }
+    if end == domain_start_idx {
+        return Err(EmptyDomain { at: domain_start });
+    }
+    if end - domain_start_idx > 253 {
+        return Err(DomainTooLong { at: clean[domain_start_idx + 253].pos });
+    }
+
+    let mut labels: Vec<(usize, usize)> = Vec::new();
+    let mut label_start = domain_start_idx;
+    let mut k = domain_start_idx;
+    while k <= end {
+        if k == end || clean[k].value == b'.' {
+            if label_start == k {
+                let at = if k < end {
+                    clean[k].pos
+                } else if end < clean.len() {
+                    clean[end].pos
+                } else {
+                    input.len()
+                };
+                return Err(EmptyLabel { at });
+            }
+            labels.push((label_start, k));
+            label_start = k + 1;
+        }
+        k += 1;
+    }
+
+    for &(a, b) in &labels {
+        if b - a > 63 {
+            return Err(LabelTooLong { at: clean[a + 63].pos });
+        }
+        if clean[a].value == b'-' {
+            return Err(LabelHyphen { at: clean[a].pos });
+        }
+        if clean[b - 1].value == b'-' {
+            return Err(LabelHyphen { at: clean[b - 1].pos });
+        }
+        for p in a..b {
+            let c = clean[p].value;
+            if !c.is_ascii_alphanumeric() && c != b'-' {
+                return Err(DomainChar { at: clean[p].pos });
+            }
+        }
+    }
+    if labels.len() < 2 {
+        return Err(DomainNeedsDot { at: domain_start });
+    }
+    let (last_a, last_b) = *labels.last().unwrap();
+    if clean[last_a..last_b].iter().all(|b| b.value.is_ascii_digit()) {
+        return Err(NumericTld { at: clean[last_a].pos });
+    }
+
+    let domain = clean[domain_start_idx..end]
+        .iter()
+        .map(|b| (b.value as char).to_ascii_lowercase())
+        .collect();
+    Ok(Address { local, domain, quoted })
+}
+```

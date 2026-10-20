@@ -1,0 +1,334 @@
+- Validation order: vertex count, edge count, then endpoints in input order; source is checked before target.
+- Empty graph: `n = 0` with no edges returns empty fields; any edge fails on its source.
+- Component order: descending size, then ascending smallest vertex; IDs follow that order.
+- Arc order: ascending source component ID, then descending target component ID; `first_edge` refers to the original input.
+- Size limits are inclusive; all intermediate counts fit in `usize` at these limits.
+- No ambiguity changes the specified result, so Solution B uses an independent SCC algorithm.
+
+### Solution A
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        if u >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: u,
+            });
+        }
+        if v >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: v,
+            });
+        }
+    }
+
+    let mut adj = vec![Vec::new(); n];
+    let mut rev = vec![Vec::new(); n];
+    for &(u, v) in edges {
+        adj[u].push(v);
+        rev[v].push(u);
+    }
+
+    // Iterative Kosaraju first pass; explicit (vertex, next-edge) frames
+    // preserve recursive DFS finishing order without risking stack overflow.
+    let mut seen = vec![false; n];
+    let mut finish = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adj[*v].len() {
+                let w = adj[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                let (done, _) = stack.pop().unwrap();
+                finish.push(done);
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut raw = Vec::<Vec<usize>>::new();
+    for &root in finish.iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+        assigned[root] = true;
+        let mut members = Vec::new();
+        let mut stack = vec![root];
+        while let Some(v) = stack.pop() {
+            members.push(v);
+            for &w in &rev[v] {
+                if !assigned[w] {
+                    assigned[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        members.sort_unstable();
+        raw.push(members);
+    }
+
+    raw.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    let mut component_of = vec![0usize; n];
+    for (id, members) in raw.iter().enumerate() {
+        for &v in members {
+            component_of[v] = id;
+        }
+    }
+
+    let mut cyclic: Vec<bool> = raw.iter().map(|c| c.len() > 1).collect();
+    let mut internal_edges = vec![0usize; raw.len()];
+    let mut arc_records = Vec::<Arc>::new();
+    let mut pair_to_arc = std::collections::HashMap::<(usize, usize), usize>::new();
+
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        let cu = component_of[u];
+        let cv = component_of[v];
+        if cu == cv {
+            internal_edges[cu] += 1;
+            if u == v {
+                cyclic[cu] = true;
+            }
+        } else if let Some(&idx) = pair_to_arc.get(&(cu, cv)) {
+            arc_records[idx].multiplicity += 1;
+        } else {
+            let idx = arc_records.len();
+            pair_to_arc.insert((cu, cv), idx);
+            arc_records.push(Arc {
+                from: cu,
+                to: cv,
+                multiplicity: 1,
+                first_edge: i,
+            });
+        }
+    }
+
+    arc_records.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    Ok(Graph {
+        components: raw,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs: arc_records,
+    })
+}
+```
+
+### Solution B
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        if u >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: u,
+            });
+        }
+        if v >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: v,
+            });
+        }
+    }
+
+    let mut adjacency = vec![Vec::<usize>::new(); n];
+    for &(u, v) in edges {
+        adjacency[u].push(v);
+    }
+
+    // Iterative Tarjan SCC using discovery indices, low links, and a separate
+    // SCC stack. DFS frames store the next outgoing edge to visit.
+    let mut index = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut tarjan_stack = Vec::<usize>::new();
+    let mut raw = Vec::<Vec<usize>>::new();
+    let mut next_index = 0usize;
+
+    for root in 0..n {
+        if index[root] != usize::MAX {
+            continue;
+        }
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        tarjan_stack.push(root);
+        on_stack[root] = true;
+
+        let mut dfs = vec![(root, 0usize)];
+        while !dfs.is_empty() {
+            let last = dfs.len() - 1;
+            let v = dfs[last].0;
+            if dfs[last].1 < adjacency[v].len() {
+                let w = adjacency[v][dfs[last].1];
+                dfs[last].1 += 1;
+                if index[w] == usize::MAX {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    tarjan_stack.push(w);
+                    on_stack[w] = true;
+                    dfs.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+            } else {
+                dfs.pop();
+                if let Some(&(parent, _)) = dfs.last() {
+                    low[parent] = low[parent].min(low[v]);
+                }
+                if low[v] == index[v] {
+                    let mut component = Vec::new();
+                    loop {
+                        let w = tarjan_stack.pop().unwrap();
+                        on_stack[w] = false;
+                        component.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    component.sort_unstable();
+                    raw.push(component);
+                }
+            }
+        }
+    }
+
+    raw.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    let mut component_of = vec![0usize; n];
+    for (id, component) in raw.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let mut cyclic: Vec<bool> = raw.iter().map(|c| c.len() > 1).collect();
+    let mut internal_edges = vec![0usize; raw.len()];
+    let mut arcs = Vec::<Arc>::new();
+    let mut pair_to_arc = std::collections::HashMap::<(usize, usize), usize>::new();
+
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        let from = component_of[u];
+        let to = component_of[v];
+        if from == to {
+            internal_edges[from] += 1;
+            if u == v {
+                cyclic[from] = true;
+            }
+        } else if let Some(&position) = pair_to_arc.get(&(from, to)) {
+            arcs[position].multiplicity += 1;
+        } else {
+            let position = arcs.len();
+            pair_to_arc.insert((from, to), position);
+            arcs.push(Arc {
+                from,
+                to,
+                multiplicity: 1,
+                first_edge: i,
+            });
+        }
+    }
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    Ok(Graph {
+        components: raw,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+    })
+}
+```

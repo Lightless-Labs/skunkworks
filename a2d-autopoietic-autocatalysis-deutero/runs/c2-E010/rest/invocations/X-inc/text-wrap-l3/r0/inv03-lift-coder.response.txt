@@ -1,0 +1,335 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Piece {
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct Line {
+    pieces: Vec<Piece>,
+    content_len: usize,
+    indent: usize,
+}
+
+impl Line {
+    fn new(indent: usize) -> Self {
+        Self {
+            pieces: Vec::new(),
+            content_len: 0,
+            indent,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.content_len == 0
+    }
+
+    fn gap_count(&self) -> usize {
+        self.pieces.len().saturating_sub(1)
+    }
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+#[derive(Debug, Clone)]
+struct Word {
+    chars: Vec<char>,
+    opportunities: Vec<usize>,
+}
+
+fn parse_words(segment: &[char]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut chars = Vec::new();
+    let mut opportunities = Vec::new();
+
+    let finish_word = |words: &mut Vec<Word>,
+                       chars: &mut Vec<char>,
+                       opportunities: &mut Vec<usize>| {
+        if !chars.is_empty() {
+            words.push(Word {
+                chars: std::mem::take(chars),
+                opportunities: std::mem::take(opportunities),
+            });
+        } else {
+            opportunities.clear();
+        }
+    };
+
+    for &c in segment {
+        if is_separator(c) {
+            finish_word(&mut words, &mut chars, &mut opportunities);
+        } else if c == '~' {
+            opportunities.push(chars.len());
+        } else {
+            chars.push(c);
+        }
+    }
+    finish_word(&mut words, &mut chars, &mut opportunities);
+
+    words
+}
+
+fn normalize_newlines(input: &str) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut iter = input.chars().peekable();
+
+    while let Some(c) = iter.next() {
+        if c == '\r' {
+            if iter.peek() == Some(&'\n') {
+                iter.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+
+    out
+}
+
+fn render_line(line: &Line, options: &WrapOptions, paragraph_line_index: usize, is_final: bool) -> String {
+    let mut out = String::new();
+    out.extend(std::iter::repeat_n(' ', line.indent));
+
+    let gaps = line.gap_count();
+    let extra = if options.justify && !is_final && gaps > 0 {
+        options.width.saturating_sub(line.indent + line.content_len)
+    } else {
+        0
+    };
+
+    let base_extra = if gaps > 0 { extra / gaps } else { 0 };
+    let remainder = if gaps > 0 { extra % gaps } else { 0 };
+    let start_gap = if gaps > 0 {
+        paragraph_line_index % gaps
+    } else {
+        0
+    };
+
+    for (i, piece) in line.pieces.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+            let count = base_extra
+                + usize::from((i - 1 + gaps - start_gap) % gaps < remainder);
+            out.extend(std::iter::repeat_n(' ', count));
+        }
+        out.push_str(&piece.text);
+    }
+
+    out
+}
+
+fn append_piece(line: &mut Line, text: String, scalar_len: usize) {
+    if !line.pieces.is_empty() {
+        line.content_len += 1;
+    }
+    line.content_len += scalar_len;
+    line.pieces.push(Piece { text });
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    for (index, c) in input.char_indices() {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let original: Vec<(usize, char)> = input.char_indices().collect();
+    for i in 0..original.len() {
+        if original[i].1 != '~' {
+            continue;
+        }
+
+        let valid_side = |j: Option<usize>| {
+            j.and_then(|j| original.get(j).map(|x| x.1))
+                .is_some_and(|c| c != '~' && !is_separator(c))
+        };
+
+        if !valid_side(i.checked_sub(1)) || !valid_side(Some(i + 1)) {
+            return Err(WrapError::InvalidMarker {
+                index: original[i].0,
+            });
+        }
+    }
+
+    let normalized = normalize_newlines(input);
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut segments: Vec<Vec<char>> = Vec::new();
+    let mut current = Vec::new();
+    let mut boundaries = Vec::new();
+    let mut i = 0;
+
+    while i < normalized.len() {
+        if normalized[i] == '\n' {
+            let start = i;
+            while i < normalized.len() && normalized[i] == '\n' {
+                i += 1;
+            }
+            if i - start >= 2 {
+                segments.push(std::mem::take(&mut current));
+                boundaries.push(i - start - 1);
+            } else {
+                current.push('\n');
+            }
+        } else {
+            current.push(normalized[i]);
+            i += 1;
+        }
+    }
+    segments.push(current);
+
+    let mut output = Vec::new();
+
+    for (segment_index, segment) in segments.iter().enumerate() {
+        let words = parse_words(segment);
+        let mut lines = Vec::new();
+        let mut line_number = 0usize;
+        let mut line = Line::new(options.first_indent);
+        let mut word_index = 0usize;
+
+        while word_index < words.len() {
+            let word = &words[word_index];
+            let mut offset = 0usize;
+
+            while offset < word.chars.len() {
+                let capacity = options.width - line.indent;
+                let room = capacity.saturating_sub(line.content_len + usize::from(!line.is_empty()));
+                let suffix_len = word.chars.len() - offset;
+
+                if suffix_len <= room {
+                    let text: String = word.chars[offset..].iter().collect();
+                    append_piece(&mut line, text, suffix_len);
+                    offset = word.chars.len();
+                    word_index += 1;
+                    continue;
+                }
+
+                let opportunities: Vec<usize> = word
+                    .opportunities
+                    .iter()
+                    .copied()
+                    .filter(|&p| p > offset && p < word.chars.len())
+                    .filter(|&p| p - offset + 1 <= room)
+                    .collect();
+
+                let chosen = opportunities.last().copied();
+                if let Some(point) = chosen {
+                    let used = point - offset + 1;
+                    let unused = room - used;
+                    let accepted = if line.is_empty() {
+                        true
+                    } else {
+                        let remaining = capacity - line.content_len;
+                        unused * unused + options.hyphen_cost < remaining * remaining
+                    };
+
+                    if accepted {
+                        let mut text: String = word.chars[offset..point].iter().collect();
+                        text.push('-');
+                        append_piece(&mut line, text, used);
+                        lines.push(line);
+                        line_number += 1;
+                        line = Line::new(options.rest_indent);
+                        offset = point;
+                        continue;
+                    }
+                }
+
+                if !line.is_empty() {
+                    lines.push(line);
+                    line_number += 1;
+                    line = Line::new(options.rest_indent);
+                    continue;
+                }
+
+                let capacity = options.width - line.indent;
+                if suffix_len > capacity {
+                    let end = offset + capacity;
+                    let text: String = word.chars[offset..end].iter().collect();
+                    append_piece(&mut line, text, capacity);
+                    lines.push(line);
+                    line_number += 1;
+                    line = Line::new(options.rest_indent);
+                    offset = end;
+                } else {
+                    let text: String = word.chars[offset..].iter().collect();
+                    append_piece(&mut line, text, suffix_len);
+                    offset = word.chars.len();
+                    word_index += 1;
+                }
+            }
+        }
+
+        if !line.is_empty() {
+            lines.push(line);
+        }
+
+        let final_index = lines.len().saturating_sub(1);
+        for (index, line) in lines.iter().enumerate() {
+            output.push(render_line(
+                line,
+                options,
+                index,
+                index == final_index,
+            ));
+        }
+
+        if segment_index < boundaries.len() {
+            output.extend(std::iter::repeat_n(String::new(), boundaries[segment_index]));
+        }
+
+        let _ = line_number;
+    }
+
+    Ok(output)
+}
+```

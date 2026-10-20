@@ -1,0 +1,577 @@
+- Key validation trims only ASCII spaces; error offsets refer to the original UTF-8 byte positions.
+- Heap rank uses priority, value byte length, then stable insertion age.
+- Key updates and merge collisions preserve the receiver item’s age.
+- Successful merges assign transferred keys fresh ages in source rank order.
+- `Reject` reports the first collision in source rank order and leaves both queues unchanged.
+- Solution A uses an indexed binary heap; Solution B uses a `HashMap` and scans for the best item.
+
+### Solution A
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    heap: Vec<Entry>,
+    positions: HashMap<String, usize>,
+    next_age: u128,
+}
+
+fn canonical_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (i, &b) in bytes[start..end].iter().enumerate() {
+        let valid = if i == 0 {
+            b.is_ascii_alphabetic()
+        } else {
+            b.is_ascii_alphabetic() || b.is_ascii_digit() || b == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + i });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            heap: Vec::new(),
+            positions: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn better(a: &Entry, b: &Entry) -> bool {
+        a.item.priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+            .is_lt()
+    }
+
+    fn swap_slots(&mut self, a: usize, b: usize) {
+        self.heap.swap(a, b);
+        self.positions.insert(self.heap[a].item.key.clone(), a);
+        self.positions.insert(self.heap[b].item.key.clone(), b);
+    }
+
+    fn sift_up(&mut self, mut i: usize) {
+        while i > 0 {
+            let p = (i - 1) / 2;
+            if !Self::better(&self.heap[i], &self.heap[p]) {
+                break;
+            }
+            self.swap_slots(i, p);
+            i = p;
+        }
+    }
+
+    fn sift_down(&mut self, mut i: usize) {
+        loop {
+            let left = i * 2 + 1;
+            if left >= self.heap.len() {
+                break;
+            }
+            let right = left + 1;
+            let mut best = left;
+            if right < self.heap.len() && Self::better(&self.heap[right], &self.heap[left]) {
+                best = right;
+            }
+            if !Self::better(&self.heap[best], &self.heap[i]) {
+                break;
+            }
+            self.swap_slots(i, best);
+            i = best;
+        }
+    }
+
+    fn repair(&mut self, i: usize) {
+        if i > 0 && Self::better(&self.heap[i], &self.heap[(i - 1) / 2]) {
+            self.sift_up(i);
+        } else {
+            self.sift_down(i);
+        }
+    }
+
+    fn remove_at(&mut self, i: usize) -> Entry {
+        let removed_key = self.heap[i].item.key.clone();
+        let last = self.heap.len() - 1;
+        self.heap.swap(i, last);
+        let removed = self.heap.pop().unwrap();
+        self.positions.remove(&removed_key);
+        if i < self.heap.len() {
+            self.positions.insert(self.heap[i].item.key.clone(), i);
+            self.repair(i);
+        }
+        removed
+    }
+
+    fn renumber_ages(&mut self) {
+        let mut order: Vec<usize> = (0..self.heap.len()).collect();
+        order.sort_by_key(|&i| self.heap[i].age);
+        for (age, i) in order.into_iter().enumerate() {
+            self.heap[i].age = age as u128;
+        }
+        self.next_age = self.heap.len() as u128;
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonical_key(key)?;
+        if self.positions.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+        if self.next_age == u128::MAX {
+            self.renumber_ages();
+        }
+        let i = self.heap.len();
+        self.heap.push(Entry {
+            item: Item {
+                key: key.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        });
+        self.next_age += 1;
+        self.positions.insert(key, i);
+        self.sift_up(i);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.heap.first().map(|e| e.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.heap.is_empty() {
+            None
+        } else {
+            Some(self.remove_at(0).item)
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonical_key(key)?;
+        Ok(self.positions.get(&key).map(|&i| self.heap[i].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let i = *self.positions.get(&key).ok_or_else(|| Error::Missing { key })?;
+        let current = self.heap[i].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.heap[i].item.priority = priority;
+        self.repair(i);
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let i = *self.positions.get(&key).ok_or_else(|| Error::Missing { key })?;
+        let current = self.heap[i].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.heap[i].item.priority = priority;
+        self.repair(i);
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonical_key(key)?;
+        let i = *self.positions.get(&key).ok_or_else(|| Error::Missing { key })?;
+        let old = std::mem::replace(&mut self.heap[i].item.value, value.to_owned());
+        self.repair(i);
+        Ok(old)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonical_key(key)?;
+        let i = *self.positions.get(&key).ok_or_else(|| Error::Missing { key })?;
+        Ok(self.remove_at(i).item)
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let mut source: Vec<Entry> = other.heap.iter().cloned().collect();
+        source.sort_by(|a, b| {
+            a.item
+                .priority
+                .cmp(&b.item.priority)
+                .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+                .then_with(|| a.age.cmp(&b.age))
+        });
+
+        if policy == CollisionPolicy::Reject {
+            for entry in &source {
+                if self.positions.contains_key(&entry.item.key) {
+                    return Err(Error::Collision {
+                        key: entry.item.key.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut report = MergeReport {
+            moved: 0,
+            replaced: 0,
+            discarded: 0,
+        };
+
+        for entry in source {
+            if let Some(&i) = self.positions.get(&entry.item.key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => report.discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        self.heap[i].item.priority = entry.item.priority;
+                        self.heap[i].item.value = entry.item.value;
+                        self.repair(i);
+                        report.replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                if self.next_age == u128::MAX {
+                    self.renumber_ages();
+                }
+                let i = self.heap.len();
+                self.heap.push(Entry {
+                    item: entry.item,
+                    age: self.next_age,
+                });
+                self.next_age += 1;
+                let key = self.heap[i].item.key.clone();
+                self.positions.insert(key, i);
+                self.sift_up(i);
+                report.moved += 1;
+            }
+        }
+
+        other.heap.clear();
+        other.positions.clear();
+        other.next_age = 0;
+        Ok(report)
+    }
+}
+
+impl Default for IndexedHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+
+### Solution B
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: HashMap<String, Entry>,
+    next_age: u128,
+}
+
+fn canonical_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+    for (offset, &b) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            b.is_ascii_alphabetic()
+        } else {
+            b.is_ascii_alphabetic() || b.is_ascii_digit() || b == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+    Ok(input[start..end].to_ascii_lowercase())
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn rank_cmp(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        a.item
+            .priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+    }
+
+    fn best_key(&self) -> Option<&str> {
+        self.entries
+            .values()
+            .min_by(|a, b| Self::rank_cmp(a, b))
+            .map(|e| e.item.key.as_str())
+    }
+
+    fn renumber_ages(&mut self) {
+        let mut keys: Vec<String> = self.entries.keys().cloned().collect();
+        keys.sort_by_key(|k| self.entries.get(k).unwrap().age);
+        for (age, key) in keys.into_iter().enumerate() {
+            self.entries.get_mut(&key).unwrap().age = age as u128;
+        }
+        self.next_age = self.entries.len() as u128;
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonical_key(key)?;
+        if self.entries.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+        if self.next_age == u128::MAX {
+            self.renumber_ages();
+        }
+        self.entries.insert(
+            key.clone(),
+            Entry {
+                item: Item {
+                    key,
+                    priority,
+                    value: value.to_owned(),
+                },
+                age: self.next_age,
+            },
+        );
+        self.next_age += 1;
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.best_key()
+            .and_then(|key| self.entries.get(key))
+            .map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let key = self.best_key()?.to_owned();
+        self.entries.remove(&key).map(|entry| entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonical_key(key)?;
+        Ok(self.entries.get(&key).map(|entry| entry.item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let entry = self.entries.get_mut(&key).ok_or_else(|| Error::Missing { key })?;
+        let current = entry.item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection { current, requested: priority });
+        }
+        entry.item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let entry = self.entries.get_mut(&key).ok_or_else(|| Error::Missing { key })?;
+        let current = entry.item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection { current, requested: priority });
+        }
+        entry.item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonical_key(key)?;
+        let entry = self.entries.get_mut(&key).ok_or_else(|| Error::Missing { key })?;
+        Ok(std::mem::replace(&mut entry.item.value, value.to_owned()))
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonical_key(key)?;
+        self.entries
+            .remove(&key)
+            .map(|entry| entry.item)
+            .ok_or(Error::Missing { key })
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let mut source: Vec<Entry> = other.entries.values().cloned().collect();
+        source.sort_by(Self::rank_cmp);
+
+        if policy == CollisionPolicy::Reject {
+            for entry in &source {
+                if self.entries.contains_key(&entry.item.key) {
+                    return Err(Error::Collision {
+                        key: entry.item.key.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut report = MergeReport { moved: 0, replaced: 0, discarded: 0 };
+        for entry in source {
+            let key = entry.item.key.clone();
+            if let Some(receiver) = self.entries.get_mut(&key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => report.discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        receiver.item.priority = entry.item.priority;
+                        receiver.item.value = entry.item.value;
+                        report.replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                if self.next_age == u128::MAX {
+                    self.renumber_ages();
+                }
+                self.entries.insert(
+                    key,
+                    Entry {
+                        item: entry.item,
+                        age: self.next_age,
+                    },
+                );
+                self.next_age += 1;
+                report.moved += 1;
+            }
+        }
+        other.entries.clear();
+        other.next_age = 0;
+        Ok(report)
+    }
+}
+
+impl Default for IndexedHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

@@ -1,0 +1,212 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    fn validate_and_resolve(&self, path: &str) -> Result<String, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut components: Vec<&str> = Vec::new();
+        if !path.starts_with('/') {
+            components.extend(self.cwd.split('/').filter(|part| !part.is_empty()));
+        }
+
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                other => components.push(other),
+            }
+        }
+
+        if components.is_empty() {
+            Ok("/".to_string())
+        } else {
+            Ok(format!("/{}", components.join("/")))
+        }
+    }
+
+    fn lookup_parent(&self, canonical: &str) -> Result<(String, String), Error> {
+        if canonical == "/" {
+            return Ok(("/".to_string(), String::new()));
+        }
+
+        let split_at = canonical.rfind('/').unwrap_or(0);
+        let parent = if split_at == 0 {
+            "/".to_string()
+        } else {
+            canonical[..split_at].to_string()
+        };
+        let basename = canonical[split_at + 1..].to_string();
+
+        self.lookup_directory(&parent)?;
+        Ok((parent, basename))
+    }
+
+    fn lookup_directory(&self, canonical: &str) -> Result<(), Error> {
+        if canonical == "/" {
+            return Ok(());
+        }
+
+        let mut prefix = String::new();
+        for component in canonical.split('/').filter(|part| !part.is_empty()) {
+            prefix.push('/');
+            prefix.push_str(component);
+            match self.entries.get(&prefix) {
+                None => return Err(Error::Missing(prefix)),
+                Some(Entry::Dir) => {}
+                Some(Entry::File(_)) => return Err(Error::NotDir(prefix)),
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup_entry(&self, canonical: &str) -> Result<&Entry, Error> {
+        if canonical == "/" {
+            return self.entries.get("/").ok_or_else(|| Error::Missing("/".to_string()));
+        }
+
+        let mut prefix = String::new();
+        let components: Vec<&str> = canonical.split('/').filter(|part| !part.is_empty()).collect();
+        for (index, component) in components.iter().enumerate() {
+            prefix.push('/');
+            prefix.push_str(component);
+            match self.entries.get(&prefix) {
+                None => return Err(Error::Missing(prefix)),
+                Some(entry) if index + 1 < components.len() => match entry {
+                    Entry::Dir => {}
+                    Entry::File(_) => return Err(Error::NotDir(prefix)),
+                },
+                Some(entry) => return Ok(entry),
+            }
+        }
+
+        self.entries.get("/").ok_or_else(|| Error::Missing("/".to_string()))
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let canonical = self.validate_and_resolve(path)?;
+        let (parent, _) = self.lookup_parent(&canonical)?;
+
+        if self.entries.contains_key(&canonical) {
+            return Err(Error::Exists(canonical));
+        }
+
+        self.entries.insert(canonical, Entry::Dir);
+        let _ = parent;
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let canonical = self.validate_and_resolve(path)?;
+
+        if canonical == "/" {
+            return Err(Error::IsDir(canonical));
+        }
+
+        let (parent, _) = self.lookup_parent(&canonical)?;
+        match self.entries.get(&canonical) {
+            Some(Entry::Dir) => return Err(Error::IsDir(canonical)),
+            Some(Entry::File(_)) | None => {}
+        }
+
+        let _ = parent;
+        self.entries
+            .insert(canonical, Entry::File(data.to_vec()));
+        Ok(())
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let canonical = self.validate_and_resolve(path)?;
+        match self.lookup_entry(&canonical)? {
+            Entry::Dir => Err(Error::IsDir(canonical)),
+            Entry::File(data) => Ok(data.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let canonical = self.validate_and_resolve(path)?;
+        match self.lookup_entry(&canonical)? {
+            Entry::File(_) => return Err(Error::NotDir(canonical)),
+            Entry::Dir => {}
+        }
+
+        let prefix = if canonical == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", canonical)
+        };
+
+        let mut children = Vec::new();
+        for (entry_path, entry) in &self.entries {
+            if let Some(remainder) = entry_path.strip_prefix(&prefix) {
+                if !remainder.is_empty() && !remainder.contains('/') {
+                    let kind = match entry {
+                        Entry::Dir => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    children.push((remainder.to_string(), kind));
+                }
+            }
+        }
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(children)
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let canonical = self.validate_and_resolve(path)?;
+        match self.lookup_entry(&canonical)? {
+            Entry::Dir => {
+                self.cwd = canonical;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(canonical)),
+        }
+    }
+}
+```

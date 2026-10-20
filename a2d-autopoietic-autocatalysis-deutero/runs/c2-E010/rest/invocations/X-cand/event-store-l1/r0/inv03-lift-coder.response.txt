@@ -1,0 +1,289 @@
+- I take the stated check order as strict, including limit validation before Open’s lifecycle check and close-version comparison before balance validation.
+- Zero and negative deposit/withdraw amounts are invalid; floors include both 0 and the account limit.
+- Capacity and withdrawal comparisons use safe arithmetic without relying on potentially overflowing intermediate sums.
+- Empty replay returns the exact initial account; every successful event increments version once.
+- Replay input length is representable as `u64`, so version overflow is unreachable from the initial state.
+
+### Solution A
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+fn apply(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if account.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *amount > account.limit - account.balance {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance += *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            if account.balance - *amount < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance -= *amount;
+        }
+        Event::Close { expected_version } => {
+            match account.status {
+                Status::New => return Err(ApplyError::NotOpened),
+                Status::Closed => return Err(ApplyError::Closed),
+                Status::Open => {}
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version = account
+        .version
+        .checked_add(1)
+        .ok_or(ApplyError::VersionOverflow)?;
+    Ok(())
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut account = Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    };
+
+    for (index, event) in events.iter().enumerate() {
+        if let Err(kind) = apply(&mut account, event) {
+            return Err(ReplayError { index, kind });
+        }
+    }
+
+    Ok(account)
+}
+```
+
+### Solution B
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+fn apply(account: &mut Account, event: &Event) -> Result<(), ApplyError> {
+    let next_version = account
+        .version
+        .checked_add(1)
+        .ok_or(ApplyError::VersionOverflow)?;
+
+    match event {
+        Event::Open { limit } => {
+            if *limit < 1 || *limit > 1_000_000_000 {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if !matches!(account.status, Status::New) {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            account.status = Status::Open;
+            account.limit = *limit;
+        }
+        Event::Deposit { amount } => {
+            if matches!(account.status, Status::New) {
+                return Err(ApplyError::NotOpened);
+            }
+            if matches!(account.status, Status::Closed) {
+                return Err(ApplyError::Closed);
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            let remaining_capacity = account.limit - account.balance;
+            if *amount > remaining_capacity {
+                return Err(ApplyError::LimitExceeded);
+            }
+            account.balance = account.balance + *amount;
+        }
+        Event::Withdraw { amount, floor } => {
+            if matches!(account.status, Status::New) {
+                return Err(ApplyError::NotOpened);
+            }
+            if matches!(account.status, Status::Closed) {
+                return Err(ApplyError::Closed);
+            }
+            if *amount <= 0 {
+                return Err(ApplyError::InvalidAmount);
+            }
+            if *floor < 0 || *floor > account.limit {
+                return Err(ApplyError::InvalidFloor);
+            }
+            if *amount > account.balance {
+                return Err(ApplyError::InsufficientFunds);
+            }
+            let remaining = account.balance - *amount;
+            if remaining < *floor {
+                return Err(ApplyError::FloorViolation);
+            }
+            account.balance = remaining;
+        }
+        Event::Close { expected_version } => {
+            if matches!(account.status, Status::New) {
+                return Err(ApplyError::NotOpened);
+            }
+            if matches!(account.status, Status::Closed) {
+                return Err(ApplyError::Closed);
+            }
+            if *expected_version != account.version {
+                return Err(ApplyError::CloseVersion {
+                    expected: *expected_version,
+                    actual: account.version,
+                });
+            }
+            if account.balance != 0 {
+                return Err(ApplyError::NonZeroBalance);
+            }
+            account.status = Status::Closed;
+        }
+    }
+
+    account.version = next_version;
+    Ok(())
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut account = Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    };
+
+    for (index, event) in events.iter().enumerate() {
+        match apply(&mut account, event) {
+            Ok(()) => {}
+            Err(kind) => return Err(ReplayError { index, kind }),
+        }
+    }
+
+    Ok(account)
+}
+```

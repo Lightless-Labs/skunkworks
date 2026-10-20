@@ -1,0 +1,240 @@
+- Validation order is significant: vertex limit, edge limit, then endpoints in input order; source is checked before target.
+- Both limits are inclusive: exactly 4096 vertices and 32768 edges are allowed.
+- The empty graph succeeds, while any edge at `n = 0` fails on its source endpoint.
+- Components are ordered by descending size, then ascending minimum vertex; IDs follow that order.
+- A singleton is cyclic only if it has a self-loop; duplicate edges do not affect the result.
+- Both implementations use iterative traversals to support long paths without recursion.
+
+### Solution A
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (i, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    let mut adjacency = vec![Vec::new(); n];
+    let mut reverse = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+    for &(source, target) in edges {
+        adjacency[source].push(target);
+        reverse[target].push(source);
+        if source == target {
+            self_loop[source] = true;
+        }
+    }
+
+    // Iterative DFS finishing order.
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((vertex, next_edge)) = stack.last_mut() {
+            if *next_edge < adjacency[*vertex].len() {
+                let neighbor = adjacency[*vertex][*next_edge];
+                *next_edge += 1;
+                if !seen[neighbor] {
+                    seen[neighbor] = true;
+                    stack.push((neighbor, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().unwrap();
+                order.push(finished);
+            }
+        }
+    }
+
+    // Reverse-graph traversal in decreasing finishing order.
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+    for &start in order.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        assigned[start] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        while let Some(vertex) = stack.pop() {
+            component.push(vertex);
+            for &neighbor in &reverse[vertex] {
+                if !assigned[neighbor] {
+                    assigned[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+
+    let mut component_of = vec![0; n];
+    let mut cyclic = Vec::with_capacity(components.len());
+    for (id, component) in components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = id;
+        }
+        cyclic.push(component.len() > 1 || self_loop[component[0]]);
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+    })
+}
+```
+
+### Solution B
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (edge, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    // Compute each vertex's reachability set using iterative graph searches.
+    // Two vertices share an SCC exactly when each can reach the other.
+    let mut adjacency = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+    for &(source, target) in edges {
+        adjacency[source].push(target);
+        if source == target {
+            self_loop[source] = true;
+        }
+    }
+
+    let mut reachable = vec![vec![false; n]; n];
+    for start in 0..n {
+        reachable[start][start] = true;
+        let mut stack = vec![start];
+        while let Some(vertex) = stack.pop() {
+            for &neighbor in &adjacency[vertex] {
+                if !reachable[start][neighbor] {
+                    reachable[start][neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+    for vertex in 0..n {
+        if assigned[vertex] {
+            continue;
+        }
+        let mut component = Vec::new();
+        for candidate in vertex..n {
+            if !assigned[candidate]
+                && reachable[vertex][candidate]
+                && reachable[candidate][vertex]
+            {
+                assigned[candidate] = true;
+                component.push(candidate);
+            }
+        }
+        components.push(component);
+    }
+
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+
+    let mut component_of = vec![0; n];
+    let mut cyclic = Vec::with_capacity(components.len());
+    for (id, component) in components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = id;
+        }
+        cyclic.push(component.len() > 1 || self_loop[component[0]]);
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+    })
+}
+```
