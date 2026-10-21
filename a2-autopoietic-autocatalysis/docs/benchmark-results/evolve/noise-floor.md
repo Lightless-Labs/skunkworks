@@ -129,3 +129,14 @@ The same bug touched every earlier run. Across all evolve logs, the zero-token c
 Some originals cannot be recovered. The evaluate retry overwrote the original episode row, so a retried episode's first grade is lost. 10 champion rows are retries that this bug triggered (8 in nf-1, 2 in the 2026-10-19 control run). One of them, on e1-792e600f54fd, followed a genuine provider exit. All 10 are on tasks that are deterministic in the remaining reps (every rep resolves, or none does). The lost originals therefore cannot move p̂, and the floor is not re-run. The other 13 retry rows in the state come from the `evaluator_error` retries of 2026-10-18, a separate and genuine infra class, and are unaffected.
 
 **Earlier experiments.** exp-0001 to exp-0009 were decided under the old classifier. On both sides, agent timeouts and no-edit calls got free retries. Those decisions stand as logged. exp-0010's stage A was deleted and re-runs under the fixed classifier. It is still exp-0010, not a new experiment. Its logs were deleted with the run before being archived; the counts above were taken first.
+
+## Addendum, 2026-10-21: re-run of exp-0012 after an infrastructure failure (pre-registered)
+
+exp-0012 passed stage A. It was then logged `invalid` because the disk filled during stage B and `tasks.prepare` failed (`git commit` exit 128). That is an infrastructure failure, not a result about the genome ([blocker](../../blockers/2026-10-20-disk-full-exp-0012.md)). This addendum fixes the re-run before any of it is executed.
+
+- **What runs:** the archived diff `archive/exp-0012.patch`, applied to G0 (its logged parent), as experiment `exp-0012r`. The hypothesis text is unchanged, and no researcher call is made.
+- **From scratch:** stage A, stage B and the full-44 pass all run fresh, with new run ids `exp-0012r-A/-B/-full`. The original exp-0012 rows (19 in A, 34 partial in B) are not reused. Some of them were produced on a full disk.
+- **Same rules:** the same evaluator (`99fac147…`), the same screen set, the same thresholds, and the same `stats.screen_decision` / `stats.stage_b_decision`. The comparison is against the champion rates in the loop state when the re-run starts. If the champion has changed by then, the comparison is against the new champion.
+- **When:** after the loop reaches its 22nd logged experiment and exits, so that the two never run concurrently on this machine. It is injected as the loop's `current` experiment at `stage_a`, and the unchanged `loop.py` runs it with `--max-experiments` raised by one.
+- **Counting:** the original exp-0012 row stays `invalid` in the log. exp-0012r gets its own log row and counts as a re-run, not as one of the 20 unattended experiments. A `keep` promotes it through the normal path and makes it the confirmation candidate under the plan §7 checklist.
+- **One shot:** exp-0012r is run once. If it is also invalidated by infrastructure, that is reported and it is not run a third time.
