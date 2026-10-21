@@ -17,17 +17,83 @@ pub struct CliProvider {
     output_parser: Box<dyn Fn(&str) -> (String, Option<String>) + Send + Sync>,
 }
 
-/// Codex features that give the model tools beyond producing text.
+/// Codex features that give the model tools or extra context beyond producing
+/// text (codex-cli 0.162: every stable, default-on tool feature; LOG C2-WEB and
+/// C2-MCP). Web search is off via the `web_search` config key instead.
 pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
     "js_repl",
-    "web_search_request",
     "standalone_web_search",
     "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "browser_annotation_api",
     "computer_use",
     "apps",
+    "plugins",
+    "remote_plugin",
+    "multi_agent",
+    "skill_search",
+    "skill_mcp_dependency_install",
+    "tool_suggest",
+    "image_generation",
+    "in_app_browser",
+    "view_image",
+    "goals",
+    "hooks",
+    // Also default-on in 0.162 and not needed for text-only calls (confirmation-3
+    // §0.13, live check 2026-10-19: a PONG call with all of these off emits only
+    // thread/turn events and one agent_message). Not `code_mode_host`: disabling it
+    // makes codex emit an `error` item at startup on every call.
+    "sleep_tool",
+    "workspace_dependencies",
+    "worktrees",
+    "unified_exec_tty",
+    "shell_snapshot",
+    "realtime_conversation",
+    "tool_call_mcp_elicitation",
+    "write_stdin_approval",
+    "in_app_local_automation",
+    "daemon_auto_start",
 ];
+
+/// `--json` event item types a no-tools Codex call may produce. Anything else
+/// (commands, file changes, MCP or web calls, errors, unknown types) counts as a
+/// tool event (allowlist, fail closed; plan 2026-10-18-confirmation-3 §0.4).
+pub const CODEX_ALLOWED_ITEMS: &[&str] = &["agent_message", "reasoning"];
+const CODEX_ALLOWED_EVENTS: &[&str] = &[
+    "thread.started",
+    "turn.started",
+    "turn.completed",
+    "item.started",
+    "item.updated",
+    "item.completed",
+];
+/// Separates the `--json` event stream from Codex's stderr in a transcript.
+pub const CODEX_STDERR_MARKER: &str = "\n--- codex stderr ---\n";
+/// How long a killed child's pipes may take to close. A grandchild holding a pipe
+/// must not hang the call; then no transcript is captured (fail closed).
+const KILLED_PIPE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+thread_local! {
+    static FAILED_CALL_TRANSCRIPT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The transcript of this thread's last failed Codex call (timeout, non-zero exit,
+/// no final message), taken once. `invoke` returns only an error for such a call, so
+/// the caller that records it (the lift meter) takes its partial event stream and
+/// stderr here, on the same thread, right after `invoke` (plan
+/// 2026-10-18-confirmation-3 §0.13: failed calls are audited like any other).
+pub fn take_failed_call_transcript() -> Option<String> {
+    FAILED_CALL_TRANSCRIPT.with(|t| t.borrow_mut().take())
+}
+
+/// Store a failed call's transcript for `take_failed_call_transcript`.
+pub fn set_failed_call_transcript(transcript: String) {
+    FAILED_CALL_TRANSCRIPT.with(|t| *t.borrow_mut() = Some(transcript));
+}
 
 impl CliProvider {
     /// Create a Codex CLI provider.
@@ -76,6 +142,16 @@ impl CliProvider {
                     args.push("--disable".to_string());
                     args.push(feature.to_string());
                 }
+                // codex-cli 0.162 turns web search on by default and ignores the
+                // deprecated `--disable web_search_request` (verified live
+                // 2026-10-17, A²D LOG C2-WEB); the config key turns it off.
+                args.push("-c".to_string());
+                args.push("web_search=\"disabled\"".to_string());
+                // Structured events on stdout (tool detection by allowlist) and the
+                // final message in a file the provider reads back.
+                args.push("--json".to_string());
+                args.push("--output-last-message".to_string());
+                args.push(CODEX_LAST_MESSAGE_FILE.to_string());
                 args
             }),
             output_parser: Box::new(|output: &str| (output.to_string(), None)),
@@ -293,15 +369,20 @@ pub fn remove_network_configuration_env(command: &mut Command) {
 }
 
 fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderError> {
+    // The clock alone is not unique (microseconds on macOS): two concurrent calls
+    // shared a cwd and CODEX_HOME, and one's cleanup broke the other. A per-process
+    // sequence makes the name unique, and `create_dir` fails closed if it is not.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let dir = std::env::temp_dir().join(format!(
-        "a2d-provider-{command}-{}-{now}",
+        "a2d-provider-{command}-{}-{now}-{seq}",
         std::process::id()
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| {
+    std::fs::create_dir(&dir).map_err(|e| {
         ProviderError::InvocationFailed(format!(
             "failed to create isolated provider cwd {}: {e}",
             dir.display()
@@ -328,6 +409,48 @@ fn join_pipe_reader(reader: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8>
         .unwrap_or_default()
 }
 
+/// Join a pipe reader only if it finishes within `grace`; otherwise leave it running.
+fn join_pipe_reader_within(
+    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
+    grace: std::time::Duration,
+) -> Option<Vec<u8>> {
+    let handle = reader?;
+    let start = std::time::Instant::now();
+    while !handle.is_finished() {
+        if start.elapsed() > grace {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    handle.join().ok()
+}
+
+/// Kill a child spawned with `process_group(0)` together with everything in its group
+/// (Codex helpers that would otherwise keep the output pipes open), then the child.
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
+/// A killed call's transcript (event stream, marker, stderr), if both pipes closed in time.
+fn killed_call_transcript(
+    stdout: Option<std::thread::JoinHandle<Vec<u8>>>,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+    grace: std::time::Duration,
+) -> Option<String> {
+    let out = join_pipe_reader_within(stdout, grace)?;
+    let err = join_pipe_reader_within(stderr, grace)?;
+    Some(format!(
+        "{}{CODEX_STDERR_MARKER}{}",
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    ))
+}
+
 /// The Codex CLI ends its stderr log with `tokens used` and the total on the
 /// next line (e.g. `7,477`).
 fn codex_usage(stderr: &str) -> TokenUsage {
@@ -343,12 +466,144 @@ fn codex_usage(stderr: &str) -> TokenUsage {
     }
 }
 
-/// Tool calls in a Codex CLI stderr log: each is announced by a line `exec`.
+/// File (in the provider's isolated cwd) that receives Codex's final message.
+pub const CODEX_LAST_MESSAGE_FILE: &str = "last-message.txt";
+
+/// Tool events in a Codex transcript.
+///
+/// `--json` transcripts (event stream, then `CODEX_STDERR_MARKER`, then stderr):
+/// every item whose type is not in `CODEX_ALLOWED_ITEMS`, every event type outside
+/// the known lifecycle, every unparsable line, and a missing `turn.completed` each
+/// count one (allowlist, fail closed).
+///
+/// Legacy text transcripts (codex stderr before 2026-10-18): lines `exec`,
+/// `web search: …` and `mcp: …` (C2-WEB, C2-MCP).
 pub fn codex_tool_calls(transcript: &str) -> usize {
-    transcript
+    codex_tool_events(transcript, false)
+}
+
+/// Tool events in the transcript of a *failed* call (killed at the timeout, non-zero
+/// exit, no final message): the same allowlist, except that a missing `turn.completed`
+/// is expected there, not an event, because the call ended before its turn did. An
+/// empty event stream has no events; a cut-off last line still counts (fail closed).
+pub fn codex_tool_calls_failed(transcript: &str) -> usize {
+    codex_tool_events(transcript, true)
+}
+
+fn codex_tool_events(transcript: &str, failed: bool) -> usize {
+    // The marker, not the first character, selects the --json parser: noise before the
+    // first event must not switch to the lenient legacy count (Sol review, 2026-10-19).
+    let json = transcript
+        .split_once(CODEX_STDERR_MARKER)
+        .map(|(events, _)| events)
+        .or_else(|| transcript.trim_start().starts_with('{').then_some(transcript));
+    if failed && json.is_some_and(|events| events.trim().is_empty()) {
+        return 0;
+    }
+    let Some(events) = json else {
+        return transcript
+            .lines()
+            .filter(|line| {
+                line.trim() == "exec" || line.starts_with("web search:") || line.starts_with("mcp: ")
+            })
+            .count();
+    };
+    let mut count = 0;
+    let mut completed = false;
+    for line in events.lines().filter(|l| !l.trim().is_empty()) {
+        // Every unparsable line counts, a cut-off last line of a killed call included:
+        // it could be a tool event (fail closed).
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            count += 1;
+            continue;
+        };
+        let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if !CODEX_ALLOWED_EVENTS.contains(&kind) {
+            count += 1;
+            continue;
+        }
+        if kind == "turn.completed" {
+            completed = true;
+        }
+        if kind.starts_with("item.") {
+            let item_type = event
+                .get("item")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str());
+            if !item_type.is_some_and(|t| CODEX_ALLOWED_ITEMS.contains(&t)) {
+                count += 1;
+            }
+        }
+    }
+    if !completed && !failed {
+        count += 1;
+    }
+    count
+}
+
+/// Token usage from a `--json` transcript's `turn.completed` event.
+fn codex_json_usage(events: &str) -> Option<TokenUsage> {
+    let usage = events
         .lines()
-        .filter(|line| line.trim() == "exec")
-        .count()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("turn.completed"))
+        .filter_map(|e| e.get("usage").cloned())
+        .last()?;
+    let get = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let prompt = get("input_tokens");
+    let completion = get("output_tokens");
+    Some(TokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        thinking_tokens: get("reasoning_output_tokens"),
+        reported_total: Some(prompt + completion),
+    })
+}
+
+/// A dedicated `CODEX_HOME` inside the provider's isolated cwd holding only a
+/// link to the caller's `auth.json`: no plugins, skills, memories, AGENTS.md,
+/// hooks or config from the user's home reach the model (C2-MCP), and the
+/// environment cannot drift with the user's codex setup.
+/// Where a call's private CODEX_HOME lives: under `root` (`A2D_CODEX_HOME_ROOT`) when set,
+/// else inside the call's cwd. Confirmation-3 §0.10 wants CODEX_HOME under $A2D_HOLDOUT_DIR,
+/// while the cwd stays under the temp root, whose ancestry holds no codex context.
+fn codex_home_in(cwd: &std::path::Path, root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match root {
+        Some(root) if !root.is_empty() => {
+            std::path::PathBuf::from(root).join(cwd.file_name().unwrap_or_default())
+        }
+        _ => cwd.join(".codex_home"),
+    }
+}
+
+fn codex_home_root() -> Option<std::ffi::OsString> {
+    std::env::var_os("A2D_CODEX_HOME_ROOT")
+}
+
+/// Remove a call's cwd and, when it lives elsewhere, its private CODEX_HOME.
+fn remove_call_dirs(cwd: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(cwd);
+    let home = codex_home_in(cwd, codex_home_root());
+    if !home.starts_with(cwd) {
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
+fn isolated_codex_home(cwd: &std::path::Path) -> Result<std::path::PathBuf, ProviderError> {
+    let home = codex_home_in(cwd, codex_home_root());
+    std::fs::create_dir_all(&home).map_err(|e| {
+        ProviderError::InvocationFailed(format!("failed to create isolated CODEX_HOME: {e}"))
+    })?;
+    let source = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))
+        .map(|d| d.join("auth.json"))
+        .ok_or_else(|| ProviderError::InvocationFailed("no codex auth.json".to_string()))?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&source, home.join("auth.json")).map_err(|e| {
+        ProviderError::InvocationFailed(format!("failed to link codex auth.json: {e}"))
+    })?;
+    Ok(home)
 }
 
 impl Provider for CliProvider {
@@ -357,6 +612,7 @@ impl Provider for CliProvider {
     }
 
     fn invoke(&self, request: &InvocationRequest) -> Result<InvocationResponse, ProviderError> {
+        let _ = take_failed_call_transcript();
         let args = (self.args_builder)(request);
 
         if std::env::var("A2D_TRACE").is_ok_and(|v| !v.is_empty() && v != "0") {
@@ -391,7 +647,7 @@ impl Provider for CliProvider {
                 opencode_tool_denial_config(),
             )
             .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&sandbox_dir);
+                remove_call_dirs(&sandbox_dir);
                 ProviderError::InvocationFailed(format!(
                     "failed to write opencode tool-denial config: {e}"
                 ))
@@ -407,9 +663,22 @@ impl Provider for CliProvider {
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         remove_network_configuration_env(&mut command);
+        if self.command == "codex" {
+            let home = isolated_codex_home(&sandbox_dir).inspect_err(|_| {
+                remove_call_dirs(&sandbox_dir);
+            })?;
+            command.env("CODEX_HOME", home);
+            // Its own process group, so a timeout kills Codex's helpers too and the
+            // partial transcript can be read (plan 2026-10-18-confirmation-3 §0.13).
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+        }
 
         let mut child = command.spawn().map_err(|e| {
-            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            remove_call_dirs(&sandbox_dir);
             ProviderError::InvocationFailed(format!(
                 "{} not found or failed to start: {e}",
                 self.command
@@ -436,9 +705,19 @@ impl Provider for CliProvider {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if start.elapsed() > timeout {
-                        let _ = child.kill();
+                        if self.command == "codex" {
+                            kill_group(&mut child);
+                        } else {
+                            let _ = child.kill();
+                        }
                         let _ = child.wait();
-                        let _ = std::fs::remove_dir_all(&sandbox_dir);
+                        if self.command == "codex"
+                            && let Some(transcript) =
+                                killed_call_transcript(stdout_reader, stderr_reader, KILLED_PIPE_GRACE)
+                        {
+                            set_failed_call_transcript(transcript);
+                        }
+                        remove_call_dirs(&sandbox_dir);
                         return Err(ProviderError::InvocationFailed(format!(
                             "{} timed out after {}s",
                             self.command,
@@ -448,7 +727,7 @@ impl Provider for CliProvider {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 Err(e) => {
-                    let _ = std::fs::remove_dir_all(&sandbox_dir);
+                    remove_call_dirs(&sandbox_dir);
                     return Err(ProviderError::InvocationFailed(format!(
                         "{} wait failed: {e}",
                         self.command
@@ -458,14 +737,23 @@ impl Provider for CliProvider {
         }
 
         let status = child.wait().map_err(|e| {
-            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            remove_call_dirs(&sandbox_dir);
             ProviderError::InvocationFailed(format!("{} output read failed: {e}", self.command))
         })?;
         let stdout = join_pipe_reader(stdout_reader);
         let stderr = String::from_utf8_lossy(&join_pipe_reader(stderr_reader)).into_owned();
-        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        let last_message = (self.command == "codex")
+            .then(|| std::fs::read_to_string(sandbox_dir.join(CODEX_LAST_MESSAGE_FILE)).ok())
+            .flatten();
+        remove_call_dirs(&sandbox_dir);
 
         if !status.success() {
+            if self.command == "codex" {
+                set_failed_call_transcript(format!(
+                    "{}{CODEX_STDERR_MARKER}{stderr}",
+                    String::from_utf8_lossy(&stdout)
+                ));
+            }
             return Err(ProviderError::InvocationFailed(format!(
                 "{} exited with {status}: {stderr}",
                 self.command
@@ -473,13 +761,28 @@ impl Provider for CliProvider {
         }
 
         let raw = String::from_utf8_lossy(&stdout).to_string();
-        let (text, thinking) = (self.output_parser)(&raw);
+        // Codex in `--json` mode: stdout is the event stream; the answer is the
+        // final message file. A missing file is a failed call, not empty text.
+        let (text, thinking) = if self.command == "codex" {
+            match &last_message {
+                Some(message) => (message.clone(), None),
+                None => {
+                    set_failed_call_transcript(format!("{raw}{CODEX_STDERR_MARKER}{stderr}"));
+                    return Err(ProviderError::InvocationFailed(
+                        "codex produced no final message".to_string(),
+                    ));
+                }
+            }
+        } else {
+            (self.output_parser)(&raw)
+        };
 
         // CLI providers don't give us fine-grained tool events, so the
         // observer sees a minimal constant trace: one Think + one Text.
         let tool_events = vec![ToolEvent::Think, ToolEvent::Text];
         let (usage, transcript) = if self.command == "codex" {
-            (codex_usage(&stderr), Some(stderr))
+            let usage = codex_json_usage(&raw).unwrap_or_else(|| codex_usage(&stderr));
+            (usage, Some(format!("{raw}{CODEX_STDERR_MARKER}{stderr}")))
         } else {
             (TokenUsage::default(), None)
         };
@@ -503,12 +806,322 @@ impl Provider for CliProvider {
 mod tests {
     use super::*;
 
+    // Concurrent calls must never share a cwd (and so a CODEX_HOME): on macOS the
+    // clock has microsecond resolution, and two calls that shared one failed with
+    // "failed to link codex auth.json" and "failed to start" (C3 audit 1, 2026-10-20).
+    #[test]
+    fn concurrent_provider_cwds_are_distinct() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..200)
+                        .map(|_| isolated_provider_cwd("collide-test").expect("cwd"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let dirs: Vec<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<_> = dirs.iter().collect();
+        for dir in &dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        assert_eq!(distinct.len(), dirs.len());
+    }
+
     #[test]
     fn codex_usage_reads_reported_total() {
         let stderr = "codex\nPONG\ntokens used\n48,034\n";
         assert_eq!(codex_usage(stderr).reported_total, Some(48_034));
         assert_eq!(codex_usage("no total").reported_total, None);
         assert_eq!(codex_tool_calls("exec\n/bin/zsh -lc ls\nexec\ncat x\n"), 2);
+    }
+
+    #[test]
+    fn codex_json_transcript_allowlist_counts_every_non_text_item() {
+        let clean = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.started\"}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\"}}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"PONG\"}}\n\
+{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n";
+        assert_eq!(codex_tool_calls(&format!("{clean}{CODEX_STDERR_MARKER}exec\nstderr noise")), 0);
+        for bad in ["command_execution", "mcp_tool_call", "web_search", "file_change", "error", "todo_list"] {
+            let t = format!("{clean}{{\"type\":\"item.completed\",\"item\":{{\"type\":\"{bad}\"}}}}\n");
+            assert_eq!(codex_tool_calls(&t), 1, "{bad} must count");
+        }
+        // unparsable line, unknown event type, item without a type, missing turn.completed
+        assert_eq!(codex_tool_calls(&format!("{clean}not json\n")), 1);
+        assert_eq!(codex_tool_calls(&format!("{clean}{{\"type\":\"weird\"}}\n")), 1);
+        assert_eq!(codex_tool_calls(&format!("{clean}{{\"type\":\"item.started\"}}\n")), 1);
+        let truncated = clean.replace("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n", "");
+        assert_eq!(codex_tool_calls(&truncated), 1);
+        let usage = codex_json_usage(clean).unwrap();
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens, usage.reported_total), (10, 2, Some(12)));
+    }
+
+    #[test]
+    fn failed_call_transcripts_do_not_count_the_cut_off_turn() {
+        // plan 2026-10-18-confirmation-3 §0.13: a killed call never completes its turn.
+        let partial = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.started\"}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\"}}\n";
+        let t = |events: &str| format!("{events}{CODEX_STDERR_MARKER}stderr noise\n");
+        assert_eq!(codex_tool_calls(&t(partial)), 1);
+        assert_eq!(codex_tool_calls_failed(&t(partial)), 0);
+        // A line cut off by the kill could have been a tool event: it counts. An empty
+        // stream has no events.
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"item.compl"))), 1);
+        assert_eq!(codex_tool_calls_failed(&t("")), 0);
+        // Noise before the first event cannot switch to the lenient legacy count.
+        let tool = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n";
+        assert_eq!(codex_tool_calls(&t(&format!("warning: noise\n{partial}{tool}"))), 3);
+        // Everything else still counts, as for a completed call.
+        let tool = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n";
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{tool}"))), 1);
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}not json\n{partial}"))), 1);
+        assert_eq!(codex_tool_calls_failed(&t(&format!("{partial}{{\"type\":\"weird\"}}\n"))), 1);
+    }
+
+    #[test]
+    fn a_killed_call_leaves_its_partial_transcript() {
+        use std::os::unix::process::CommandExt;
+        // `sleep` is a child of `sh` holding the pipes, like a Codex helper: only a
+        // group kill closes them.
+        let mut child = Command::new("sh")
+            .args(["-c", "printf '{\"type\":\"thread.started\"}\\n'; echo noise >&2; sleep 30"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = spawn_pipe_reader(child.stdout.take());
+        let err = spawn_pipe_reader(child.stderr.take());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        kill_group(&mut child);
+        let _ = child.wait();
+        let t = killed_call_transcript(out, err, std::time::Duration::from_secs(5)).expect("transcript");
+        assert_eq!(t, format!("{{\"type\":\"thread.started\"}}\n{CODEX_STDERR_MARKER}noise\n"));
+    }
+
+    #[test]
+    fn a_pipe_held_by_a_grandchild_does_not_hang_the_kill() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & printf x; sleep 30"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = spawn_pipe_reader(child.stdout.take());
+        let err = spawn_pipe_reader(child.stderr.take());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = child.kill();
+        let _ = child.wait();
+        let start = std::time::Instant::now();
+        assert!(killed_call_transcript(out, err, std::time::Duration::from_millis(500)).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn codex_legacy_text_transcripts_count_mcp_calls() {
+        assert_eq!(codex_tool_calls("codex\nmcp: codex/list_mcp_resources started\nPONG\n"), 1);
+    }
+
+    #[test]
+    fn codex_args_use_json_events_and_disable_every_tool_feature() {
+        let provider = CliProvider::codex("gpt-6-luna", Some("low"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "s".to_string(),
+            prompt: "p".to_string(),
+            max_tokens: 10,
+        };
+        let args = (provider.args_builder)(&request);
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "--output-last-message" && w[1] == CODEX_LAST_MESSAGE_FILE));
+        for feature in ["plugins", "remote_plugin", "multi_agent", "skill_search", "shell_tool", "apps"] {
+            assert!(args.windows(2).any(|w| w[0] == "--disable" && w[1] == feature), "{feature}");
+        }
+        assert!(!args.iter().any(|a| a == "web_search_request"));
+    }
+
+    /// Live: one real call per lane (Luna coder, Sol judge) through the provider: the
+    /// negative control for the positive controls below (run with `--ignored`).
+    #[test]
+    #[ignore]
+    fn live_codex_call_returns_text_with_zero_tool_events() {
+        let lanes = std::env::var("A2D_CONTROL_LANES")
+            .unwrap_or_else(|_| "codex/gpt-6-luna:low,codex/gpt-6.1-sol:medium".to_string());
+        for spec in lanes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (model, effort) = spec.trim_start_matches("codex/").split_once(':').unwrap_or((spec, "low"));
+            let provider = CliProvider::codex(model, Some(effort));
+            let request = InvocationRequest {
+                enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+                system: "Reply with exactly one word.".to_string(),
+                prompt: "Reply with the single word PONG.".to_string(),
+                max_tokens: 10,
+            };
+            let response = provider.invoke(&request).expect("live codex call");
+            assert_eq!(response.text.trim(), "PONG", "{model}");
+            let transcript = response.transcript.expect("transcript");
+            assert_eq!(codex_tool_calls(&transcript), 0, "{model}: {transcript}");
+            assert!(response.usage.total() > 0);
+        }
+    }
+
+    /// Live: a real Luna call killed at a short timeout leaves its partial transcript,
+    /// with no tool events (run alone: `cargo test -p a2d-providers live_codex_timeout -- --ignored`;
+    /// it sets the process-wide timeout variable).
+    #[test]
+    #[ignore]
+    fn live_codex_timeout_leaves_a_partial_transcript() {
+        // SAFETY: run on its own (see above); no other thread reads the environment.
+        unsafe { std::env::set_var("A2D_PROVIDER_TIMEOUT_SECS", "12") };
+        let provider = CliProvider::codex("gpt-6-luna", Some("medium"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "You are a careful writer.".to_string(),
+            prompt: "Write a 4000-word essay on the history of double-entry bookkeeping.".to_string(),
+            max_tokens: 10,
+        };
+        let error = provider.invoke(&request).expect_err("must time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
+        // Usually `thread.started` and more; a cold start can be killed before the first
+        // event (seen 1 in 3 runs on 2026-10-19), which is still a transcript.
+        let transcript = take_failed_call_transcript().expect("partial transcript");
+        assert!(transcript.contains(CODEX_STDERR_MARKER));
+        assert_eq!(codex_tool_calls_failed(&transcript), 0, "{transcript}");
+    }
+
+    /// Live positive controls (confirmation-3 §0.4, step 3; Sol reviews 2026-10-19). Inventory of
+    /// `codex exec --json` item types in 0.162 (from the binary): agent_message and reasoning
+    /// (allowed), command_execution, file_change, mcp_tool_call, web_search, todo_list,
+    /// collab_tool_call, error. On every lane in A2D_CONTROL_LANES (default: Luna low = coder,
+    /// Sol medium = E002's judge), with one capability switched back on, a call asked to use it
+    /// must SUCCEED and its transcript must contain that item type, counted by
+    /// `codex_tool_calls`. `error` is produced by disabling `code_mode_host`. `todo_list` could
+    /// not be triggered in exec mode even with every feature on (live, 2026-10-19), so the
+    /// allowlist alone covers it. The negative control is
+    /// `live_codex_call_returns_text_with_zero_tool_events`.
+    /// Run alone: `cargo test -p a2d-providers live_codex_positive_controls -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_codex_positive_controls_count_each_tool_kind() {
+        let mcp = format!("{}/tests/fixtures/mcp_echo.py", env!("CARGO_MANIFEST_DIR"));
+        let lanes = std::env::var("A2D_CONTROL_LANES")
+            .unwrap_or_else(|_| "codex/gpt-6-luna:low,codex/gpt-6.1-sol:medium".to_string());
+        // (kind, features switched back on, extra args, expected item, prompt)
+        let kinds: Vec<(&str, Vec<&str>, Vec<String>, &str, &str)> = vec![
+            ("shell", vec!["shell_tool", "unified_exec"], vec![], "command_execution",
+             "Run the shell command `echo probe-ok` and then reply with its output."),
+            ("web", vec![], vec!["-c".into(), "web_search=\"live\"".into()], "web_search",
+             "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
+            ("file", vec!["shell_tool", "unified_exec"], vec!["--sandbox".into(), "workspace-write".into()], "file_change",
+             "Create a file named probe.txt containing the single line ok, using your file-editing (apply_patch) tool, then reply done."),
+            ("mcp", vec![], vec!["-c".into(), "mcp_servers.probe.command=\"python3\"".into(),
+                                  "-c".into(), format!("mcp_servers.probe.args=[\"-I\", \"{mcp}\"]")], "mcp_tool_call",
+             "Call the MCP tool `echo` of the `probe` server with text probe-ok, then reply with its output."),
+            ("collab", vec!["multi_agent"], vec![], "collab_tool_call",
+             "This is a test of your multi-agent tool. You must not answer it yourself: use your sub-agent \
+              (spawn) tool to start one sub-agent and ask it to reply with the single word DELEGATED, wait for it, \
+              then reply with exactly what it returned."),
+            ("error", vec![], vec!["--disable".into(), "code_mode_host".into()], "error",
+             "Reply with the single word PONG."),
+        ];
+        for spec in lanes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (model, effort) = spec.trim_start_matches("codex/").split_once(':').unwrap_or((spec, "low"));
+            for (kind, features, extra, item, prompt) in &kinds {
+                let base = CliProvider::codex(model, Some(effort));
+                let (features, extra) = (features.clone(), extra.clone());
+                let provider = CliProvider {
+                    name: base.name.clone(),
+                    command: base.command.clone(),
+                    output_parser: Box::new(|output: &str| (output.to_string(), None)),
+                    args_builder: Box::new(move |req: &InvocationRequest| {
+                        let mut args = (base.args_builder)(req);
+                        let mut i = 0;
+                        while i + 1 < args.len() {
+                            if args[i] == "--disable" && features.contains(&args[i + 1].as_str()) {
+                                args.drain(i..i + 2);
+                            } else if args[i] == "--sandbox" && extra.contains(&"--sandbox".to_string()) {
+                                args.drain(i..i + 2);
+                            } else if args[i] == "-c" && args[i + 1] == "web_search=\"disabled\""
+                                && extra.iter().any(|a| a.starts_with("web_search=")) {
+                                args.drain(i..i + 2);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        let at = args.iter().position(|a| a == "--json").unwrap_or(args.len());
+                        for (k, a) in extra.iter().enumerate() {
+                            args.insert(at + k, a.clone());
+                        }
+                        args
+                    }),
+                };
+                let request = InvocationRequest {
+                    enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+                    system: String::new(),
+                    prompt: prompt.to_string(),
+                    max_tokens: 10,
+                };
+                // A positive control tests the detector, not the model's propensity to use the
+                // tool: up to 3 attempts until the intended item appears (attempts are printed).
+                let (mut own, mut n, mut attempts) = (0, 0, 0);
+                while attempts < 3 && own == 0 {
+                    attempts += 1;
+                    let response = provider
+                        .invoke(&request)
+                        .unwrap_or_else(|e| panic!("{model} {kind}: the control call failed: {e}"));
+                    let transcript = response.transcript.expect("transcript");
+                    // Only the event stream counts (not stderr), and the intended item type itself.
+                    let events = transcript.split(CODEX_STDERR_MARKER).next().unwrap_or("");
+                    own = events
+                        .lines()
+                        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                        .filter(|e| e.get("type").and_then(|t| t.as_str()).is_some_and(|t| t.starts_with("item.")))
+                        .filter(|e| e.get("item").and_then(|i| i.get("type")).and_then(|t| t.as_str()) == Some(*item))
+                        .count();
+                    n = codex_tool_calls(&transcript);
+                }
+                eprintln!("positive control {model}:{effort} {kind}: {item} present {}, {n} tool events, {attempts} attempts",
+                          own >= 1);
+                assert!(own >= 1, "{model} {kind}: no {item} item in the event stream after {attempts} attempts");
+                assert!(n >= own, "{model} {kind}: the detector did not count the {item} items");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_home_goes_under_the_root_when_one_is_set() {
+        let cwd = std::path::Path::new("/tmp/a2d-provider-codex-1-2");
+        assert_eq!(codex_home_in(cwd, None), cwd.join(".codex_home"));
+        assert_eq!(codex_home_in(cwd, Some("".into())), cwd.join(".codex_home"));
+        assert_eq!(
+            codex_home_in(cwd, Some("/h/root".into())),
+            std::path::PathBuf::from("/h/root/a2d-provider-codex-1-2")
+        );
+    }
+
+    #[test]
+    fn isolated_codex_home_holds_only_an_auth_link() {
+        let dir = std::env::temp_dir().join(format!("a2d-codex-home-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let home = isolated_codex_home(&dir).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("auth.json")]);
+        assert!(std::fs::symlink_metadata(home.join("auth.json")).unwrap().file_type().is_symlink());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn codex_tool_calls_counts_web_searches_but_not_the_deprecation_notice() {
+        // codex-cli 0.162 prints a search as `web search: <query>`, never as `exec`.
+        let stderr = "deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.\n\
+                      web search: \nweb search: site:blog.rust-lang.org release\ncodex\nanswer\nexec\nls\n";
+        assert_eq!(codex_tool_calls(stderr), 3);
     }
 
     #[test]
@@ -577,12 +1190,21 @@ mod tests {
             max_tokens: 10,
         };
         let args = (provider.args_builder)(&request);
-        for feature in ["shell_tool", "unified_exec", "web_search_request"] {
+        for feature in ["shell_tool", "unified_exec"] {
             assert!(
-                args.windows(2).any(|w| w[0] == "--disable" && w[1] == feature),
+                args.windows(2)
+                    .any(|w| w[0] == "--disable" && w[1] == feature),
                 "{feature} not disabled: {args:?}"
             );
         }
+        // codex-cli 0.162 turns web search on by default and ignores the deprecated
+        // `--disable web_search_request`; only the config key turns it off (C2-WEB).
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "web_search=\"disabled\""),
+            "web search not disabled: {args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "web_search_request"), "{args:?}");
     }
 
     #[test]

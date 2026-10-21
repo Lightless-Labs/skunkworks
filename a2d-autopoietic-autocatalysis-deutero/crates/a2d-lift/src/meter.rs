@@ -192,6 +192,7 @@ impl Meter {
         provider: &str,
         request: &InvocationRequest,
         result: &Result<InvocationResponse, ProviderError>,
+        failed_transcript: Option<&str>,
         elapsed: Duration,
     ) {
         let dir = self.invocation_dir(scope);
@@ -214,14 +215,21 @@ impl Meter {
                 "reported_total": r.usage.reported_total,
             })
         });
-        // Provider transcript (Codex stderr): saved for audit; its tool-call
-        // count shows whether the coder ran commands (e.g. read files).
-        let transcript = result.as_ref().ok().and_then(|r| r.transcript.as_deref());
+        // Provider transcript (Codex events and stderr): saved for audit; its tool-call
+        // count shows whether the coder ran commands (e.g. read files). A failed call's
+        // partial transcript is saved and counted too (plan 2026-10-18-confirmation-3 §0.13).
+        let transcript = match result {
+            Ok(response) => response.transcript.as_deref(),
+            Err(_) => failed_transcript,
+        };
         let saved = saved.and_then(|_| match transcript {
             Some(transcript) => fs::write(dir.join(format!("{stem}.transcript.txt")), transcript),
             None => Ok(()),
         });
-        let tool_calls = transcript.map(a2d_providers::cli::codex_tool_calls);
+        let tool_calls = transcript.map(|t| match result {
+            Ok(_) => a2d_providers::cli::codex_tool_calls(t),
+            Err(_) => a2d_providers::cli::codex_tool_calls_failed(t),
+        });
         let appended = self.ledger.append(
             "invocation",
             json!({
@@ -296,6 +304,9 @@ impl Provider for MeteredProvider {
         let start = Instant::now();
         let result = self.inner.invoke(request);
         let elapsed = start.elapsed();
+        // A failed Codex call leaves its partial transcript on this thread.
+        let failed_transcript =
+            a2d_providers::cli::take_failed_call_transcript().filter(|_| result.is_err());
         self.scope
             .provider_ms
             .fetch_add(elapsed.as_millis() as u64, Ordering::SeqCst);
@@ -313,12 +324,19 @@ impl Provider for MeteredProvider {
                 );
             }
         }
+        if let Some(transcript) = &failed_transcript {
+            self.scope.tool_calls.fetch_add(
+                a2d_providers::cli::codex_tool_calls_failed(transcript),
+                Ordering::SeqCst,
+            );
+        }
         lock(&self.meter).record(
             &self.scope,
             index,
             self.inner.name(),
             request,
             &result,
+            failed_transcript.as_deref(),
             elapsed,
         );
         result
