@@ -181,6 +181,7 @@ def audit_instrument_ok(run, reg):
     """The audit run behind a task's final round ran on the registered provider (its git head
     contains the provider commit), with the registered codex, and its bracket held."""
     return (bool(run) and run.get("bracket_ok") is True and bool(reg.get("provider_commit"))
+            and bool(run.get("binary_sha256"))
             and not c3.git("merge-base", "--is-ancestor", reg["provider_commit"], run.get("head") or "")[0]
             and (run.get("codex") or {}).get("files") == reg.get("codex_files"))
 
@@ -208,7 +209,8 @@ def _certified(tasks, reg):
         return False
     rs, ch = json.loads(rescore.read_text()), json.loads(channel.read_text())
     if not (rs.get("tasks") == len(tasks) and rs.get("agree") == len(tasks) and rs.get("disagree") == 0
-            and rs.get("missing") == 0 and ch.get("clean") is True):
+            and rs.get("missing") == 0 and rs.get("transcripts", 0) > 0 and rs.get("transcripts_missing") == 0
+            and rs.get("recounted_tool_events") == 0 and ch.get("clean") is True):
         return False                    # the audit's verdicts re-scored independently; no compile-time read channel
     from c3lib import SUITE, hashes_digest, tree_hashes
     runs = load_json(RECORDS / "audit-runs.json", {}).get("runs", {})

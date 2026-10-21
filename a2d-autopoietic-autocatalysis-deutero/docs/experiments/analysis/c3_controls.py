@@ -6,8 +6,11 @@ usage: python3 -I docs/experiments/analysis/c3_controls.py --lanes codex/gpt-6-l
 
 Runs, with A2D_CONTROL_LANES set, the provider's ignored live tests:
 - negative control: the provider as shipped, a PONG call per lane, 0 tool events;
-- positive controls: per lane, shell, web search, file change, MCP (a stdio echo server),
-  sub-agent and error each succeed and show their own item type, counted by the detector.
+- positive controls: per lane, shell, web search, file change, MCP (a stdio echo server, with
+  `code_mode_host` back on: it carries every MCP tool) and sub-agent each succeed and show their own
+  item type, counted by the detector;
+- the host-off notice (plan §0.16): the shipped call's one pre-turn `error` item is present and
+  NOT counted (other `error` items are counted; unit test).
 The registration generator requires this record for the coder lane and every registered lane,
 at the registered provider commit and codex fingerprint.
 """
@@ -24,7 +27,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "nano"))
 import confirm3 as c3  # noqa: E402
 
-KINDS = ("shell", "web", "file", "mcp", "collab", "error")
+KINDS = ("shell", "web", "file", "mcp", "collab", "notice")
+EXEMPT = ("notice",)                     # present, and counted as 0 events
 LINE = re.compile(r"^positive control (\S+):(\S+) (\w+): (\w+) present (true|false), (\d+) tool events(?:, (\d+) attempts)?$")
 
 
@@ -56,9 +60,10 @@ def main():
     record = {"utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "provider_checkout_head": commit,
               "codex": c3.codex_fingerprint(), "lanes": lanes, "negative_ok": neg_code == 0,
               "positive_ok": pos_code == 0, "positive": positive}
-    complete = record["negative_ok"] and record["positive_ok"] and all(
-        all(positive.get(lane, {}).get(k, {}).get("present") and positive[lane][k]["events"] >= 1 for k in KINDS)
-        for lane in lanes)
+    def ok(lane, k):
+        r = positive.get(lane, {}).get(k, {})
+        return bool(r.get("present")) and (r.get("events") == 0 if k in EXEMPT else r.get("events", 0) >= 1)
+    complete = record["negative_ok"] and record["positive_ok"] and all(ok(lane, k) for lane in lanes for k in KINDS)
     record["complete"] = complete
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, indent=1) + "\n")

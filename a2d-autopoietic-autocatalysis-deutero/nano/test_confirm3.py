@@ -14,7 +14,10 @@ import confirm3 as c3  # noqa: E402
 
 TASKS = [f"c3-f{i:02d}-l1" for i in range(20)]
 ARMS = ["D", "B", "X:frozen"]
-JSON_TRANSCRIPT = '{"type":"thread.started"}\n{"type":"turn.completed"}\n\n--- codex stderr ---\nnoise\n'
+NOTICE_LINE = json.dumps({"type": "item.completed", "item": {"id": "item_0", "type": "error", "message": c3.CODEX_HOST_OFF_NOTICE}})
+JSON_TRANSCRIPT = ('{"type":"thread.started"}\n' + NOTICE_LINE + '\n{"type":"turn.started"}\n'
+                   '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}\n{"type":"turn.completed"}\n'
+                   '\n--- codex stderr ---\nnoise\n')
 IT = 2000                                   # bootstrap iterations in tests
 
 
@@ -130,6 +133,32 @@ class Tuples(unittest.TestCase):
         t, _ = self.tuples(self.replicate({("D", "c3-f06-l1"): {"malformed_score": True}}))
         self.assertEqual([(a, k) for (_, a, k), v in t.items() if v["void"]], [("D", "c3-f06-l1")])
 
+    def test_the_independent_recount_and_host_off_check_void_tuples(self):
+        tool = JSON_TRANSCRIPT.replace('{"type":"turn.completed"}',
+                                       '{"type":"item.completed","item":{"type":"mcp_tool_call"}}\n{"type":"turn.completed"}')
+        host_on = JSON_TRANSCRIPT.replace(NOTICE_LINE + "\n", "")
+        t, stats = self.tuples(self.replicate({("X:frozen", "c3-f07-l1"): {"transcript": tool},
+                                               ("B", "c3-f08-l1"): {"transcript": host_on}}))
+        self.assertEqual(sorted((a, k) for (_, a, k), v in t.items() if v["void"]),
+                         [("B", "c3-f08-l1"), ("X:frozen", "c3-f07-l1")])
+        self.assertEqual(stats["tool_calls"], 1)                # recorded 0; the port counted 1
+
+    def test_py_tool_events_matches_the_provider_rules(self):
+        T = lambda *lines: "\n".join(lines) + "\n--- codex stderr ---\n"   # noqa: E731
+        st, tu, msg, done = '{"type":"thread.started"}', '{"type":"turn.started"}', \
+            '{"type":"item.completed","item":{"type":"agent_message"}}', '{"type":"turn.completed"}'
+        other = '{"type":"item.completed","item":{"type":"error","message":"x"}}'
+        self.assertEqual(c3.py_tool_events(T(st, NOTICE_LINE, tu, msg, done)), 0)
+        self.assertEqual(c3.py_tool_events(T(st, tu, NOTICE_LINE, msg, done)), 1)
+        self.assertEqual(c3.py_tool_events(T(st, other, tu, msg, done)), 1)
+        self.assertEqual(c3.py_tool_events(T(st, NOTICE_LINE, NOTICE_LINE, tu, msg, done)), 1)
+        self.assertEqual(c3.py_tool_events(T(st, NOTICE_LINE, tu, msg)), 1)              # no turn.completed
+        self.assertEqual(c3.py_tool_events(T(st, NOTICE_LINE, tu, msg), failed=True), 0)
+        self.assertEqual(c3.py_tool_events(T(st, NOTICE_LINE, tu, '{"type":"item.comp')), 2)  # cut-off line
+        self.assertTrue(c3.host_off(T(st, NOTICE_LINE, tu, msg, done)))
+        self.assertFalse(c3.host_off(T(st, tu, msg, done)))
+        self.assertTrue(c3.host_off(T(st)))                    # no turn ran
+
     def test_ledger_planned_otherwise_voids_everything(self):
         t, _ = self.tuples(self.replicate(arms=["D", "X:frozen"]))
         self.assertTrue(all(v["void"] for v in t.values()))
@@ -228,6 +257,13 @@ class Decide(unittest.TestCase):
             c.pop("ci95", None)
         self.assertEqual(self.decide(s, self.tuples())["overall"], "Invalid")
 
+    def test_malformed_summaries_are_invalid(self):
+        for broken in ({**summary(), "comparisons": 1}, {**summary(), "excluded_share": None}, [1, 2]):
+            self.assertEqual(self.decide(broken, self.tuples())["overall"], "Invalid")
+        nan = summary()
+        nan["comparisons"][0]["ci95"] = [0.02, float("nan")]
+        self.assertEqual(self.decide(nan, self.tuples())["overall"], "Invalid")
+
     def test_ruled_out_needs_the_best_case_point_too(self):
         # D voids imputed as fails can lift X's best case above +10 pp at the point while the CI
         # bound alone would not show it with iterations=0 (point = bounds): both must hold.
@@ -301,6 +337,23 @@ class FailedAttempt(unittest.TestCase):
         s = c3.merge_failed_attempt(summary(), stats, 1, {"invocations": 100, "tool_calls": 1, "unaudited": 0,
                                                          "hidden_name_hits": 0})
         self.assertEqual(c3.decide(s, Decide.tuples(Decide()), stats, 0)["overall"], "IntegrityReview")
+
+    def test_a_failed_attempt_without_a_ledger_is_unauditable(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "r1"
+            (out / "invocations" / "D" / "t" / "r0").mkdir(parents=True)
+            (out / "invocations" / "D" / "t" / "r0" / "inv00-lift-coder.prompt.txt").write_text("p")
+            with mock.patch.object(c3, "SUITE", pathlib.Path(d) / "none"):
+                a = c3.failed_attempt_audit(out, [])
+        self.assertGreaterEqual(a["unaudited"], 1)
+
+    def test_complete_tolerates_a_cut_off_final_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "ledger.jsonl").write_text('{"kind": "registration"}\n{"kind": "generation_comp')
+            self.assertFalse(c3.complete(d))
+            (pathlib.Path(d) / "ledger.jsonl").write_text(
+                '{"kind": "generation_complete", "aborted": false}\n{"kind": "x')
+            self.assertTrue(c3.complete(d))
 
     def test_a_failed_attempts_evidence_reaches_the_decision(self):
         stats = {1: {"invocations": 100, "tool_calls": 0}}

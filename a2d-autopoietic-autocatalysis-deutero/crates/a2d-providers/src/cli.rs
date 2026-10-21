@@ -44,8 +44,7 @@ pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "hooks",
     // Also default-on in 0.162 and not needed for text-only calls (confirmation-3
     // §0.13, live check 2026-10-19: a PONG call with all of these off emits only
-    // thread/turn events and one agent_message). Not `code_mode_host`: disabling it
-    // makes codex emit an `error` item at startup on every call.
+    // thread/turn events and one agent_message).
     "sleep_tool",
     "workspace_dependencies",
     "worktrees",
@@ -56,7 +55,18 @@ pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "write_stdin_approval",
     "in_app_local_automation",
     "daemon_auto_start",
+    // It carries codex's built-in MCP tools (`list_mcp_resources`,
+    // `list_mcp_resource_templates`, `read_mcp_resource`) and every configured MCP
+    // server; a Luna coder called the listings in phase-B round 1 (plan §0.16). Off,
+    // codex emits one fixed notice before the turn (`CODEX_HOST_OFF_NOTICE`).
+    "code_mode_host",
 ];
+
+/// The one `error` item a no-tools call emits with `code_mode_host` disabled: an
+/// `item.completed` before `turn.started`, byte for byte this message. The detector
+/// exempts exactly one such notice per transcript; the same text inside the turn, a
+/// different error or a second notice still counts (plan §0.16).
+pub const CODEX_HOST_OFF_NOTICE: &str = "Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.";
 
 /// `--json` event item types a no-tools Codex call may produce. Anything else
 /// (commands, file changes, MCP or web calls, errors, unknown types) counts as a
@@ -510,6 +520,7 @@ fn codex_tool_events(transcript: &str, failed: bool) -> usize {
     };
     let mut count = 0;
     let mut completed = false;
+    let (mut turn_started, mut notice_seen) = (false, false);
     for line in events.lines().filter(|l| !l.trim().is_empty()) {
         // Every unparsable line counts, a cut-off last line of a killed call included:
         // it could be a tool event (fail closed).
@@ -525,11 +536,22 @@ fn codex_tool_events(transcript: &str, failed: bool) -> usize {
         if kind == "turn.completed" {
             completed = true;
         }
+        if kind == "turn.started" {
+            turn_started = true;
+        }
         if kind.starts_with("item.") {
-            let item_type = event
-                .get("item")
-                .and_then(|i| i.get("type"))
-                .and_then(|t| t.as_str());
+            let item = event.get("item");
+            let item_type = item.and_then(|i| i.get("type")).and_then(|t| t.as_str());
+            let notice = kind == "item.completed"
+                && item_type == Some("error")
+                && item.and_then(|i| i.get("message")).and_then(|m| m.as_str())
+                    == Some(CODEX_HOST_OFF_NOTICE)
+                && !turn_started
+                && !notice_seen;
+            if notice {
+                notice_seen = true;
+                continue;
+            }
             if !item_type.is_some_and(|t| CODEX_ALLOWED_ITEMS.contains(&t)) {
                 count += 1;
             }
@@ -835,6 +857,32 @@ mod tests {
     }
 
     #[test]
+    fn the_host_off_notice_is_exempt_only_once_and_only_before_the_turn() {
+        let notice = format!(
+            "{{\"type\":\"item.completed\",\"item\":{{\"id\":\"item_0\",\"type\":\"error\",\"message\":{}}}}}",
+            serde_json::to_string(CODEX_HOST_OFF_NOTICE).unwrap()
+        );
+        let other = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"x\"}}";
+        let (start, turn, msg, done) = (
+            "{\"type\":\"thread.started\"}",
+            "{\"type\":\"turn.started\"}",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"PONG\"}}",
+            "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
+        );
+        let t = |lines: &[&str]| format!("{}\n{CODEX_STDERR_MARKER}", lines.join("\n"));
+        assert_eq!(codex_tool_calls(&t(&[start, &notice, turn, msg, done])), 0);
+        assert_eq!(codex_tool_calls(&t(&[start, turn, &notice, msg, done])), 1); // inside the turn
+        assert_eq!(codex_tool_calls(&t(&[start, other, turn, msg, done])), 1); // another pre-turn error
+        // A second notice counts.
+        assert_eq!(
+            codex_tool_calls(&t(&[start, &notice, &notice, turn, msg, done])),
+            1
+        );
+        assert_eq!(codex_tool_calls_failed(&t(&[start, &notice])), 0);
+        assert!(CODEX_DISABLED_FEATURES.contains(&"code_mode_host"));
+    }
+
+    #[test]
     fn codex_usage_reads_reported_total() {
         let stderr = "codex\nPONG\ntokens used\n48,034\n";
         assert_eq!(codex_usage(stderr).reported_total, Some(48_034));
@@ -967,6 +1015,14 @@ mod tests {
             assert_eq!(response.text.trim(), "PONG", "{model}");
             let transcript = response.transcript.expect("transcript");
             assert_eq!(codex_tool_calls(&transcript), 0, "{model}: {transcript}");
+            // The host is off: its one fixed notice precedes the turn (plan §0.16).
+            let events = transcript.split(CODEX_STDERR_MARKER).next().unwrap_or("");
+            let notice_at = events
+                .find(CODEX_HOST_OFF_NOTICE)
+                .expect("the host-off notice");
+            let turn_at = events.find("\"turn.started\"").expect("turn.started");
+            assert!(notice_at < turn_at, "{model}");
+            eprintln!("negative control {model}:{effort}: 0 tool events, host-off notice present");
             assert!(response.usage.total() > 0);
         }
     }
@@ -1001,9 +1057,11 @@ mod tests {
     /// collab_tool_call, error. On every lane in A2D_CONTROL_LANES (default: Luna low = coder,
     /// Sol medium = E002's judge), with one capability switched back on, a call asked to use it
     /// must SUCCEED and its transcript must contain that item type, counted by
-    /// `codex_tool_calls`. `error` is produced by disabling `code_mode_host`. `todo_list` could
-    /// not be triggered in exec mode even with every feature on (live, 2026-10-19), so the
-    /// allowlist alone covers it. The negative control is
+    /// `codex_tool_calls`; MCP needs `code_mode_host` back on (it carries every MCP tool).
+    /// `notice`: the shipped call's one pre-turn host-off `error` item must be present and NOT
+    /// counted (the exemption, plan §0.16); other `error` items are counted (unit test).
+    /// `todo_list` could not be triggered in exec mode even with every feature on (live,
+    /// 2026-10-19), so the allowlist alone covers it. The negative control is
     /// `live_codex_call_returns_text_with_zero_tool_events`.
     /// Run alone: `cargo test -p a2d-providers live_codex_positive_controls -- --ignored --nocapture`.
     #[test]
@@ -1020,15 +1078,14 @@ mod tests {
              "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
             ("file", vec!["shell_tool", "unified_exec"], vec!["--sandbox".into(), "workspace-write".into()], "file_change",
              "Create a file named probe.txt containing the single line ok, using your file-editing (apply_patch) tool, then reply done."),
-            ("mcp", vec![], vec!["-c".into(), "mcp_servers.probe.command=\"python3\"".into(),
+            ("mcp", vec!["code_mode_host"], vec!["-c".into(), "mcp_servers.probe.command=\"python3\"".into(),
                                   "-c".into(), format!("mcp_servers.probe.args=[\"-I\", \"{mcp}\"]")], "mcp_tool_call",
              "Call the MCP tool `echo` of the `probe` server with text probe-ok, then reply with its output."),
             ("collab", vec!["multi_agent"], vec![], "collab_tool_call",
              "This is a test of your multi-agent tool. You must not answer it yourself: use your sub-agent \
               (spawn) tool to start one sub-agent and ask it to reply with the single word DELEGATED, wait for it, \
               then reply with exactly what it returned."),
-            ("error", vec![], vec!["--disable".into(), "code_mode_host".into()], "error",
-             "Reply with the single word PONG."),
+            ("notice", vec![], vec![], "error", "Reply with the single word PONG."),
         ];
         for spec in lanes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let (model, effort) = spec.trim_start_matches("codex/").split_once(':').unwrap_or((spec, "low"));
@@ -1089,7 +1146,14 @@ mod tests {
                 eprintln!("positive control {model}:{effort} {kind}: {item} present {}, {n} tool events, {attempts} attempts",
                           own >= 1);
                 assert!(own >= 1, "{model} {kind}: no {item} item in the event stream after {attempts} attempts");
-                assert!(n >= own, "{model} {kind}: the detector did not count the {item} items");
+                if *kind == "notice" {
+                    assert_eq!(n, 0, "{model}: the host-off notice must be exempt");
+                } else {
+                    assert!(
+                        n >= own,
+                        "{model} {kind}: the detector did not count the {item} items"
+                    );
+                }
             }
         }
     }

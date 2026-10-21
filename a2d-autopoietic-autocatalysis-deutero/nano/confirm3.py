@@ -27,6 +27,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -44,6 +45,12 @@ VOID_SHARE_MAX = 0.05
 X = "X:frozen"
 COMPARATORS = ("D", "B")
 CODEX_STDERR_MARKER = "\n--- codex stderr ---\n"     # a2d-providers: --json events, marker, stderr
+# The provider's allowlist detector (crates/a2d-providers/src/cli.rs `codex_tool_events`),
+# ported line for line so that the bound runner recounts every transcript itself.
+ALLOWED_ITEMS = ("agent_message", "reasoning")
+ALLOWED_EVENTS = ("thread.started", "turn.started", "turn.completed", "item.started", "item.updated", "item.completed")
+CODEX_HOST_OFF_NOTICE = ("Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; "
+                         "enable `features.code_mode_host` and install `codex-code-mode-host`.")
 BOOTSTRAP_ITERATIONS = 10_000                         # the controller's
 BOOTSTRAP_SEED = 0x5EED_A2D0
 MASK64 = (1 << 64) - 1
@@ -51,6 +58,97 @@ MASK64 = (1 << 64) - 1
 
 def records(out):
     return [json.loads(line) for line in (pathlib.Path(out) / "ledger.jsonl").read_text().splitlines() if line.strip()]
+
+
+def records_tolerant(out):
+    """(parsable records, count of unparsable lines): a dead run's ledger may end mid-line."""
+    recs, bad = [], 0
+    path = pathlib.Path(out) / "ledger.jsonl"
+    for line in (path.read_text(errors="replace").splitlines() if path.exists() else []):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            bad += 1
+            continue
+        if isinstance(rec, dict):
+            recs.append(rec)
+        else:
+            bad += 1
+    return recs, bad
+
+
+def _events(transcript):
+    if CODEX_STDERR_MARKER in transcript:
+        return transcript.split(CODEX_STDERR_MARKER, 1)[0]
+    return transcript if transcript.lstrip().startswith("{") else None
+
+
+def py_tool_events(transcript, failed=False):
+    """Tool events in a --json transcript by the provider's rules: every item outside the
+    allowlist, every unknown event type, every unparsable line, and a missing turn.completed
+    (unless the call failed) count one; one pre-turn host-off notice is exempt (plan §0.16).
+    A legacy text transcript counts as one event (fail closed)."""
+    events = _events(transcript)
+    if events is None:
+        return 1
+    if failed and not events.strip():
+        return 0
+    count, completed, turn_started, notice_seen = 0, False, False, False
+    for line in (x for x in events.splitlines() if x.strip()):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            count += 1
+            continue
+        kind = e.get("type") if isinstance(e, dict) else None
+        if kind not in ALLOWED_EVENTS:
+            count += 1
+            continue
+        completed = completed or kind == "turn.completed"
+        turn_started = turn_started or kind == "turn.started"
+        if kind.startswith("item."):
+            item = e.get("item") if isinstance(e.get("item"), dict) else {}
+            if (kind == "item.completed" and item.get("type") == "error" and item.get("message") == CODEX_HOST_OFF_NOTICE
+                    and not turn_started and not notice_seen):
+                notice_seen = True
+                continue
+            if item.get("type") not in ALLOWED_ITEMS:
+                count += 1
+    return count + (0 if completed or failed else 1)
+
+
+def host_off(transcript):
+    """A call whose turn started shows the host-off notice before it: code_mode_host (MCP) was off."""
+    events = _events(transcript) or ""
+    seen = False
+    for line in (x for x in events.splitlines() if x.strip()):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") == "turn.started":
+            return seen
+        item = e.get("item") if isinstance(e.get("item"), dict) else {}
+        if e.get("type") == "item.completed" and item.get("type") == "error" and item.get("message") == CODEX_HOST_OFF_NOTICE:
+            seen = True
+    return True
+
+
+def transcript_text(out, prompt_path):
+    """The invocation's transcript text under this out dir, or None."""
+    if not isinstance(prompt_path, str):
+        return None
+    parts = pathlib.PurePath(prompt_path).parts
+    if "invocations" not in parts or not parts[-1].endswith(".prompt.txt"):
+        return None
+    t = pathlib.Path(out).joinpath(*parts[parts.index("invocations"):-1], parts[-1][:-len(".prompt.txt")] + ".transcript.txt")
+    if not t.is_file() or t.is_symlink():
+        return None
+    return t.read_text(errors="replace")
 
 
 def transcript_ok(out, prompt_path):
@@ -92,26 +190,31 @@ def failed_attempt_audit(out, tasks):
     auditable --json transcript counts as one tool event (fail closed); and the controller's
     hidden-test-name scan of the attempt's prompts. Counts only."""
     out = pathlib.Path(out)
-    invocations = tools = submission_tools = unaudited = 0
+    invocations = tools = submission_tools = py_tools = 0
     n = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0  # noqa: E731
-    if (out / "ledger.jsonl").exists():
-        recs = []
-        for line in (out / "ledger.jsonl").read_text(errors="replace").splitlines():
-            try:
-                rec = json.loads(line) if line.strip() else None
-            except ValueError:
-                unaudited += 1               # a dead run's cut-off line: unauditable (fail closed)
-                continue
-            if isinstance(rec, dict):
-                recs.append(rec)
-        for r in recs:
-            if r.get("kind") == "submission":
-                submission_tools += n(r.get("tool_calls"))
-            elif r.get("kind") == "invocation":
-                invocations += 1
-                tools += n(r.get("tool_calls"))
-                if not transcript_ok(out, r.get("prompt_path", "")):
-                    unaudited += 1
+    recs, unaudited = records_tolerant(out)      # a dead run's cut-off line: unauditable (fail closed)
+    if out.exists() and not (out / "ledger.jsonl").exists():
+        unaudited += 1                           # no ledger: call coverage cannot be established
+    recorded = set()
+    for r in recs:
+        if r.get("kind") == "submission":
+            submission_tools += n(r.get("tool_calls"))
+        elif r.get("kind") == "invocation":
+            invocations += 1
+            tools += n(r.get("tool_calls"))
+            path = r.get("prompt_path")
+            if isinstance(path, str) and "invocations" in pathlib.PurePath(path).parts:
+                parts = pathlib.PurePath(path).parts
+                recorded.add(pathlib.PurePath(*parts[parts.index("invocations"):]))
+            text = transcript_text(out, path)
+            if text is None or CODEX_STDERR_MARKER not in text:
+                unaudited += 1
+            else:
+                py_tools += py_tool_events(text, failed=r.get("ok") is False)
+    # A prompt file without its invocation record was a call the ledger never recorded.
+    for prompt in (out / "invocations").rglob("*.prompt.txt") if (out / "invocations").exists() else []:
+        if pathlib.PurePath(*prompt.relative_to(out).parts) not in recorded:
+            unaudited += 1
     hits = 0
     for task in tasks:
         names = (test_names((SUITE / task / "hidden_tests.rs").read_text())
@@ -122,8 +225,8 @@ def failed_attempt_audit(out, tasks):
         for prompt in sorted((out / "invocations").glob(f"*/{task}/**/*.prompt.txt")):
             if pattern.search(prompt.read_text(errors="replace")):
                 hits += 1
-    return {"invocations": invocations, "tool_calls": max(tools, submission_tools) + unaudited, "unaudited": unaudited,
-            "hidden_name_hits": hits}
+    return {"invocations": invocations, "tool_calls": max(tools, submission_tools, py_tools) + unaudited,
+            "unaudited": unaudited, "hidden_name_hits": hits}
 
 
 def merge_failed_attempt(summary, stats, rep, audit):
@@ -144,17 +247,17 @@ def replicate_tuples(out, rep, arms, tasks):
     """({(rep, arm, task): {"pass": bool | None, "void": bool}} for every planned (arm, task),
     {"invocations": n, "tool_calls": n}) for one replicate's out dir. The plan (arms, tasks)
     comes from the registration; a ledger planned otherwise voids every tuple."""
-    recs = records(out)
+    recs, bad = records_tolerant(out)
     led = next((r for r in recs if r.get("kind") == "registration"), {})
     tuples = {(rep, arm, task): {"pass": None, "void": False} for arm in arms for task in tasks}
     stats = {"invocations": 0, "tool_calls": 0}
     planned = list(led.get("arms") or [])
-    if len(planned) != len(set(planned)) or set(planned) != set(arms) or sorted(led.get("tasks") or []) != sorted(tasks):
+    if bad or len(planned) != len(set(planned)) or set(planned) != set(arms) or sorted(led.get("tasks") or []) != sorted(tasks):
         for v in tuples.values():
             v["void"] = True
     claimed, seen = {}, {}
     count = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None  # noqa: E731
-    submission_tools = invocation_tools = 0
+    submission_tools = invocation_tools = own_tools = 0
     for r in recs:
         key = (rep, r.get("arm"), r.get("task"))
         kind = r.get("kind")
@@ -181,9 +284,14 @@ def replicate_tuples(out, rep, arms, tasks):
         elif kind == "invocation":
             seen[key] = seen.get(key, 0) + 1
             tools = count(r.get("tool_calls") or 0)
-            if tools is None or tools > 0 or not transcript_ok(out, r.get("prompt_path", "")):
+            text = transcript_text(out, r.get("prompt_path"))
+            # The runner's own recount (independent of the binary) and the host-off proof (§0.16).
+            own = py_tool_events(text, failed=r.get("ok") is False) if text and CODEX_STDERR_MARKER in text else None
+            if own is not None:
+                own_tools += own
+            if tools is None or tools > 0 or own is None or own > 0 or not host_off(text):
                 tuples[key]["void"] = True
-    stats["tool_calls"] = max(submission_tools, invocation_tools)
+    stats["tool_calls"] = max(submission_tools, invocation_tools, own_tools)
     for key, v in tuples.items():
         if v["pass"] is None or claimed.get(key, 0) != seen.get(key, 0):
             v["void"] = True
@@ -193,7 +301,7 @@ def replicate_tuples(out, rep, arms, tasks):
 def lane_usage(out):
     """Counts only: calls and tokens per (arm, provider) from a replicate's invocation records."""
     usage = {}
-    for r in records(out):
+    for r in records_tolerant(out)[0]:
         if r.get("kind") != "invocation":
             continue
         u = usage.setdefault(str(r.get("arm")), {}).setdefault(str(r.get("provider")), {"calls": 0, "tokens": 0})
@@ -261,7 +369,7 @@ def _ceil(x):
 
 def well_formed(c):
     """A pooled comparison record has the fields classify() reads, with sane types."""
-    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)  # noqa: E731
     count = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0  # noqa: E731
     ci = c.get("ci95") if isinstance(c, dict) else None
     return (isinstance(c, dict) and count(c.get("families")) and count(c.get("discordant_treatment_only"))
@@ -283,6 +391,16 @@ def classify(c, min_families):
 
 def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
     """The confirmation-3 outcome from the pooled controller summary and the tuples."""
+    finite = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)  # noqa: E731
+    malformed = not (isinstance(summary, dict) and isinstance(summary.get("comparisons"), list)
+                     and finite(summary.get("excluded_share")) and finite(summary.get("max_excluded_share"))
+                     and isinstance(summary.get("min_families"), int)
+                     and isinstance(summary.get("hidden_name_hits") or [], list))
+    if malformed:                                   # a malformed summary is Invalid, never a crash
+        summary = {"comparisons": [], "hidden_name_hits": (summary.get("hidden_name_hits") if isinstance(summary, dict)
+                   and isinstance(summary.get("hidden_name_hits"), list) else []), "excluded_share": 1.0,
+                   "max_excluded_share": 0.0, "min_families": 10, "aborted": True,
+                   "integrity_ok": summary.get("integrity_ok") if isinstance(summary, dict) else None}
     comparisons, classes = {}, {}
     for comp in COMPARATORS:
         c = next((c for c in (summary.get("comparisons") or []) if isinstance(c, dict)
@@ -395,11 +513,11 @@ def complete(out):
     """Generation finished and was not aborted."""
     if not (pathlib.Path(out) / "ledger.jsonl").exists():
         return False
-    return any(r.get("kind") == "generation_complete" and r.get("aborted") is False for r in records(out))
+    return any(r.get("kind") == "generation_complete" and r.get("aborted") is False for r in records_tolerant(out)[0])
 
 
 def generation_day(out):
-    return utc_date(next(r for r in records(out) if r.get("kind") == "generation_complete")["ts_ms"])
+    return utc_date(next(r for r in records_tolerant(out)[0] if r.get("kind") == "generation_complete")["ts_ms"])
 
 
 def registration_commit():
@@ -557,10 +675,16 @@ def probe_run(model, effort, n, tag, lock_fd=None):
                        pass_fds=(lock_fd,) if lock_fd is not None else (),
                        env={**os.environ, "A2D_CODEX_HOME_ROOT": str(CODEX_HOMES)})
     secs, leak, tools, audited = [], False, 0, 0
-    recs = records(out) if (out / "ledger.jsonl").exists() else []
+    recs, bad = records_tolerant(out)
+    tools += bad                                              # an unparsable line could be anything
     for r in recs:
         if r.get("kind") == "invocation":
-            good = bool(r.get("ok")) and transcript_ok(out, r.get("prompt_path", ""))
+            text = transcript_text(out, r.get("prompt_path"))
+            own = py_tool_events(text) if text and CODEX_STDERR_MARKER in text else None
+            tools += own or 0
+            # Canary evidence: a successful call with an audited --json transcript, 0 events
+            # by the runner's own count, and the host off (plan §0.16).
+            good = bool(r.get("ok")) and own == 0 and host_off(text)
             audited += good
             secs.append(r.get("duration_ms", 0) / 1000 if good else float("inf"))
             parts = pathlib.PurePath(r.get("response_path", "")).parts

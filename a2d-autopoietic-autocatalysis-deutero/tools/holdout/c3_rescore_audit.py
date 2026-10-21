@@ -9,8 +9,12 @@ the controller's oracle (crates/a2d-core/src/sandbox.rs): no network, no file ac
 HOME, TMPDIR or the temp roots except the step's own directory (plus the toolchain for the
 compile), and the run step may not spawn processes, look up Mach services or send Apple Events.
 
+It also recounts the tool events of every invocation transcript of those tuples with the bound
+runner's own port of the provider's allowlist detector (nano/confirm3.py `py_tool_events`),
+independently of the audit binary's recorded counts (Sol second re-check, 10-21).
+
 Prints counts only and writes runs/c2-confirm3/audit-rescore.json (counts only), which the
-registration generator's certification requires (all agree).
+registration generator's certification requires (all agree; every transcript present, 0 events).
 
 usage: python3 -I tools/holdout/c3_rescore_audit.py
 """
@@ -24,6 +28,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import HOLDOUT, RECORDS, REPO, SUITE, TASK_RE, load_json, safe_read_text  # noqa: E402
+
+sys.path.insert(0, str(REPO / "nano"))
+import confirm3  # noqa: E402
 
 RUSTC = str(Path.home() / ".rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc")
 OUT = REPO / "runs" / "c2-confirm3" / "audit-rescore.json"
@@ -96,7 +103,9 @@ def main():
     sysroot = subprocess.run([RUSTC, "--print", "sysroot"], capture_output=True, text=True).stdout.strip()
     audit = load_json(RECORDS / "audit.json", {})
     tasks = sorted(p.name for p in SUITE.iterdir() if TASK_RE.match(p.name))
-    counts = {"tasks": len(tasks), "agree": 0, "disagree": 0, "missing": 0, "compile_failed": 0, "timed_out": 0}
+    counts = {"tasks": len(tasks), "agree": 0, "disagree": 0, "missing": 0, "compile_failed": 0, "timed_out": 0,
+              "transcripts": 0, "transcripts_missing": 0, "recounted_tool_events": 0}
+    ledgers = {}
     by_run = {}
     for t in tasks:
         final = audit.get(t, {}).get("r2") or audit.get(t, {}).get("r1") or {}
@@ -105,6 +114,16 @@ def main():
         if not subs or not isinstance(final.get("passed"), bool):
             counts["missing"] += 1
             continue
+        if run not in ledgers:
+            ledgers[run] = confirm3.records_tolerant(run)[0]
+        for r in ledgers[run]:
+            if r.get("kind") == "invocation" and r.get("task") == t and r.get("arm") == "D":
+                text = confirm3.transcript_text(run, r.get("prompt_path"))
+                if text is None or confirm3.CODEX_STDERR_MARKER not in text:
+                    counts["transcripts_missing"] += 1
+                else:
+                    counts["transcripts"] += 1
+                    counts["recounted_tool_events"] += confirm3.py_tool_events(text, failed=r.get("ok") is False)
         meta = json.loads(safe_read_text(SUITE / t / "task.json", HOLDOUT))
         res = score(safe_read_text(subs[-1], HOLDOUT), safe_read_text(SUITE / t / "hidden_tests.rs", HOLDOUT),
                     meta.get("test_timeout_secs", 10), sysroot)
