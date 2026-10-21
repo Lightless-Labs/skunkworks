@@ -6,8 +6,11 @@ calls a model).
   repair                                     write out/<id>/task.json (requirements only) for LIST.tsv
 
 Requirements are 20 numbered clauses of hash-derived words (unique per family and level, so the
-similarity check sees no overlap unless `dup`), plus the fixture's API line. Hidden tests are the
-fixture's (opaque h_<hex> names, `// R..` traces); rubric.json labels the fixture mutants.
+similarity check sees no overlap unless `dup`), plus the fixture's API line, a state list (R19)
+and, for scale, a size bound and complexity (R18). Hidden tests are the fixture's (opaque h_<hex>
+names, `// R..` traces); rubric.json labels the fixture mutants and carries the structured
+evidence of every declared tag (modifiers, states/sequences, signatures, boundaries, scale).
+Adjudicators quote 8 words of a clause the listed test's trace cites (any clause for `*`).
 Env hooks: GYM_TEST_ADJ_UNDER, GYM_TEST_ADJ_SPLIT, GYM_TEST_ADJ_BADQUOTE (space-separated task
 ids), GYM_TEST_REPAIR_BAD.
 """
@@ -22,13 +25,21 @@ HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixture"
 EXTRA = {"depth": ["edges", "state"], "state": ["edges", "depth"], "scale": ["edges", "depth"],
          "surface": ["edges", "depth"], "edges": ["depth", "state"]}
-API = ("API: pub struct Customer, pub enum Kind, pub struct Event, pub enum Error, "
-       "pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error>")
+SIGNATURES = ["pub struct Customer", "pub enum Kind", "pub struct Event", "pub enum Error",
+              "pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error>"]
+API = "API: " + ", ".join(SIGNATURES)
+SURFACE_EXTRA = "pub type Time = u64"
+BOUND, COMPLEXITY = "at most 100 customers per call", "O(n log n) time"
+SEQUENCE_TESTS = ["h_f520c34fab", "h_598fb0904c"]
 
 
 def words(seed, n=12):
     h = hashlib.sha256(seed.encode()).hexdigest()
     return list(h[:n])
+
+
+def states(seed):
+    return [f"st{w}{i}" for i, w in enumerate(words(f"{seed}:states", 5))]
 
 
 def requirements(fid, level, cls, dup):
@@ -37,8 +48,26 @@ def requirements(fid, level, cls, dup):
     for n in range(1, 21):
         ref = f" This clause modifies R{n - 1}." if n in (6, 10, 14) else ""
         out.append(f"R{n}. " + " ".join(words(f"{seed}:{n}")) + ref)
-    out[-1] += " " + API + (", pub type Time = u64" if cls == "surface" else "")
+    if cls == "scale":
+        out[18] += f" The input holds {BOUND}; simulate runs in {COMPLEXITY}."
+    out[19] += " States: " + ", ".join(states(seed)) + "."
+    out[-1] += " " + API + (", " + SURFACE_EXTRA if cls == "surface" else "")
     return "\n".join(out)
+
+
+def evidence(req, tags, cls, seed):
+    ev = {}
+    if "depth" in tags:
+        ev["modifiers"] = [{"clause": f"R{n}", "modifies": f"R{n - 1}"} for n in (6, 10, 14)]
+    if "state" in tags:
+        ev["states"], ev["sequences"] = states(seed), list(SEQUENCE_TESTS)
+    if "surface" in tags:
+        ev["signatures"] = SIGNATURES + ([SURFACE_EXTRA] if cls == "surface" else [])
+    if "edges" in tags:
+        ev["boundaries"] = [" ".join(clause_words(req, 3)[:3]), " ".join(clause_words(req, 11)[:4])]
+    if "scale" in tags:
+        ev["scale"] = {"bound": BOUND, "complexity": COMPLEXITY}
+    return ev
 
 
 def clause_words(req, n):
@@ -64,6 +93,7 @@ def author(fid, cls, dup=False, bad=False):
         for m in (1, 2, 3, 4):
             shutil.copyfile(FIX / "mutants" / f"m{m}.rs", d / "mutants" / f"m{m}.rs")
         tags = [cls] + EXTRA[cls][:1 if lv <= 2 else 2]
+        seed = f"dup-{lv}" if dup else f"{fid}-{lv}"
         muts = {"m1": {"violates": ["R5"], "kind": "misreading", "refuted_by": " ".join(clause_words(req, 5))},
                 "m2": {"violates": ["R4"], "kind": "misreading", "refuted_by": " ".join(clause_words(req, 4))},
                 "m3": {"violates": ["R12"], "kind": "bug", "refuted_by": ""},
@@ -71,13 +101,26 @@ def author(fid, cls, dup=False, bad=False):
         if cls == "scale":
             shutil.copyfile(FIX / "naive.rs", d / "mutants" / "m4.rs")
             muts["m4"] = {"violates": ["R20"], "kind": "naive", "refuted_by": ""}
-        json.dump({"difficulty": tags, "mutants": muts}, open(d / "rubric.json", "w"))
+        json.dump({"difficulty": tags, "mutants": muts, **evidence(req, tags, cls, seed)}, open(d / "rubric.json", "w"))
     (Path("out") / fid / "REPORT.md").write_text("report\n")
 
 
 def listed():
-    rows = [x.split("\t") for x in Path("LIST.tsv").read_text().splitlines() if x.strip()]
+    rows = [x.split("\t") for x in Path("LIST.tsv").read_text().split("\n") if x.strip()]
     return rows
+
+
+def traces(hidden):
+    """{test: [cited clause numbers]} from the `// R..` line right above each #[test] fn."""
+    out, last = {}, []
+    rows = [x.strip() for x in hidden.split("\n")]
+    for i, line in enumerate(rows):
+        if line.startswith("// R"):
+            last = [int(x.strip()[1:]) for x in line[3:].split(",")]
+        elif line.startswith("fn ") and i and rows[i - 1] == "#[test]":
+            out[line[3:].split("(")[0]] = last
+            last = []
+    return out
 
 
 def adjudicate():
@@ -89,8 +132,9 @@ def adjudicate():
     for row in listed():
         tid, test = row[0], row[1]
         req = json.loads((Path("tasks") / tid / "task.json").read_text())["requirements"]
+        cited = traces((Path("tasks") / tid / "hidden_tests.rs").read_text()).get(test) or [7]
         verdict = "UNDERDETERMINED" if tid in under or (tid in split and role == "B") else "DETERMINED"
-        quote = " ".join(clause_words(req, 7)) if verdict == "DETERMINED" else ""
+        quote = " ".join(clause_words(req, cited[0])) if verdict == "DETERMINED" else ""
         if tid in badq:
             quote = "this sentence is certainly not anywhere in the requirements text"
         reading = "the other order of the cohort" if verdict == "DETERMINED" else ""

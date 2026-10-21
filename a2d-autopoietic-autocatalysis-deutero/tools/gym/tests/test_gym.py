@@ -584,29 +584,86 @@ class Units(Base):
             " r.m1(req + '\\nR21. extra clause', hid)['uncovered_ids'])\n"
             "m = json.loads(json.dumps(rub)); m['mutants']['m1']['refuted_by'] = 'words that are not in the clause at all'\n"
             "n = json.loads(json.dumps(rub)); n['mutants']['m2']['violates'] = ['R99']\n"
-            "print(r.m2(req, rub)['ok'], r.m2(req, m), r.m2(req, n)['labelled'])\n"
+            "w = json.loads(json.dumps(rub)); w['mutants']['m1']['refuted_by'] = rub['mutants']['m1']['refuted_by'].replace(' ', '  ', 1)\n"
+            "print(r.m2(req, rub)['ok'], r.m2(req, m), r.m2(req, n)['labelled'], r.m2(req, w)['misreadings'])\n"
             "names = sorted(r.test_names(hid))\n"
             "print(r.m5(req, pub, hid, ref)['ok'], r.m5(req + ' ' + names[0], pub, hid, ref)['leaked'],"
             " r.m5(req, pub, hid.replace(names[0], 'hidden_named'), ref)['not_opaque'],"
-            " r.m5(req, pub, hid.replace(names[1], names[0]), ref)['duplicates'])\n"
-            "print(r.tags(req, rub, 3, 'depth')['ok'], r.tags(req, rub, 3, 'scale')['ok'],"
-            " r.tags(req, dict(rub, difficulty=['depth', 'edges']), 3)['ok'], r.tags(req, dict(rub, difficulty=['depth']), 1)['ok'],"
-            " r.tags(re.sub(r' This clause modifies R[0-9]+[.]', '', req), rub, 3, 'depth')['ok'],"
-            " r.tags(req, dict(rub, difficulty=['surface', 'edges']), 1)['ok'])")
+            " r.m5(req, pub, hid.replace(names[1], names[0]), ref)['duplicates'],"
+            " r.m5(req + ' prefix_' + names[0] + '_suffix', pub, hid, ref)['leaked'], r.m5(req, pub, hid, ref + 'x' + names[2] + '0')['leaked'])\n"
+            "print(r.tags(req, rub, 3, 'depth', hid)['ok'], r.tags(req, rub, 3, 'scale', hid)['ok'],"
+            " r.tags(req, dict(rub, difficulty=['depth', 'edges']), 3, 'depth', hid)['ok'], r.tags(req, dict(rub, difficulty=['depth']), 1, 'depth', hid)['ok'],"
+            " r.tags(re.sub(r' This clause modifies R[0-9]+[.]', '', req), rub, 3, 'depth', hid)['ok'],"
+            " r.tags(req, dict(rub, difficulty=['surface', 'edges']), 1, 'surface', hid)['ok'], r.tags(req, rub, 3, None, hid)['ok'])")
         lines = out.splitlines()
         self.assertEqual(lines[0], "True {'ok': False, 'clauses': 20, 'untraced': 1, 'unknown': 0, 'uncovered': 0, "
-                                   "'uncovered_ids': []}")
+                                   "'overcited': 0, 'uncovered_ids': []}")
         self.assertEqual(lines[1], "1 False ['R21']")
-        self.assertEqual(lines[2], "True {'ok': False, 'labelled': 4, 'misreadings': 1} 3")
-        self.assertEqual(lines[3], "True 1 1 1")
-        self.assertEqual(lines[4], "True False False False False False")
+        self.assertEqual(lines[2], "True {'ok': False, 'labelled': 4, 'misreadings': 1} 3 1")    # no normalisation
+        self.assertEqual(lines[3], "True 1 1 1 1 1")                                              # literal substrings
+        self.assertEqual(lines[4], "True False False False False False False")
+
+    def test_rubric_ids_traces_floors_and_evidence(self):
+        """ASCII-only ids, the reference regex (COLOR21 is not R21), clause floors whatever the
+        tags, at most 3 ids per trace line with coverage only from small traces (C-I3/C-I4/C-I22),
+        and each tag's structured evidence checked against the text (Sol I2, C-I5)."""
+        t = self.fixture_task("state", 4)
+        u = self.fixture_task("surface", 1)
+        sc = self.fixture_task("scale", 1)
+        out = self.lib(
+            "import gym_rubric as r, json\nfrom pathlib import Path\n"
+            f"t, u, sc = Path({str(t)!r}), Path({str(u)!r}), Path({str(sc)!r})\n"
+            "req = json.loads((t / 'task.json').read_text())['requirements']\n"
+            "hid = (t / 'hidden_tests.rs').read_text()\nrub = json.loads((t / 'rubric.json').read_text())\n"
+            "print(r.check_task_dir(t, 4, 'state')['ok'], sorted(rub))\n"
+            "print(r.clauses('R1. a\\nR\\u0662. b') == {1: 'R1. a\\nR\\u0662. b'}, r.hidden_traces('// R\\uff12\\n#[test]\\nfn h_0123456789() {}'),"
+            " r._ids('COLOR21 xR4 R7 (R8) R9x'))\n"
+            "five = '\\n'.join(f'R{i}. clause {i} words' for i in range(1, 6))\n"
+            "print(r.clause_floor(five, 2)['ok'], r.clause_floor(five, 3)['ok'], r.clause_floor(req, 4)['ok'])\n"
+            "big = hid.replace('// R4\\n', '// R4,R1,R2,R3\\n', 1)\n"
+            "stacked = hid.replace('// R3,R19\\n', '// R3,R19\\n// R1,R2\\n')\n"
+            "print(r.m1(req, big)['overcited'], r.m1(req, big)['ok'], r.m1(req, stacked)['ok'])\n"
+            "def ev(**kw):\n    return r.tag_evidence(req, dict(rub, **kw), 4, hid)\n"
+            "print(ev(), ev(states=rub['states'][:4])['state'], ev(states=rub['states'][:4] + ['nowhere'])['state'],"
+            " ev(sequences=['h_00000000'])['state'], ev(sequences=[])['state'])\n"
+            "print(ev(modifiers=rub['modifiers'][:2])['depth'], ev(modifiers=rub['modifiers'] + [{'clause': 'R2', 'modifies': 'R1'}])['depth'],"
+            " ev(boundaries=['two words'])['edges'], ev(boundaries=['not in the text'])['edges'])\n"
+            "def ev2(d, lv, **kw):\n"
+            "    q = json.loads((d / 'task.json').read_text())['requirements']\n"
+            "    b = json.loads((d / 'rubric.json').read_text())\n"
+            "    return r.tag_evidence(q, dict(b, **kw), lv, hid)\n"
+            "us = json.loads((u / 'rubric.json').read_text())['signatures']\n"
+            "print(ev2(u, 1)['surface'], ev2(u, 1, signatures=us[:5])['surface'], ev2(u, 1, signatures=us[:5] + ['pub type Nowhere = u8'])['surface'],"
+            " ev2(sc, 1)['scale'], ev2(sc, 1, scale={'bound': 'at most a few customers', 'complexity': 'O(n log n) time'})['scale'])\n"
+            "print(r.rubric_problems([]), r.rubric_problems(dict(rub, mutants=['m1'])), r.rubric_problems(dict(rub, mutants={'m1': 'naive'})),"
+            " r.rubric_problems(dict(rub, difficulty=[['depth']])), r.rubric_problems(dict(rub, states='x')))")
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "True ['boundaries', 'difficulty', 'modifiers', 'mutants', 'sequences', 'states']")
+        self.assertEqual(lines[1], "True {'h_0123456789': []} [7, 8]")
+        self.assertEqual(lines[2], "True False True")
+        self.assertEqual(lines[3], "1 False False")
+        self.assertEqual(lines[4], "{'depth': True, 'state': True, 'edges': True} False False False False")
+        self.assertEqual(lines[5], "False False False False")
+        self.assertEqual(lines[6], "True False False True False")
+        self.assertEqual(lines[7], "['rubric.json is not an object'] ['rubric.json mutants malformed'] "
+                                   "['rubric.json mutants malformed'] ['rubric.json difficulty malformed'] "
+                                   "['rubric.json states malformed']")
 
     def test_rubric_m3_quotes_and_m4_sampling(self):
-        req = "R1. The queue is ordered by descending id, not by arrival order, for equal times.\nR2. Two."
+        """A DETERMINED quote is a literal substring (no whitespace normalisation, Sol B11) of a
+        clause the test's own trace cites (C-I2): never another clause, never the boilerplate
+        before R1; a `*` verdict may quote any numbered clause."""
+        req = ("Output ONLY the Rust source code inside the fences, nothing else at all.\n"
+               "R1. The queue is ordered by descending id, not by arrival order, for equal times.\nR2. Two.")
+        hid = "// R1\n#[test]\nfn h_00000001() {}\n// R2\n#[test]\nfn h_00000002() {}\n"
         out = self.lib(
             "import gym_rubric as r\n"
-            f"req = {req!r}\n"
+            f"req0, hid = {req!r}, {hid!r}\n"
+            "req = r.quotable(req0, hid, 'h_00000001')\nother = r.quotable(req0, hid, 'h_00000002')\n"
+            "star = r.quotable(req0, hid, '*')\n"
             "q = 'The queue is ordered by descending id, not by'\n"
+            "pre = dict(verdict='DETERMINED', quote='Output ONLY the Rust source code inside the fences,',"
+            " excluded_reading='ascending id order for ties')\n"
             "ok = {'verdict': 'DETERMINED', 'quote': q, 'excluded_reading': 'ascending id order for ties'}\n"
             "short = dict(ok, quote='ordered by descending id')\n"
             "fake = dict(ok, quote='The queue is ordered by ascending id, not by')\n"
@@ -615,6 +672,8 @@ class Units(Base):
             "wrapped = dict(ok, quote='The queue is  ordered\\nby descending id, not by')\n"
             "print(r.combine(ok, ok, req), r.combine(ok, under, req), r.combine(ok, short, req), r.combine(fake, ok, req),"
             " r.combine(ok, noread, req), r.combine(ok, None, req), r.combine(wrapped, ok, req))\n"
+            "print(r.combine(ok, ok, other), r.combine(ok, ok, star), r.combine(pre, pre, star), r.combine(pre, pre, req),"
+            " r.quotable(req0, hid, 'h_missing'))\n"
             "names = ['h_%08x' % i for i in range(30)]\n"
             "a = r.sample_passing('g3-f001-l1', 'c1', names, ['h_00000003'], 'seed')\n"
             "b = r.sample_passing('g3-f001-l1', 'c1', names, ['h_00000003'], 'seed')\n"
@@ -627,11 +686,12 @@ class Units(Base):
             " r.parse_verdicts(good + good, exp), r.parse_verdicts(good.replace('\"quote\"', '\"quot\"'), exp))\n"
             "print(sorted(r.EXCLUSION_REASONS))")
         lines = out.splitlines()
-        self.assertEqual(lines[0], "DETERMINED REPAIR REPAIR REPAIR REPAIR REPAIR DETERMINED")
-        self.assertEqual(lines[1], "2 True True True ['h_1']")
-        self.assertEqual(lines[2], "True None None None")
-        self.assertNotIn("audit", lines[3])
-        self.assertNotIn("solver", lines[3])
+        self.assertEqual(lines[0], "DETERMINED REPAIR REPAIR REPAIR REPAIR REPAIR REPAIR")
+        self.assertEqual(lines[1], "REPAIR DETERMINED REPAIR REPAIR []")
+        self.assertEqual(lines[2], "2 True True True ['h_1']")
+        self.assertEqual(lines[3], "True None None None")
+        self.assertNotIn("audit", lines[4])
+        self.assertNotIn("solver", lines[4])
 
     def test_oracle_parsing_ports(self):
         """Ports of oracle.rs split_inner_attributes, sandbox.rs parse_test_results and
@@ -645,6 +705,53 @@ class Units(Base):
             " 'a(1); from_str(2); c::<u8>(3)')))")
         self.assertEqual(out.splitlines(), ["('//! d\\n#![allow(\\n  x\\n)]\\n', 'fn a() {}')",
                                             "(3, 1, 0.02) (0, 0, None)", "['b']"])
+
+    def test_task_schema_parity_with_the_controller(self):
+        """task.json as strictly as crates/a2d-lift/src/task.rs (serde): required string fields,
+        test_timeout_secs a JSON integer (not bool, not float, not string) in u64 range, no
+        duplicate keys, no NaN, no lone surrogate (Sol B14, C-B9)."""
+        base = '{"id": "g3-f001-l1", "family": "g3-f001", "requirements": "R1. x"%s}'
+        cases = {"ok": (base % ', "test_timeout_secs": 10', True), "default": (base % "", True),
+                 "max": (base % f', "test_timeout_secs": {2**64 - 1}', True),
+                 "string": (base % ', "test_timeout_secs": "10"', False), "float": (base % ', "test_timeout_secs": 10.0', False),
+                 "exp": (base % ', "test_timeout_secs": 1e1', False), "bool": (base % ', "test_timeout_secs": true', False),
+                 "negative": (base % ', "test_timeout_secs": -1', False), "big": (base % f', "test_timeout_secs": {2**64}', False),
+                 "dup": (base % ', "id": "g3-f001-l2"', False), "nan": (base % ', "test_timeout_secs": NaN', False),
+                 "no family": ('{"id": "g3-f001-l1", "requirements": "R1. x"}', False),
+                 "int family": ('{"id": "g3-f001-l1", "family": 7, "requirements": "R1. x"}', False),
+                 "surrogate": ('{"id": "g3-f001-l1", "family": "g3-f001", "requirements": "R1. \\ud800"}', False),
+                 "array": ("[]", False), "dot id": ('{"id": ".x", "family": "g3-f001", "requirements": "R1. x"}', False)}
+        (self.tmp / "cases.json").write_text(json.dumps(cases))
+        out = self.lib("import gymlib, json\n"
+                       f"cases = json.load(open({str(self.tmp / 'cases.json')!r}))\n"
+                       "def ok(t):\n    try:\n        gymlib.parse_task_json(t.encode())\n        return True\n"
+                       "    except ValueError:\n        return False\n"
+                       "print(json.dumps({k: ok(v[0]) for k, v in cases.items()}))")
+        self.assertEqual(json.loads(out), {k: v[1] for k, v in cases.items()})
+
+    def test_validator_rejects_malformed_tasks_instead_of_crashing(self):
+        """Malformed model output becomes per-task REJECT reasons (Sol I3, C-B9); a family without a
+        rubric class is refused (C-I20). These return before any compile."""
+        t = self.fixture_task("depth", 1)
+        tj = json.loads((t / "task.json").read_text())
+        variants = {"timeout string": lambda d: (d / "task.json").write_text(json.dumps(dict(tj, test_timeout_secs="10"))),
+                    "invalid json": lambda d: (d / "task.json").write_text("{"),
+                    "missing hidden": lambda d: (d / "hidden_tests.rs").unlink()}
+        dirs = {}
+        for name, mutate in variants.items():
+            d = self.tmp / name.replace(" ", "-") / t.name
+            shutil.copytree(t, d)
+            mutate(d)
+            dirs[name] = str(d)
+        out = self.lib("import gym_validate as v, json\nfrom pathlib import Path\n"
+                       f"dirs = {dirs!r}\n"
+                       "print(json.dumps({k: v.validate_task_safe(Path(d), 'depth')[0] for k, d in dirs.items()}))\n"
+                       f"print(v.validate_task_safe(Path({str(t)!r}), None)[0])")
+        a, b = out.splitlines()
+        self.assertEqual(json.loads(a), {"timeout string": ["task.json does not match the controller's schema"],
+                                         "invalid json": ["task.json does not match the controller's schema"],
+                                         "missing hidden": ["malformed task files"]})
+        self.assertEqual(b, "['no rubric class for the family']")
 
     def test_compile_profile_blocks_include_str_under_home(self):
         """A compile-time include_str! of a file under HOME, the temp roots or the (fake) holdout
@@ -917,6 +1024,40 @@ class Sandbox(Base):
         self.assertEqual(lines[2], "['rubric M1 failed'] {'mutants': 4, 'caught': 4, 'public_green': 4}")
         self.assertEqual(lines[3], "['mutant m3 passes hidden'] {'mutants': 4, 'caught': 3, 'public_green': 4}")
 
+    def test_validator_rubric_shape_naive_public_and_stdout_timing(self):
+        """A malformed rubric is a REJECT line, not an AttributeError (Sol I3, C-B9); the naive
+        mutant of a scale task must pass the public tests (C-I6); libtest's summary is read from
+        stdout only and the timing takes max(libtest time, wall) (C-I7)."""
+        ok = self.fixture_task("depth", 3)
+        shapes = {}
+        for name, rub in (("list", {"mutants": ["m1"]}), ("scalar", {"mutants": {"m1": "naive"}})):
+            d = self.tmp / f"shape-{name}" / ok.name
+            shutil.copytree(ok, d)
+            r = json.loads((d / "rubric.json").read_text())
+            r.update(rub)
+            (d / "rubric.json").write_text(json.dumps(r))
+            shapes[name] = str(d)
+        scale = self.fixture_task("scale", 1)
+        slow = self.tmp / "slow-naive" / scale.name
+        shutil.copytree(scale, slow)
+        (slow / "mutants" / "m4.rs").write_text((FIX / "naive.rs").read_text().replace("customers.len() >= 100", "customers.len() < 100000"))
+        forge = ('pub fn sim() -> u32 { 1 }\n')
+        tests = ('#[test]\nfn t_forged() {\n    use std::io::Write;\n    std::thread::sleep(std::time::Duration::from_millis(300));\n'
+                 '    std::io::stderr().write_all(b"\\ntest result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; '
+                 'finished in 0.00s\\n").unwrap();\n    assert_eq!(sim(), 1);\n}\n')
+        out = self.lib(
+            "import gym_validate as v, json\nfrom pathlib import Path\n"
+            f"shapes = {shapes!r}\n"
+            "print(json.dumps({k: [p for p in v.validate_task_safe(Path(d), 'depth')[0] if 'rubric' in p] for k, d in shapes.items()}))\n"
+            f"print(v.validate_task_safe(Path({str(slow)!r}), 'scale')[0])\n"
+            f"r = v.score_tests({forge!r}, {tests!r}, 'hidden', 10)\n"
+            "print(r['all_passed'], r['passed'], r['expected'], r['secs'] >= r['wall_secs'] >= 0.3)", timeout=900)
+        a, b, c = out.splitlines()
+        self.assertEqual(json.loads(a), {"list": ["rubric.json mutants malformed"],
+                                         "scalar": ["rubric.json mutants malformed"]})
+        self.assertIn("scale: naive mutant m4 fails the public tests (it must be correct but slow)", b)
+        self.assertEqual(c, "True 1 1 True")
+
     fixture_task = Units.fixture_task
 
 
@@ -1045,6 +1186,12 @@ class Flows(Base):
         self.settle()
         val = json.loads((self.rec / "validate.json").read_text())
         self.assertEqual((val["rejected"], val["sandboxed"]), ([], True))
+        # passing verdicts are cached by content hash (+ class + validator code): unchanged tasks
+        # are not re-timed on the next validation (C-B7)
+        cache = json.loads((self.rec / "validate-cache.json").read_text())
+        self.assertEqual(len([k for k in cache if k.endswith(":" + val["oracle_sha256"])]), 4)
+        code, lines = self.run_script("gym_validate.py")
+        self.assertEqual((code, json.loads((self.rec / "validate-cache.json").read_text())), (0, cache))
 
     def test_pilot_refusals_and_seal_check(self):
         sp = self.select_and_split()

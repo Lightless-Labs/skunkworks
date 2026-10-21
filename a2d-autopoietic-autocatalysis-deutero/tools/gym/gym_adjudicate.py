@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gym_rubric  # noqa: E402
 from gymlib import (AUTHORING_FILES, GYM, RECORDS, ROOT, RUNS, SUITE, TASK_RE, DriverLock,  # noqa: E402
                     LaunchGateClosed, StopRequested, emit, gate_or_exit, gateway, isolation_check, load_json,
+                    parse_task_json,
                     prereqs_ok, run_codex, safe_copy, safe_read_text, safe_write_text, save_json, stop_requested,
                     suspicious_commands, tree_hashes)
 from gymvendor import lines, test_names  # noqa: E402
@@ -225,14 +226,17 @@ def apply_repair(fid, tid, w):
 
 
 def combine_task(e, a, b):
-    """{test: {"kind", "combined"}} for one task, and whether it needs a repair."""
-    req = json.loads((SUITE / e["task"] / "task.json").read_text())["requirements"]
+    """{test: {"kind", "combined"}} for one task, and whether it needs a repair. A quote must be
+    a literal substring of a clause the test's own trace cites (gym_rubric.quotable)."""
+    req = parse_task_json((SUITE / e["task"] / "task.json").read_bytes())["requirements"]
+    hidden = (SUITE / e["task"] / "hidden_tests.rs").read_text()
     a, b = (a or {}).get(e["task"], {}), (b or {}).get(e["task"], {})
     tests = {}
     for t in e["failing"]:
-        tests[t] = {"kind": "failing", "combined": gym_rubric.combine(a.get(t), b.get(t), req)}
+        tests[t] = {"kind": "failing",
+                    "combined": gym_rubric.combine(a.get(t), b.get(t), gym_rubric.quotable(req, hidden, t))}
     for t in e["sampled"]:
-        ok = gym_rubric.valid_determined(b.get(t), req)
+        ok = gym_rubric.valid_determined(b.get(t), gym_rubric.quotable(req, hidden, t))
         tests[t] = {"kind": "sampled", "combined": "DETERMINED" if ok else "REPAIR"}
     return tests, any(v["combined"] == "REPAIR" for v in tests.values())
 

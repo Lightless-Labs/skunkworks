@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (GYM, RECORDS, SUITE, TASK_RE, DriverLock, emit, gate_or_exit, gateway,  # noqa: E402
-                    hashes_digest, load_json, mutants_ok, replace_family, safe_copy, safe_read_text, save_json,
-                    tree_hashes)
+                    hashes_digest, load_json, mutants_ok, parse_task_json, replace_family, safe_copy, safe_read_bytes,
+                    save_json, tree_hashes)
 
 MAX_ATTEMPTS = 2
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs", "rubric.json")
@@ -33,8 +33,8 @@ def copy_task(fid, level, staging):
     tid = f"{fid}-l{level}"
     src = GYM / fid / "out" / fid / tid
     try:
-        tj = json.loads(safe_read_text(src / "task.json", GYM))
-        if tj.get("id") != tid or tj.get("family") != fid or not TASK_RE.match(tid):
+        tj = parse_task_json(safe_read_bytes(src / "task.json", GYM))
+        if tj["id"] != tid or tj["family"] != fid or not TASK_RE.match(tid):
             return False
         if not mutants_ok(src / "mutants"):
             return False

@@ -43,13 +43,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gym_rubric  # noqa: E402
 from gymlib import (GYM, RECORDS, REPO, SUITE, TASK_RE, TESTING, DriverLock, compile_env, emit,  # noqa: E402
-                    gate_or_exit, gateway, load_json, run_profile, safe_write_text, sandboxed_rustc, save_json,
-                    suite_digest)
+                    gate_or_exit, gateway, hashes_digest, load_json, parse_task_json, run_profile, safe_write_text,
+                    sandboxed_rustc, save_json, strict_json_doc, suite_digest, task_timeout, tree_hashes)
 from gymvendor import lines as rust_lines, test_names  # noqa: E402
 
 MIN_MUTANTS, MIN_PUBLIC_GREEN, MIN_HIDDEN, MIN_PUBLIC = 4, 2, 20, 3
 COMPILE_TIMEOUT = 120
-SCALE_SHARE = 0.05
+SCALE_SHARE = 0.05              # the rule (SPEC.md): the reference uses at most 5% of test_timeout_secs
+SCALE_MARGIN_SHARE = 0.04       # applied at validation: max(libtest time, wall) <= 4% (noise margin)
 MAX_FIX_ROUNDS = 2
 TRUSTED_MACROS = ("use ::std::{assert, assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, "
                   "matches, unreachable};")
@@ -81,8 +82,9 @@ def split_inner_attributes(code):
 
 
 def parse_results(output):
-    """(passed, failed, secs) from the last `test result:` line (sandbox.rs); secs is libtest's
-    own `finished in <x>s` (the tests' run time, without process start-up), or None."""
+    """(passed, failed, secs) from the last `test result:` line of the binary's STDOUT (libtest
+    prints its summary there; code under test can write anything to stderr); secs is libtest's
+    own `finished in <x>s`, or None."""
     for line in reversed(rust_lines(output)):
         if line.startswith("test result:"):
             passed = failed = 0
@@ -119,8 +121,8 @@ def _run_binary(binary, run_dir, test_filter, timeout):
                          cwd=run_dir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = p.communicate(timeout=timeout)
-        return out + "\n" + err, p.returncode, False, time.monotonic() - start
+        out, _err = p.communicate(timeout=timeout)
+        return out, p.returncode, False, time.monotonic() - start
     except subprocess.TimeoutExpired:
         try:
             os.killpg(p.pid, signal.SIGKILL)
@@ -162,8 +164,10 @@ def score_tests(code, tests, label, timeout_secs, rep=0):
         (build / tests_file).unlink()
         out, code_, timed_out, wall = _run_binary(build / "oracle_bin", run, f"{module}::", timeout_secs)
         passed, failed, secs = (0, 0, None) if timed_out else parse_results(out)
+        # the timing rule takes the larger of libtest's own time and the wall clock (a forged
+        # or missing summary can only make the reference look slower, never faster)
         res.update({"compiled": True, "passed": passed, "failed": failed, "timed_out": timed_out,
-                    "exit_success": code_ == 0, "secs": secs if secs is not None else wall, "wall_secs": wall})
+                    "exit_success": code_ == 0, "secs": max(secs or 0.0, wall), "wall_secs": wall})
         res["all_passed"] = (code_ == 0 and not timed_out and failed == 0 and expected > 0 and passed == expected)
         return _remember(key, res)
     finally:
@@ -221,21 +225,39 @@ def uncovered_api(requirements, public_tests):
     return out
 
 
-def validate_task(d, family_class=None):
+def validate_task_safe(d, family_class):
+    """validate_task, with any exception turned into a REJECT reason (a malformed model output
+    is repairable through FIX, never a crash of the whole validation)."""
+    try:
+        return validate_task(d, family_class)
+    except Exception:  # noqa: BLE001 - deliberately content-free
+        return ["malformed task files"], {"mutants": 0, "caught": 0, "public_green": 0}
+
+
+def validate_task(d, family_class):
     """(problems, counts) for one suite task dir."""
     tid = d.name
     level = int(tid[-1])
-    tj = json.loads((d / "task.json").read_text())
-    req, timeout = tj.get("requirements", ""), int(tj.get("test_timeout_secs", 30))
+    problems, counts = [], {"mutants": 0, "caught": 0, "public_green": 0}
+    if family_class not in gym_rubric.CLASSES:
+        return ["no rubric class for the family"], counts
+    try:
+        tj = parse_task_json((d / "task.json").read_bytes())
+    except (OSError, ValueError):
+        return ["task.json does not match the controller's schema"], counts
+    req, timeout = tj["requirements"], task_timeout(tj)
     public = (d / "public_tests.rs").read_text() if (d / "public_tests.rs").exists() else ""
     hidden = (d / "hidden_tests.rs").read_text()
-    problems, counts = [], {"mutants": 0, "caught": 0, "public_green": 0}
     try:
-        rubric = json.loads((d / "rubric.json").read_text())
+        rubric = strict_json_doc((d / "rubric.json").read_bytes())
+        shape = gym_rubric.rubric_problems(rubric)
     except (OSError, ValueError):
+        rubric, shape = {}, ["rubric.json unreadable"]
+    problems += shape
+    if shape:
         rubric = {}
-    kinds = {m: (e or {}).get("kind") for m, e in (rubric.get("mutants") or {}).items()} if isinstance(rubric, dict) else {}
-    scale = isinstance(rubric, dict) and "scale" in (rubric.get("difficulty") or [])
+    kinds = {m: e.get("kind") for m, e in (rubric.get("mutants") or {}).items()}
+    scale = "scale" in (rubric.get("difficulty") or [])
     n_public, n_hidden = count_tests(public), count_tests(hidden)
     if n_public < MIN_PUBLIC:
         problems.append(f"only {n_public} public tests (minimum {MIN_PUBLIC})")
@@ -259,8 +281,8 @@ def validate_task(d, family_class=None):
                             f"{'' if h1['compiled'] else ', does not compile'})")
         if scale and h1["all_passed"]:
             secs = max(h1["secs"] or 0, h2["secs"] or 0)
-            if secs > SCALE_SHARE * timeout:
-                problems.append("scale: reference hidden run exceeds 5% of the time limit")
+            if secs > SCALE_MARGIN_SHARE * timeout:
+                problems.append("scale: reference hidden run exceeds 4% of the time limit (rule 5%, validation margin)")
     mdir = d / "mutants"
     mutants = sorted(p for p in mdir.iterdir() if p.suffix == ".rs") if mdir.is_dir() else []
     counts["mutants"] = len(mutants)
@@ -270,9 +292,12 @@ def validate_task(d, family_class=None):
     for p in mutants:
         stem, code = p.stem, p.read_text()
         h = score_tests(code, hidden, "hidden", timeout)
+        public_ok = bool(n_public) and score_tests(code, public, "public", timeout)["all_passed"]
         naive = scale and kinds.get(stem) == "naive"
         if naive:
-            if h["compiled"] and h["timed_out"]:
+            if not public_ok:
+                problems.append(f"scale: naive mutant {stem} fails the public tests (it must be correct but slow)")
+            elif h["compiled"] and h["timed_out"]:
                 naive_timed_out = True
                 counts["caught"] += 1
             else:
@@ -287,7 +312,7 @@ def validate_task(d, family_class=None):
             problems.append(f"mutant {stem} is not caught by a failing test")
         else:
             counts["caught"] += 1
-        if n_public and score_tests(code, public, "public", timeout)["all_passed"]:
+        if public_ok:
             counts["public_green"] += 1
     if scale and not naive_timed_out and not any("naive mutant" in x for x in problems):
         problems.append("scale: no naive mutant")
@@ -299,17 +324,27 @@ def validate_task(d, family_class=None):
     shared = len(test_names(public) & test_names(hidden))
     if shared:
         problems.append(f"hidden repeats {shared} public test name(s)")
-    try:
-        rub = gym_rubric.check_task_dir(d, level, family_class)
-        for k in ("m1", "m2", "m5", "tags"):
+    if not shape:
+        rub = gym_rubric.check_task(req, hidden, public, reference or "", rubric, level, family_class)
+        for k in gym_rubric.CHECKS:
             if not rub[k]["ok"]:
                 detail = ""
                 if k == "m1" and rub[k].get("uncovered_ids"):
                     detail = " uncovered " + ",".join(rub[k]["uncovered_ids"])
                 problems.append(f"rubric {k.upper()} failed{detail}")
-    except (OSError, ValueError, KeyError):
-        problems.append("rubric files unreadable")
     return problems, counts
+
+
+ORACLE_FILES = ("gym_validate.py", "gym_rubric.py", "gymvendor.py", "gymlib.py")
+
+
+def oracle_sha():
+    """The validator's own code (oracle, rubric checks, profiles): a cached verdict is reused only
+    under exactly this code."""
+    h = hashlib.sha256()
+    for f in ORACLE_FILES:
+        h.update(hashlib.sha256((Path(__file__).resolve().parent / f).read_bytes()).digest())
+    return h.hexdigest()
 
 
 def verdict_line(tid, problems, counts):
@@ -332,9 +367,26 @@ def main():
             raise ValueError("empty suite")
         digest = suite_digest()
         classes = load_json(RECORDS / "active.json", {}).get("classes", {})
+        if any(classes.get(t.rsplit("-l", 1)[0]) not in gym_rubric.CLASSES for t in expected):
+            emit(stage="validate", status="class-missing")          # every family needs its rubric class
+            sys.exit(2)
+        cache = load_json(RECORDS / "validate-cache.json", {})
+        oracle = oracle_sha()
+
+        def one(t):
+            cls = classes[t.rsplit("-l", 1)[0]]
+            key = f"{hashes_digest(tree_hashes(SUITE / t))}:{cls}:{oracle}"
+            if key in cache:                                           # passed before on exactly this content
+                return t, [], dict(cache[key]), key
+            problems, counts = validate_task_safe(SUITE / t, cls)
+            return t, problems, counts, key
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
-            results = list(ex.map(lambda t: (t, *validate_task(SUITE / t, classes.get(t.rsplit("-l", 1)[0]))),
-                                  expected))
+            scored = list(ex.map(one, expected))
+        for t, p, c, key in scored:
+            if not p:
+                cache[key] = c
+        save_json(RECORDS / "validate-cache.json", cache)
+        results = [(t, p, c) for t, p, c, _ in scored]
         lines = [verdict_line(t, p, c) for t, p, c in results]
         rejected = sorted(t for t, p, _ in results if p)
         lines.append(f"suite {digest} — {len(expected)} tasks, {len(expected) - len(rejected)} accepted, "
@@ -359,10 +411,9 @@ def main():
                 safe_write_text(target, "\n".join(per_family[fam]) + "\n")
             elif target.exists() or target.is_symlink():
                 target.unlink()
-        oracle_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         save_json(RECORDS / "validate.json", {"stamp": stamp, "sha256": hashlib.sha256(full.encode()).hexdigest(),
                                               "rejected": rejected, "suite": digest, "head": head,
-                                              "oracle_sha256": oracle_sha, "sandboxed": True})
+                                              "oracle_sha256": oracle, "sandboxed": True})
         save_json(RECORDS / "excluded.json", excluded)
         emit(stage="validate", tasks=len(expected), count=len(expected) - len(rejected), missing=len(rejected),
              skipped=len(excluded["tasks"]))

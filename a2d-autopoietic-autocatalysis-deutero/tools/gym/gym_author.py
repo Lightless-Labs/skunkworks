@@ -25,8 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (AUTHORING_FILES, GYM, ID_RE, RECORDS, TASK_RE, DriverLock, LaunchGateClosed,  # noqa: E402
                     StopRequested, drained, emit, gate_or_exit, gateway, isolation_check, job_codex_home,
-                    load_json, mutants_ok, prereqs_ok, request_stop, run_codex, safe_copy, safe_read_text,
-                    safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
+                    load_json, mutants_ok, parse_task_json, prereqs_ok, request_stop, run_codex, safe_copy,
+                    safe_read_bytes, safe_read_text, safe_write_text, save_json, stop_requested, strict_json_doc,
+                    suspicious_commands, tree_hashes)
 
 MAX_ATTEMPTS = 2
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs", "rubric.json")
@@ -54,10 +55,10 @@ def complete(fid):
                 return False
             for i in (1, 2, 3, 4):
                 safe_read_text(d / "mutants" / f"m{i}.rs", GYM)
-            tj = json.loads(safe_read_text(d / "task.json", GYM))
-            if tj.get("id") != tid or tj.get("family") != fid or not TASK_RE.match(tid):
+            tj = parse_task_json(safe_read_bytes(d / "task.json", GYM))      # the controller's schema
+            if tj["id"] != tid or tj["family"] != fid or not TASK_RE.match(tid):
                 return False
-            if not isinstance(json.loads(safe_read_text(d / "rubric.json", GYM)), dict):
+            if not isinstance(strict_json_doc(safe_read_bytes(d / "rubric.json", GYM)), dict):
                 return False
         safe_read_text(base / "REPORT.md", GYM)
         return True

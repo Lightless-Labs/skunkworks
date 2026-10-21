@@ -18,7 +18,7 @@ For each task `<id>` in `tasks/`:
 ## Output
 Write `VERDICTS.jsonl`: exactly one JSON object per line of `LIST.tsv`, and nothing else:
 `{"task": "<id>", "test": "<test name or *>", "verdict": "DETERMINED" | "UNDERDETERMINED", "quote": "...", "excluded_reading": "..."}`
-- A DETERMINED verdict counts only if `quote` is copied **verbatim** from the task's `requirements` (at least 8 consecutive words) and states the rule the test checks, and `excluded_reading` names, in at least 4 words, the other reading of the requirements that the quote rules out.
+- A DETERMINED verdict counts only if `quote` is copied **verbatim** (character for character, same spacing and line breaks; at least 8 consecutive words) from a clause that the test's own `// R<n>` comment in `hidden_tests.rs` names (for `*`: from any numbered clause), never from the text before `R1.`, and states the rule the test checks; and `excluded_reading` names, in at least 4 words, the other reading of the requirements that the quote rules out.
 - For UNDERDETERMINED, `quote` and `excluded_reading` may be empty strings.
 
 Do not change any other file. Your final message must be a single line: `ADJUDICATED <number of DETERMINED lines> <number of UNDERDETERMINED lines>`.

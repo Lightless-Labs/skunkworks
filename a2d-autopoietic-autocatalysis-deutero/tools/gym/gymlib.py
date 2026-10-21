@@ -1134,6 +1134,62 @@ def exit_code(record):
         return None
 
 
+# ------------------------------------------------------------- task schema
+
+U64_MAX = 2 ** 64 - 1
+TASK_STR_FIELDS = ("id", "family", "requirements")
+
+
+def _no_duplicate_keys(pairs):
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError("duplicate key")
+        out[k] = v
+    return out
+
+
+def _no_constant(name):
+    raise ValueError(f"{name} is not JSON")
+
+
+def strict_json_doc(data):
+    """A whole JSON document parsed as strictly as serde_json: UTF-8 (bytes are decoded
+    strictly), no duplicate keys at any depth, no NaN/Infinity, no lone surrogates in strings."""
+    text = data.decode("utf-8") if isinstance(data, bytes) else data
+    try:
+        obj = json.loads(text, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except RecursionError as e:
+        raise ValueError("nesting too deep") from e
+    json.dumps(obj, ensure_ascii=False).encode("utf-8")      # a lone surrogate raises (serde rejects it)
+    return obj
+
+
+def parse_task_json(data):
+    """task.json with the controller's schema (crates/a2d-lift/src/task.rs TaskFile): an object
+    whose `id`, `family` and `requirements` are strings and whose optional `test_timeout_secs`
+    (default 30) is a JSON integer, not a bool, in the u64 range; ids safe ([A-Za-z0-9._-]+, no
+    leading '.'). Raises ValueError otherwise."""
+    obj = strict_json_doc(data)
+    if not isinstance(obj, dict):
+        raise ValueError("task.json is not an object")
+    for k in TASK_STR_FIELDS:
+        if not isinstance(obj.get(k), str):
+            raise ValueError(f"task.json {k} is not a string")
+    for k in ("id", "family"):
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", obj[k]) or obj[k].startswith("."):
+            raise ValueError(f"task.json {k} is not a safe id")
+    if "test_timeout_secs" in obj:
+        v = obj["test_timeout_secs"]
+        if type(v) is not int or not 0 <= v <= U64_MAX:
+            raise ValueError("task.json test_timeout_secs is not a u64")
+    return obj
+
+
+def task_timeout(obj):
+    return obj.get("test_timeout_secs", 30)
+
+
 # ------------------------------------------------------------- state and gates
 
 def load_json(path, default=None):

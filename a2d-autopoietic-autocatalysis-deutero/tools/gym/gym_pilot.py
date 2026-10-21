@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (BINARY, binary_allowed, HOLDOUT_VIEW, OUT_REPO, RECORDS, REPO, RUNS, SUITE, TESTING, DriverLock,  # noqa: E402
                     _cfg, build_a2d, child_env, emit, gate_or_exit, gateway, launch_gate, load_json, prereqs_ok,
                     repo_write_root, safe_copy, save_json, spec_sha)
+from gym_rubric import leaked_names  # noqa: E402
 from gymvendor import strict_json, test_names  # noqa: E402
 
 LUNA = "codex/gpt-6-luna"
@@ -109,10 +110,9 @@ def seal_breaches(out, tasks):
         names |= test_names((SUITE / t / "hidden_tests.rs").read_text())
     if not names:
         return 0
-    pat = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, sorted(names))) + r")(?![A-Za-z0-9_])")
     n = 0
     for p in sorted(Path(out).rglob("*")) if Path(out).exists() else []:
-        if p.is_file() and not p.is_symlink() and pat.search(p.read_text(errors="replace")):
+        if p.is_file() and not p.is_symlink() and leaked_names(names, p.read_text(errors="replace")):
             n += 1
     return n
 

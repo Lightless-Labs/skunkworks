@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (OUT_REPO, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gate_or_exit, gateway,  # noqa: E402
                     hashes_digest, load_json, repo_write_root, safe_write_text, save_json, spec_sha, suite_digest,
                     tree_hashes)
+from gym_rubric import leaked_names  # noqa: E402
 from gymvendor import test_names  # noqa: E402
 
 EXPORT = OUT_REPO / "runs" / "c2-gym3" / "export"
@@ -108,10 +109,6 @@ def certified_current():
     return cert if cert and cert["suite"] == suite_digest() and cert["spec_sha256"] == spec_sha() else None
 
 
-def _token(name):
-    return re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
-
-
 def export():
     from gym_split import assignment, load_split
     cert = certified_current()
@@ -123,7 +120,6 @@ def export():
     hidden_names = set()
     for tid in cert["content"]:
         hidden_names |= test_names((SUITE / tid / "hidden_tests.rs").read_text())
-    patterns = [_token(n) for n in sorted(hidden_names)]
     root = repo_write_root(EXPORT / "hashes.json")
     if EXPORT.exists():
         shutil.rmtree(EXPORT)
@@ -138,7 +134,7 @@ def export():
         texts = {"task.json": json.dumps({k: tj[k] for k in TASK_KEYS if k in tj}, indent=1, sort_keys=True) + "\n",
                  "public_tests.rs": (SUITE / tid / "public_tests.rs").read_text()}
         for name, text in texts.items():
-            if any(p.search(text) for p in patterns):
+            if leaked_names(hidden_names, text):          # literal substring, no token boundary
                 raise RuntimeError("seal: hidden test name in an exported file")
             (EXPORT / tid).mkdir(parents=True, exist_ok=True)
             safe_write_text(EXPORT / tid / name, text, root)

@@ -23,7 +23,7 @@ fn starts(v: &[Event]) -> Vec<(u64, u32, u64, bool)> {
         })
         .collect()
 }
-// R1,R2,R3,R19
+// R1,R2,R3
 #[test]
 fn h_f520c34fab() {
     assert_eq!(simulate(&[], u64::MAX), Ok(vec![]));
@@ -65,7 +65,7 @@ fn h_c414db8650() {
         Err(Error::ZeroId { index: 1 })
     );
 }
-// R5,R8,R9,R18
+// R5,R8,R9
 #[test]
 fn h_e8b915f995() {
     let v = simulate(&[c(12, 4, 1), c(90, 4, 1), c(31, 4, 1)], 0).unwrap();
@@ -82,7 +82,7 @@ fn h_e8b915f995() {
         vec![90, 31, 12]
     );
 }
-// R5,R6,R9,R14
+// R5,R6,R9
 #[test]
 fn h_9cca4ce1bb() {
     assert_eq!(
@@ -93,7 +93,7 @@ fn h_9cca4ce1bb() {
         vec![11, 2, 99]
     );
 }
-// R7,R8,R9,R10,R16
+// R7,R8,R9
 #[test]
 fn h_1e30175d82() {
     let v = simulate(&[c(21, 0, 3), c(22, 3, 1)], 0).unwrap();
@@ -137,7 +137,7 @@ fn h_af809a3b12() {
         vec![(0, 13, 6, true), (6, 14, 8, false)]
     );
 }
-// R8,R9,R10,R13,R16
+// R8,R9,R10
 #[test]
 fn h_b01e08ee8d() {
     assert_eq!(
@@ -270,7 +270,7 @@ fn h_ce8f24577d() {
     assert_eq!(a, b);
     assert_eq!(starts(&simulate(&a, 0).unwrap()), vec![(2, 72, 5, true)]);
 }
-// R5,R6,R8,R9,R13,R16
+// R5,R6,R8
 #[test]
 fn h_b163ef315c() {
     let a = (1..=180).map(|id| c(id, 12, 0)).collect::<Vec<_>>();
@@ -282,7 +282,7 @@ fn h_b163ef315c() {
         (1..=180).rev().collect::<Vec<_>>()
     );
 }
-// R5,R6,R10,R11,R14,R16
+// R5,R6,R10
 #[test]
 fn h_848278bac2() {
     let a = (1..=100)
