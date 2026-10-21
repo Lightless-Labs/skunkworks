@@ -1,0 +1,72 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..5edfc70
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For never-visible-pass tasks, continue from the latest candidate only when it passes a visible check no earlier candidate passed, so equal-score complementary progress can be repaired without continuing candidates that repeat or regress known coverage.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..bc6b1e1 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -7,11 +7,16 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++CONTINUATION_HEADER = (
++    "\n\n---\nContinue from the current candidate, preserving its newly passing behavior. "
++    "Repair the verifier failures below:\n"
++)
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,7 +40,26 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def passed_test_ids(candidate: dict) -> set[tuple[str, str]]:
++    passed = set()
++    for position, test in enumerate(candidate.get("verify", {}).get("tests", [])):
++        if test.get("outcome") != "pass":
++            continue
++        if test.get("name") is not None:
++            passed.add(("name", str(test["name"])))
++        else:
++            passed.add(("index", str(test.get("index", position))))
++    return passed
++
++
++def has_novel_pass(candidate: dict, earlier_candidates: list[dict]) -> bool:
++    earlier_passes = set()
++    for earlier in earlier_candidates:
++        earlier_passes.update(passed_test_ids(earlier))
++    return bool(passed_test_ids(candidate) - earlier_passes)
++
++
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+@@ -44,8 +68,13 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+-        return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
++        base = "fresh"
++        header = FEEDBACK_HEADER
++        if len(candidates) > 1 and has_novel_pass(last, candidates[:-1]):
++            base = last["index"]
++            header = CONTINUATION_HEADER
++        prompt = state["problem_statement"] + header + render_verify(last.get("verify", {}))
++        return {"agent": {"base": base, "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
+         candidate["index"],
