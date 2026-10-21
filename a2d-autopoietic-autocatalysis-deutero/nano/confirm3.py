@@ -817,7 +817,7 @@ def cmd_score(args):
             sys.exit("the suite hash differs from the registered one; nothing is scored")
         outs = {}
         for rep in (1, 2):
-            rel = f"runs/c2-confirm3/manifest-r{rep}.json"
+            rel = str((DIR / f"manifest-r{rep}.json").relative_to(ROOT))
             if git("ls-files", "--error-unmatch", rel)[0] or git("diff", "--quiet", "HEAD", "--", rel)[0] \
                     or git("merge-base", "--is-ancestor", "HEAD", "origin/main")[0]:
                 sys.exit(f"commit and push {rel} before scoring")
