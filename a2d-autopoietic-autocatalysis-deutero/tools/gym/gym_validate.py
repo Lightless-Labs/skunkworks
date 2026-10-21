@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -50,7 +51,8 @@ from gymvendor import lines as rust_lines, test_names  # noqa: E402
 MIN_MUTANTS, MIN_PUBLIC_GREEN, MIN_HIDDEN, MIN_PUBLIC = 4, 2, 20, 3
 COMPILE_TIMEOUT = 120
 SCALE_SHARE = 0.05              # the rule (SPEC.md): the reference uses at most 5% of test_timeout_secs
-SCALE_MARGIN_SHARE = 0.04       # applied at validation: fastest passing run's max(libtest, wall) <= 4%
+SCALE_MARGIN_SHARE = 0.04       # applied at validation: median of the timed runs' max(libtest, wall) <= 4%
+SCALE_SAMPLE_REPS = (1, 2, 3)   # timed after the warm-up and correctness run (rep 0); all must pass
 MAX_FIX_ROUNDS = 2
 TRUSTED_MACROS = ("use ::std::{assert, assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, "
                   "matches, unreachable};")
@@ -175,18 +177,14 @@ def score_tests(code, tests, label, timeout_secs, rep=0):
         shutil.rmtree(run, ignore_errors=True)
 
 
-def scale_reference_secs(runs, rerun, limit):
-    """The scale rule's measure: the fastest passing run's time. The rule bounds the reference's own
-    cost, and load spikes and first-exec costs only add time; each run's figure already includes its
-    wall clock, so a forged libtest summary cannot lower it. Over `limit`, two more runs
-    (`rerun(rep)`, reps 2 and 3) are timed before the caller rejects. None when no run passed."""
-    def fastest(rs):
-        timed = [r["secs"] for r in rs if r["all_passed"] and r["secs"] is not None]
-        return min(timed) if timed else None
-    secs = fastest(runs)
-    if secs is None or secs > limit:
-        secs = fastest(list(runs) + [rerun(rep) for rep in (2, 3)])
-    return secs
+def scale_reference_secs(sample):
+    """The scale rule's measure: the median over a fixed sample of timed runs taken after the
+    warm-up run (rep 0): a typical run, robust to one load spike, never a lucky one (Sol review,
+    10-21). Every run must pass, or None. Each run's figure is max(libtest time, wall clock), so
+    a forged libtest summary cannot lower it."""
+    if len(sample) != len(SCALE_SAMPLE_REPS) or any(not r["all_passed"] or r["secs"] is None for r in sample):
+        return None
+    return statistics.median(r["secs"] for r in sample)
 
 
 def _remember(key, res):
@@ -294,11 +292,12 @@ def validate_task(d, family_class):
             problems.append(f"reference fails hidden ({h1['passed']}/{h1['expected']}"
                             f"{'' if h1['compiled'] else ', does not compile'})")
         if scale and h1["all_passed"]:
-            limit = SCALE_MARGIN_SHARE * timeout
-            secs = scale_reference_secs([h1, h2], lambda rep: score_tests(reference, hidden, "hidden", timeout, rep=rep),
-                                        limit)
-            if secs is None or secs > limit:
-                problems.append("scale: reference hidden run exceeds 4% of the time limit (rule 5%, validation margin)")
+            sample = [h2] + [score_tests(reference, hidden, "hidden", timeout, rep=r) for r in SCALE_SAMPLE_REPS[1:]]
+            secs = scale_reference_secs(sample)
+            if secs is None or any(r["passed"] != h1["passed"] for r in sample):
+                problems.append("scale: a timed reference run did not pass (results are not deterministic)")
+            elif secs > SCALE_MARGIN_SHARE * timeout:
+                problems.append("scale: reference hidden run exceeds 4% of the time limit (median of 3 timed runs; rule 5%)")
     mdir = d / "mutants"
     mutants = sorted(p for p in mdir.iterdir() if p.suffix == ".rs") if mdir.is_dir() else []
     counts["mutants"] = len(mutants)
