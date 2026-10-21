@@ -1,6 +1,6 @@
 # What the loop has learned (living document)
 
-**Status:** interim, as of exp-0015 (2026-10-21). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
+**Status:** interim, as of exp-0018 (2026-10-21). This becomes the plan §1(b) analysis if no variant is promoted. Update it after every few experiments. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
 
 ## Campaign so far
 
@@ -21,6 +21,9 @@
 | 0013 | contrast the two latest verifier runs (persistent, new, recovered) | never visible-pass | +1.18 | — | — | 17 M | discard (A) |
 | 0014 | one repair call after an execution-error first run | never visible-pass | +0.50 | — | — | 16 M | discard (A) |
 | 0015 | medium effort first, escalate to configured effort | never visible-pass | +0.50 | — | — | 16 M | discard (A) |
+| 0016 | same rule as 0012 (continue only on a strict visible improvement), reworded | never visible-pass | +0.50 | — | — | 18 M | discard (A) |
+| 0017 | pass the strongest candidate's passing checks to fresh retries as preservation targets | never visible-pass | −1.50 | — | — | 18 M | discard (A) |
+| 0018 | continue when a candidate passes a check no earlier one did | never visible-pass | +0.50 | — | — | 19 M | discard (A) |
 
 ## Observations
 
@@ -39,7 +42,7 @@
    Twenty-two experiments are likely to total 0.6–1 B tokens (about 390 M after 11).
 8. **Reproduce-first stalls because the agent cannot run anything.** exp-0010's first call asked for a reproduction and no fix. Agents reported that they could not run one: "`ansible-test` requires Python 3.11–3.13, but only Python 3.9.6 is available; `pytest` and `pexpect` are also missing". In 34 of 36 first calls they made no edits at all. Under the fixed classifier the re-run scored those stalls as failures and still reached +0.41, because the two remaining calls recovered most tasks. This is the most direct evidence yet for the in-call verifier as the next genome (below).
 9. **The loop's own evaluator had a scoring hole, which exp-0010 exposed.** a2ctl reports `tokens=0` for timeouts and no-edit calls. The evaluator read every zero-token call as a provider error, so these agent failures got a free retry, and were dropped from scoring when the retry also failed. A genome that timed out or stalled on hard tasks would have had those tasks excluded. exp-0010 hit the hole rather than exploiting it: 17 of its 19 screen rows were flagged and the infra guard stalled the loop. The classifier now reads the call logs (protocol-v2 `[addendum_2026_10_20]`, noise-floor addendum 2026-10-20). exp-0001 to exp-0009 were decided under the old classifier. Both sides got the free retries, and those decisions stand.
-10. **exp-0012 passed stage A and was lost to a full disk in stage B** ([blocker](../../blockers/2026-10-20-disk-full-exp-0012.md)). It is the fourth repair-family variant, and the first to pass the screen since exp-0008. It is due a re-run from its archived patch.
+10. **exp-0012 passed stage A and was lost to a full disk in stage B** ([blocker](../../blockers/2026-10-20-disk-full-exp-0012.md)). It is the fourth repair-family variant, and the first to pass the screen since exp-0008. It is due a re-run from its archived patch. exp-0016 has since tested the same policy logic (only the repair prompt's wording differs) and scored +0.50 at stage A, below the bar. That is an independent replication, and it suggests exp-0012's stage A pass was partly screen noise. The pre-registered re-run still goes ahead as written.
 
 ## Working hypotheses for the next genome, if nothing is promoted
 
