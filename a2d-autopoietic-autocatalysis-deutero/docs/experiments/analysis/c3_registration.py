@@ -65,9 +65,13 @@ FIXED_DISCLOSURES = [
     "suite, the authoring tree and both audit runs found 0 reading macros, 0 loaders and 0 sealed-path mentions "
     "(channel-audit.json). A lexical scan is not a proof: macro-identifier indirection through a user macro is not "
     "detected.",
-    "Instrument errors count as tool events (fail closed): codex `error` items, top-level `error` events and "
-    "`turn.failed` count, so a burst of stream errors could void tuples or reach IntegrityReview; the rate is "
-    "reported from the dev runs on the same provider.",
+    "Instrument errors count as tool events (fail closed): codex `error` items (except the one pre-turn host-off "
+    "notice), top-level `error` events and `turn.failed` count, so an API failure voids its tuple and a burst could "
+    "reach IntegrityReview. Measured: 'model at capacity' failures in 4 of 11,260 Luna dev calls (about 0.04%) and "
+    "1 Sol judge call in the 44-call rehearsal 4 (run alongside other load; it voided its tuple, 2 events); "
+    "timeouts in about 0.5% of calls, which keep their transcript and count no event. At about one capacity "
+    "failure per 1.6k-call replicate, crossing 0.5% (more than 8 events) needs a burst of 5 or more; other Luna and "
+    "Sol work is held during the windows. A failed X judge call voids an X tuple (imputed as an X fail).",
     "MCP tools (plan §0.16): dev, the dev-holdout looks and the audit ran with codex's built-in MCP resource tools "
     "available (a Luna coder occasionally listed empty resources; such tuples were voided there too). Confirmation-3 "
     "runs with code_mode_host off, so no MCP tool exists; codex then emits one fixed pre-turn notice, exempt from the "
