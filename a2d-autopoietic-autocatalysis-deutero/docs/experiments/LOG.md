@@ -1947,3 +1947,20 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - selection discipline: a seeded split before the pilot, incumbent-only calibration in staged waves, and an acceptance check on a fresh replicate;
   - a frozen difficulty rubric, with traceability, two quoting adjudicators and opaque hidden-test names;
   - budget about 1.0–1.2k Luna in cycle 2.
+
+### C2-PB labels — blinded idea categories for phase B's 8 proposals  [cycle 2, 2026-10-21 ~11:30 UTC, before round 4 ran; Claude quota only]
+- **Method:** packet = incumbent plus, per proposal, Hypothesis/Mechanism/Expected and the diff vs the incumbent, under opaque IDs (seeded shuffle). A fresh Claude subagent read only the packet and defined categories by mechanism. The key was applied afterwards. Output: `runs/c2-pc/idea-labels.json`, which includes the packet hashes.
+- **Result:** 6 categories across 8 proposals.
+
+  | Round | Informed | Uninformed |
+  |---|---|---|
+  | 1 | reviewer-feedback-enrichment | judge-effort |
+  | 2 | draft-sampling | call-topology |
+  | 3 | repair-prompt-audit | reviewer-selection-procedure |
+  | 4 | judge-effort (**byte-identical** to r1 uninformed) | reviewer-feedback-enrichment (conceptually = r1 informed) |
+
+- **Reading (descriptive):** round 4 re-proposes round 1 with the arms swapped, so by R = 4 both proposers are recycling a small idea space on this gym. On a saturated gym, this supports stopping at R = 4 more than it supports any arm difference.
+- **Side effects the labeller flagged, which the hypotheses don't state:**
+  - r2 informed submits up to 6–7 files;
+  - r2 uninformed can stop after 2 calls;
+  - r4 uninformed lifts the incumbent's ban on pseudocode.
