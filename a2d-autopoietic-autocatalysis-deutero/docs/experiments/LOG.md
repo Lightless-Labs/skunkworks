@@ -1847,3 +1847,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Look 2 started** at 00:05:04 UTC 10-21, through the armed job (`qrun.sh L38early-look2`).
   - The snapshot `runs/c2-look2/harness.py` = E007 (c1e3e897…); the holdout run dir was created. About 3 h.
   - Queue, same minute: L23–L27 (E-resumes) exited rc=1 ("the snapshot incumbent differs from the A/A incumbent") with no calls, by design after a promotion. L28 and L29 printed "E007 was already promoted". L30 holds until 10-22.
+- **C2-LOOK2 result: FAIL (invalid)** (00:05–02:06 UTC 10-21; `runs/c2-look2/gate.json`: valid false, gate FAIL, n 200; invocations D 259, X:inc 858).
+  - Per the registered rule (FAIL, failed run or past T ⇒ E002), **the confirmation-3 candidate is E002.** Look 2 is spent.
+  - **Why invalid** (counts, booleans and labels only; no rates, no lift, no names or tasks):
+    - the run is complete (200/200 tuples), with 0 void tuples, 0 failed calls and 0 calls with tool events;
+    - `integrity_ok` is false because of **exactly one hidden-test-name hit**: X:inc (E007), replicate 0, in the Sol judge prompt (`inv03-lane_judge`).
+  - **Origin of that hit** (booleans): the hidden test's name appears in one of the tuple's Luna draft responses. It appears in none of the Luna coder prompts and not in the task's requirements or public tests.
+    - Luna named something exactly like a hidden test, and E007's judge prompt, which carries the drafts, echoed it.
+    - This is a coincidental identifier in model-written code, not a leak: the harness never has hidden tests.
+    - The rule counts any hit, and it is not reopened after a result.
+  - **Base rate** (dev data): 0 hits in 12,356 cycle-2 dev prompts (1,872 of them judge prompts that carry model code), and 0 in look 1 and in both confirmation-3 audit runs. So about 1 in 2,300 model-code prompts.
+  - **Risk for confirmation-3:** its X (E002 judge) and D (repair) prompts also carry model code, about 340 such prompts over 2 replicates. That gives roughly a 10–15% chance of a coincidental hit, which would be IntegrityReview under §0.4.
+    - §0.10 lets the registration review only tighten §0.4, so the rule stays and the risk is disclosed in the registration.
+    - Next cycle: a provenance-aware scanner that ignores names first introduced by a model response.
