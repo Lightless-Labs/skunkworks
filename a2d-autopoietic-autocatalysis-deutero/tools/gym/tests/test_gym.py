@@ -56,8 +56,10 @@ class Base(unittest.TestCase):
         self.root.mkdir()
         self.holdout = self.tmp / "holdout"
         for d in ("confirmation-3", "authoring/confirmation-3/_records", "runs/c2-confirm2-decision",
-                  "runs/c2-confirm3-r2"):
+                  "runs/c2-confirm3-r1", "runs/c2-confirm3-r2"):
             (self.holdout / d).mkdir(parents=True)
+        self.ledger_r1 = self.holdout / "runs" / "c2-confirm3-r1" / "ledger.jsonl"
+        self.ledger_r1.write_text('{"kind": "registration"}\n{"kind": "generation_complete", "aborted": false}\n')
         self.ledger = self.holdout / "runs" / "c2-confirm3-r2" / "ledger.jsonl"
         self.ledger.write_text('{"kind": "registration"}\n{"kind": "generation_complete", "aborted": false}\n')
         self.repo = self.tmp / "repo"
@@ -228,9 +230,10 @@ class Units(Base):
 
     def test_gate_a_ledger_kinds_only(self):
         """Gate (a) mirrors confirm3.complete: only a NON-ABORTED generation_complete counts (an
-        aborted replicate 2 may still be relaunched), in the first attempt's or the relaunch's
-        ledger; the window closes again once confirmation-3's manifests exist (its scoring is
-        due); decision.json opens it for good."""
+        aborted replicate may still be relaunched), in the first attempt's or the relaunch's
+        ledger, and BOTH replicates need one (a replicate-1 relaunch may follow replicate 2); the
+        window closes again once confirmation-3's manifests exist (its scoring is due);
+        decision.json opens it for good."""
         led = self.tmp / "l.jsonl"
         cases = [("", False), ('{"kind": "registration"}\n', False), ("not json\n", False),
                  ('{"kind": "generation_complete", "aborted": true}\n', False),
@@ -246,8 +249,16 @@ class Units(Base):
         self.assertEqual(self.lib(f"from gymvendor import generation_complete_in\n"
                                   f"print(generation_complete_in({str(self.tmp / 'missing')!r}))"), "False")
         window = "import gymlib\nprint(gymlib.c3_window_open())"
-        # the gym's view: the fake replicate-2 ledger (non-aborted) opens the window
+        # the gym's view: both fake replicate ledgers (non-aborted) open the window
         self.assertEqual(self.lib(window), "True")
+        self.ledger_r1.write_text('{"kind": "registration"}\n{"kind": "generation_complete", "aborted": true}\n')
+        self.assertEqual(self.lib(window), "False")                    # replicate 1 aborted, replicate 2 done
+        r1_relaunch = self.holdout / "runs" / "c2-confirm3-r1-relaunch1"
+        r1_relaunch.mkdir(parents=True)
+        (r1_relaunch / "ledger.jsonl").write_text('{"kind": "registration"}\n')
+        self.assertEqual(self.lib(window), "False")                    # its relaunch is still generating
+        (r1_relaunch / "ledger.jsonl").write_text('{"kind": "generation_complete", "aborted": false}\n')
+        self.assertEqual(self.lib(window), "True")                     # replicate 1's relaunch completed
         self.ledger.write_text('{"kind": "registration"}\n{"kind": "generation_complete", "aborted": true}\n')
         self.assertEqual(self.lib(window), "False")                    # aborted: a relaunch may follow
         relaunch = self.holdout / "runs" / "c2-confirm3-r2-relaunch1"

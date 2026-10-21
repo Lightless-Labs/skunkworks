@@ -11,9 +11,10 @@ A copy of tools/holdout/c3lib.py, adapted for the gym's isolation from confirmat
   canary (~/.a2d-gym-canary.txt) and a separate CARGO_TARGET_DIR (<root>/target), so the repo's
   target/debug/a2d is never rebuilt by gym tooling.
 - Launch gate (every driver and every job launch; fails closed, content-free):
-  (a) runs/c2-confirm3/decision.json exists, or replicate 2's ledger (first attempt or its
-      -relaunch1) holds a non-aborted `generation_complete` and no runs/c2-confirm3/manifest-r*.json
-      exists yet (confirmation-3's timed scoring is due once they do); and
+  (a) runs/c2-confirm3/decision.json exists, or BOTH replicates' ledgers (each its first attempt or
+      its -relaunch1) hold a non-aborted `generation_complete` (a replicate-1 relaunch may follow
+      replicate 2 on a deferral day) and no runs/c2-confirm3/manifest-r*.json exists yet
+      (confirmation-3's timed scoring is due once they do); and
   (b) `git diff --quiet fb5110e7 -- <GATE_PATHS>` passes (and nothing is untracked there).
       (b) is never bypassed, not even in tests.
 - Job profile: as c3lib's, plus explicit denials of ~/.a2d-holdout (and the gym root, the repo),
@@ -84,8 +85,8 @@ TARGET = ROOT / "target"                     # CARGO_TARGET_DIR: never the repo'
 BINARY = TARGET / "debug" / "a2d"
 # The registered 0.162.0, restored byte-identical under ~/.a2d-codex-pin (Homebrew moved to 0.163.0 on 10-21; LOG).
 CODEX = _cfg("GYM_CODEX", str(Path.home() / ".a2d-codex-pin" / "0.162.0" / "bin" / "codex"))
-# Copied from c3lib; the installed codex was 0.163.0 on 2026-10-21. Re-pin (version and sha256
-# prefix) before the first gym model call; until then the isolation check fails closed.
+# The pin above, as registered for confirmation-3 (version and codex sha256 prefix); the isolation
+# check fails closed on any other binary.
 PINNED_CODEX = _cfg("GYM_PINNED_CODEX", "codex-cli 0.162.0")
 PINNED_SHA = _cfg("GYM_PINNED_SHA", "8238273076041e55")
 TOOLCHAIN = Path(_cfg("GYM_TOOLCHAIN", str(Path.home() / ".rustup/toolchains/stable-aarch64-apple-darwin")))
@@ -97,9 +98,9 @@ GATE_COMMIT = "fb5110e7285b37b8125ca6fb17c717fb871f3809"
 # The plan's no-edit list plus confirmation-3's bound files (confirm3.BOUND).
 GATE_PATHS = ("tools/holdout", "nano/confirm3.py", "nano/eval.py", "crates", "Cargo.toml", "Cargo.lock",
               "runs/c2-confirm3/registration.json", "runs/c2-confirm3/frozen.py")
-# Replicate 2's ledgers: the first attempt and its one registered relaunch (confirm3.out_dir(2, relaunch)).
-C3_R2_LEDGERS = (HOLDOUT_VIEW / "runs" / "c2-confirm3-r2" / "ledger.jsonl",
-                 HOLDOUT_VIEW / "runs" / "c2-confirm3-r2-relaunch1" / "ledger.jsonl")
+# Each replicate's ledgers: the first attempt and its one registered relaunch (confirm3.out_dir(rep, relaunch)).
+C3_LEDGERS = {rep: (HOLDOUT_VIEW / "runs" / f"c2-confirm3-r{rep}" / "ledger.jsonl",
+                    HOLDOUT_VIEW / "runs" / f"c2-confirm3-r{rep}-relaunch1" / "ledger.jsonl") for rep in (1, 2)}
 C3_DIR = OUT_REPO / "runs" / "c2-confirm3"
 C3_DECISION = C3_DIR / "decision.json"
 PIPELINE_PATHS = ("tools/gym", "docs/plans/2026-10-21-gym-v3.md")
@@ -1258,13 +1259,15 @@ def c3_scoring_started():
 
 
 def c3_window_open():
-    """Gate (a): confirmation-3 is decided, or replicate 2 has generated (a non-aborted
+    """Gate (a): confirmation-3 is decided, or both replicates have generated (each a non-aborted
     `generation_complete` in its first attempt's or its relaunch's ledger, confirm3.complete's
-    rule) and confirmation-3's scoring has not started (no manifest-r*.json). In tests the
-    paths point into the test root (fake holdout view, scratch repo)."""
+    rule; a replicate-1 relaunch may run after replicate 2) and confirmation-3's scoring has not
+    started (no manifest-r*.json). In tests the paths point into the test root (fake holdout
+    view, scratch repo)."""
     if c3_decided():
         return True
-    return any(generation_complete_in(p) for p in C3_R2_LEDGERS) and not c3_scoring_started()
+    return (all(any(generation_complete_in(p) for p in ledgers) for ledgers in C3_LEDGERS.values())
+            and not c3_scoring_started())
 
 
 def launch_gate():

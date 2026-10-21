@@ -6,9 +6,10 @@ confirmation-3 isolation gate is closed.
 
 ## Launch gate
 
-- **(a) window:** `runs/c2-confirm3/decision.json` exists, or replicate 2 has a non-aborted
-  `generation_complete` (first attempt or `-relaunch1`) **and** confirmation-3's scoring has not
-  started (no `runs/c2-confirm3/manifest-r*.json`). `launch()` re-checks it for every job.
+- **(a) window:** `runs/c2-confirm3/decision.json` exists, or both replicates have a non-aborted
+  `generation_complete` (each in its first attempt or its `-relaunch1`; a replicate-1 relaunch may
+  run after replicate 2) **and** confirmation-3's scoring has not started (no
+  `runs/c2-confirm3/manifest-r*.json`). `launch()` re-checks it for every job.
 - **(b) frozen:** `git diff --quiet fb5110e7 --` the confirmation-3 paths (`gymlib.GATE_PATHS`),
   with nothing untracked there.
 
