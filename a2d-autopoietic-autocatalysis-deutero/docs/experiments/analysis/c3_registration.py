@@ -52,14 +52,19 @@ FIXED_DISCLOSURES = [
     "the provider (c14956a0, 10-21); certification checks that each audit head contains the provider commit.",
     "Audit round 1's 4 voids were an instrument fault (§0.14: two concurrent calls sharing a cwd and CODEX_HOME), "
     "fixed before registration (36bea1e1); the 4 tasks were re-audited and solved in round 2.",
-    "Provenance (Sol registration review): the last validation (10-21) built its own controller and recorded its "
-    "git head and binary sha256, and certification requires that record. The audit runs recorded binary sha256 "
-    "790bcf91... at heads 2830f5ba and 3ca9102b; debug builds are not byte-reproducible here, so the audit binary's "
-    "provenance is that record plus functional evidence: every audited tuple has --json transcripts with the "
-    "provider's marker, the codex bracket held, and each head contains the provider commit.",
-    "Compile-time file reads (Sol registration review): the validator's API-surface check compiles model-written "
-    "Rust outside the sandbox. A counts-only audit found 0 include_str!/include_bytes!/include!/env!/option_env! "
-    "uses and 0 sealed-path mentions in the 1,152 suite files and the 5,456 readable authoring files.",
+    "Provenance (registration reviews): the last validation (10-21) built its own controller and recorded its git "
+    "head and binary sha256; certification requires that record. The audit runs recorded binary sha256 790bcf91... "
+    "at heads 2830f5ba and 3ca9102b, which debug builds cannot reproduce byte for byte, so the audit's evidence is "
+    "re-derived without that binary: an independent sandboxed oracle (python + rustc) re-scored every final-round "
+    "submission (144/144 agree) and the runner's own detector port recounted their 144 transcripts (0 events, 0 "
+    "missing); certification requires both. The audit's launch isolation (its CODEX_HOME and environment) is not "
+    "independently re-verifiable; it bears on which tasks were certified, not on the arm comparison.",
+    "Compile-time file reads (registration reviews): the validator's API-surface check compiled model-written Rust "
+    "outside the sandbox, and it refuses to run once a registration exists. A counts-only lexical scan "
+    "(c3_channel_audit.py: comments stripped, aliased imports, bare macro names, #[path] and mod loaders) of the "
+    "suite, the authoring tree and both audit runs found 0 reading macros, 0 loaders and 0 sealed-path mentions "
+    "(channel-audit.json). A lexical scan is not a proof: macro-identifier indirection through a user macro is not "
+    "detected.",
     "Instrument errors count as tool events (fail closed): codex `error` items, top-level `error` events and "
     "`turn.failed` count, so a burst of stream errors could void tuples or reach IntegrityReview; the rate is "
     "reported from the dev runs on the same provider.",
@@ -99,10 +104,12 @@ FIXED_DISCLOSURES = [
     "Launch isolation before each replicate (§0.10): no codex context in any ancestor of the temp root; every "
     "call's auth-only CODEX_HOME under the holdout dir (A2D_CODEX_HOME_ROOT); a canary preflight through the "
     "real provider on every lane (the secret in no response, 0 tool events); the codex fingerprint.",
-    "Detector inventory (codex 0.162 exec item types): command_execution, file_change, mcp_tool_call, web_search, "
-    "collab_tool_call and error have live positive controls on every lane (controls.json); todo_list could not be "
-    "triggered in exec mode even with every feature on and is covered by the allowlist only; image tools have no "
-    "exec item type and are disabled by feature flags.",
+    "Detector inventory (codex 0.162 exec item types): command_execution, file_change, mcp_tool_call, web_search "
+    "and collab_tool_call have live positive controls on every lane (controls.json), each with code_mode_host "
+    "switched back on for that control (it hosts shell and MCP); the shipped call's one pre-turn host-off `error` "
+    "notice is checked live as present and not counted, and every other `error` item is counted (unit test); "
+    "todo_list could not be triggered in exec mode even with every feature on and is covered by the allowlist only; "
+    "image tools have no exec item type and are disabled by feature flags.",
     "Exposure policy: no confirmation-3 content was shown to any proposer, harness or operator. Task content "
     "exists only under the holdout dir; only counts, opaque ids and gateway booleans left it (diagnostics of "
     "2026-10-19 printed fixed vocabularies only). A task found exposed is excluded before the hash; none was.",
@@ -235,8 +242,9 @@ CONTROLS = c3.DIR / "controls.json"
 
 def controls_ok(reg):
     """The live detector controls (c3_controls.py) cover the coder lane and every registered lane,
-    are complete (negative 0 events; shell, web, file, MCP, sub-agent and error each detected),
-    ran on a checkout containing the registered provider commit, with the registered codex."""
+    are complete (negative: 0 events with the host-off notice; shell, web, file, MCP and sub-agent each
+    detected with code_mode_host back on; the notice present and not counted), ran on a checkout
+    containing the registered provider commit, with the registered codex."""
     if not CONTROLS.exists() or not committed(CONTROLS) or not reg.get("provider_commit"):
         return False
     rec = json.loads(CONTROLS.read_text())
@@ -311,8 +319,9 @@ def build(args, suite):
                                "failed first attempt's prompts), tool events > 0.5% of a replicate's invocations "
                                "(the largest of the submission, invocation-record and recount sums, a failed first "
                                "attempt's calls included), a failed first attempt with any unauditable call (no "
-                               "ledger, an unparsable line, a call without its record or transcript) or with its own "
-                               "rate above 0.5%, or the controller's own IntegrityReview",
+                               "ledger, an unparsable line, a call started but never recorded, a prompt without its "
+                               "record, a call without its transcript) or with its own rate above 0.5%, a malformed "
+                               "replicate summary, or the controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
                        "own Invalid, an aborted run, or a missing or malformed comparison or summary (an aborted "
                        "generation is a failed attempt: failure_policy)",

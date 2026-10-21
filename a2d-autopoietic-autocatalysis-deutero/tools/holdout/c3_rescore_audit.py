@@ -115,7 +115,8 @@ def main():
             counts["missing"] += 1
             continue
         if run not in ledgers:
-            ledgers[run] = confirm3.records_tolerant(run)[0]
+            ledgers[run], bad = confirm3.records_tolerant(run)
+            counts["transcripts_missing"] += bad      # a damaged audit-ledger line is unauditable
         for r in ledgers[run]:
             if r.get("kind") == "invocation" and r.get("task") == t and r.get("arm") == "D":
                 text = confirm3.transcript_text(run, r.get("prompt_path"))
