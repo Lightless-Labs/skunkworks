@@ -374,15 +374,25 @@ def _rx(s):
     return re.sub(r'([\\.^$|?*+()\[\]{}"])', r"\\\1", s.rstrip("/"))
 
 
+DATA_VOLUME = "/System/Volumes/Data"
+
+
+def _spellings(paths):
+    """Each absolute path and its /System/Volumes/Data firmlink spelling (realpath does not
+    resolve firmlinks, so seatbelt sees either), deduplicated in order."""
+    out = []
+    for p in paths:
+        s = str(Path(os.path.abspath(p)))
+        for v in (s, s if s.startswith(DATA_VOLUME + "/") else DATA_VOLUME + s):
+            if v not in out:
+                out.append(v)
+    return out
+
+
 def protected_roots():
     """Roots every gym profile denies explicitly, after its allow rules: the confirmation sets'
-    dir (literal and resolved) and, in tests, the fake view."""
-    out = []
-    for p in (HOLDOUT_REAL, Path(os.path.realpath(HOLDOUT_REAL)), HOLDOUT_VIEW):
-        s = str(Path(os.path.abspath(p)))
-        if s not in out:
-            out.append(s)
-    return out
+    dir (literal and resolved) and, in tests, the fake view; each also by its data-volume spelling."""
+    return _spellings((HOLDOUT_REAL, Path(os.path.realpath(HOLDOUT_REAL)), HOLDOUT_VIEW))
 
 
 def _protect_rules():
@@ -399,11 +409,17 @@ def codex_bin_dir():
     return str(Path(CODEX).resolve().parent)
 
 
+PACKAGE_MARKERS = ("codex-package.json", "codex-path", "codex-resources")
+
+
 def codex_package_root():
-    """The codex package directory (bin/, codex-path/, codex-resources/) when CODEX sits in a package
-    layout, else the binary's own directory."""
+    """The codex package directory: the parent of bin/ whenever it holds codex-package.json,
+    codex-path/ or codex-resources/ (the pin: bin/{codex, codex-code-mode-host}, codex-package.json,
+    codex-path/rg, codex-resources/), else the binary's own directory."""
     bin_dir = Path(CODEX).resolve().parent
-    return bin_dir.parent if bin_dir.name == "bin" and (bin_dir.parent / "codex-package.json").exists() else bin_dir
+    if bin_dir.name == "bin" and any(os.path.lexists(bin_dir.parent / m) for m in PACKAGE_MARKERS):
+        return bin_dir.parent
+    return bin_dir
 
 
 def profile(workdir, tag):
@@ -453,9 +469,16 @@ def profile(workdir, tag):
 
 
 def _compile_denied():
-    roots = ["/private/tmp", "/private/var/folders", "/private/var/tmp"]
+    """HOME, TMPDIR and the temp roots, plus /Users and /Volumes, each by its plain and its
+    /System/Volumes/Data spelling (the step dir, sysroot and xcrun cache are re-allowed after)."""
+    roots = ["/private/tmp", "/private/var/folders", "/private/var/tmp", "/Users", "/Volumes"]
     roots += [os.path.realpath(os.environ[n]) for n in ("HOME", "TMPDIR") if os.environ.get(n)]
-    return " ".join(f"(subpath {_q(r)})" for r in roots)
+    return " ".join(f"(subpath {_q(r)})" for r in _spellings(roots))
+
+
+# Model-written code may signal or inspect only processes of its own sandbox (as the job profile).
+_SIGNAL_RULES = ("(deny signal)(allow signal (target same-sandbox))"
+                 "(deny process-info*)(allow process-info* (target same-sandbox))")
 
 
 def _xcrun_cache_rule():
@@ -469,17 +492,17 @@ def _xcrun_cache_rule():
 def compile_profile(step_dir, sysroot):
     """rustc and its linker on model-written Rust (sandbox.rs `Step::Compile`): no network; HOME,
     TMPDIR and the temp roots denied except the step dir; the sysroot readable; xcrun's cache."""
-    return (f"(version 1)(allow default)(deny network*)(deny file-read* file-write* {_compile_denied()})"
+    return (f"(version 1)(allow default)(deny network*){_SIGNAL_RULES}(deny file-read* file-write* {_compile_denied()})"
             f"(allow file-read* (subpath {_q(sysroot)})){_xcrun_cache_rule()}"
             f"(allow file-read* file-write* (subpath {_q(os.path.realpath(step_dir))}))"
             f"{_protect_rules()}")
 
 
 def run_profile(binary, run_dir):
-    """A test binary (sandbox.rs `Step::Run`): no network, no fork/exec/Mach/Apple Events; it
-    reads only itself and its own run dir."""
+    """A test binary (sandbox.rs `Step::Run`): no network, no fork/exec/Mach/Apple Events, no
+    signal or process inspection outside its own sandbox; it reads only itself and its run dir."""
     binary = os.path.realpath(binary)
-    return (f"(version 1)(allow default)(deny network*)(deny file-read* file-write* {_compile_denied()})"
+    return (f"(version 1)(allow default)(deny network*){_SIGNAL_RULES}(deny file-read* file-write* {_compile_denied()})"
             f"(deny process-fork process-exec* mach-lookup appleevent-send)"
             f"(allow process-exec (literal {_q(binary)}))(allow file-read* (literal {_q(binary)}))"
             f"(allow file-read* file-write* (subpath {_q(os.path.realpath(run_dir))}))"
@@ -628,6 +651,52 @@ def codex_pinned():
     return v == PINNED_CODEX and digest.startswith(PINNED_SHA)
 
 
+def codex_smoke(w):
+    """`codex --version` run under the job profile itself: the binary must be able to read its
+    own package (codex-path/, codex-resources/) from inside every job's sandbox."""
+    try:
+        r = sandboxed(w, [CODEX, "--version"], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False
+    return r.returncode == 0 and r.stdout.strip() == PINNED_CODEX
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def codex_fingerprint():
+    """The executable an `a2d lift run` child will spawn: `codex` resolved on child_env()'s PATH,
+    which must be CODEX itself, plus its sibling helpers and package files (sha256 each) and its
+    version. Production: a native (Mach-O) binary; tests: the non-Mach-O fake. None when it
+    cannot be fingerprinted, and None never passes a bracket."""
+    import shutil
+    exe = shutil.which("codex", path=child_env()["PATH"])
+    if not exe:
+        return None
+    real = Path(os.path.realpath(exe))
+    if real != Path(CODEX).resolve() or not real.is_file():
+        return None
+    if is_macho(real) if TESTING else not is_macho(real):
+        return None
+    try:
+        files = {p.name: _sha256_file(p) for p in sorted(real.parent.iterdir()) if p.is_file()}
+        pkg = codex_package_root()
+        if pkg != real.parent:
+            for p in sorted(pkg.rglob("*")):
+                if p.is_file() and p.parent != real.parent:
+                    files[str(p.relative_to(pkg))] = _sha256_file(p)
+        version = subprocess.run([str(real), "--version"], capture_output=True, text=True, timeout=60,
+                                 stdin=subprocess.DEVNULL).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {"realpath": str(real), "files": files, "version": version} if version else None
+
+
 def must_deny():
     """Denial targets that must EXIST and be unreadable from every job (a missing one fails)."""
     return [HOLDOUT_VIEW / "confirmation-3", HOLDOUT_VIEW / "authoring" / "confirmation-3" / "_records",
@@ -652,7 +721,7 @@ def isolation_check(workdir):
     if any(os.path.lexists(w / "_codex_home" / f) for f in
            ("config.toml", "plugins", "skills", "memories", "AGENTS.md", "hooks.json", "prompts", "rules")):
         return False
-    if not codex_pinned():
+    if not codex_pinned() or not codex_smoke(w):
         return False
     return probes_ok(w, under_home)
 
@@ -1251,20 +1320,26 @@ def _raise(e):
     raise e
 
 
-def task_files(root, exclude=()):
+def task_files(root, exclude=(), protected=None):
     """Every task.json under root, following symlinked dirs without cycles. Any traversal
-    error raises: an inventory must never be partial."""
+    error raises: an inventory must never be partial. `exclude` prunes by path text; `protected`
+    (a callable on a resolved path) prunes by the RESOLVED target before descending, so an alias
+    (a symlink of another name) cannot reach a protected root."""
+    blocked = protected or (lambda real: False)
+    if blocked(os.path.realpath(root)):
+        return []
     seen_dirs, seen_files, out = set(), set(), []
     for dirpath, dirs, files in os.walk(root, followlinks=True, onerror=_raise):
         real = os.path.realpath(dirpath)
         if real in seen_dirs:
             dirs[:] = []
             continue
-        dirs[:] = [d for d in dirs if not any(x in os.path.join(dirpath, d) + "/" for x in exclude)]
+        dirs[:] = [d for d in dirs if not any(x in os.path.join(dirpath, d) + "/" for x in exclude)
+                   and not blocked(os.path.realpath(os.path.join(dirpath, d)))]
         seen_dirs.add(real)
         if "task.json" in files:
             p = os.path.realpath(os.path.join(dirpath, "task.json"))
-            if p not in seen_files:
+            if p not in seen_files and not blocked(p):
                 seen_files.add(p)
                 out.append(Path(dirpath) / "task.json")
     return sorted(out)
@@ -1282,6 +1357,7 @@ class PriorCorpus:
 
     BASE_EXCLUDE = ("/_records", "/.confirmation-3.", "/runs/", "/audit/", "/codex-homes/", "/canary/",
                     "/confirmation-3")
+    ALWAYS = ("runs", "audit", "codex-homes", "canary")          # holdout subdirs never read as tasks
 
     def __init__(self):
         self.base = [("repo-tasks", REPO / "tasks", ()), ("holdout", HOLDOUT_VIEW, self.BASE_EXCLUDE)]
@@ -1292,16 +1368,34 @@ class PriorCorpus:
         for _, r, _ in self.roots:
             if _within(r, ROOT) or _within(ROOT, r):
                 raise RuntimeError("prior corpus overlaps the gym root")
+        self._holdout = os.path.realpath(HOLDOUT_VIEW)
+        self._always = [os.path.realpath(HOLDOUT_VIEW / d) for d in self.ALWAYS] + [os.path.realpath(ROOT)]
+        if TESTING:                                    # tests never read the real holdout dir
+            self._always += [os.path.realpath(HOLDOUT_REAL), str(Path(os.path.abspath(HOLDOUT_REAL)))]
+
+    def protected(self, real):
+        """True for a resolved path the corpus must not read: the gym root, the holdout's runs/
+        audit/codex-homes/canary and every `_records`, and (until confirmation-3's decision.json)
+        anything named confirmation-3 or .confirmation-3.* under the holdout dir."""
+        if any(_within(real, p) for p in self._always):
+            return True
+        if not _within(real, self._holdout):
+            return False
+        parts = Path(real).relative_to(self._holdout).parts
+        if "_records" in parts:
+            return True
+        return not self.c3 and any(x == "confirmation-3" or x.startswith(".confirmation-3.") for x in parts)
 
     def files(self, base_only=False):
-        return [tj for _, root, excl in (self.base if base_only else self.roots) for tj in task_files(root, excl)]
+        return [tj for _, root, excl in (self.base if base_only else self.roots)
+                for tj in task_files(root, excl, self.protected)]
 
     def tasks(self):
         """[(family, requirements)] and per-root counts; fails if a root or an expected set is
         empty or a record is malformed."""
         rows, counts = [], {}
         for name, root, excl in self.roots:
-            files = task_files(root, excl)
+            files = task_files(root, excl, self.protected)
             counts[name] = len(files)
             for tj in files:
                 d = json.loads(Path(tj).read_text())
@@ -1313,7 +1407,7 @@ class PriorCorpus:
             raise ValueError("empty repo root")
         if not TESTING:
             for s in EXPECTED_HOLDOUT_SETS:
-                if not task_files(HOLDOUT_VIEW / s):
+                if not task_files(HOLDOUT_VIEW / s, (), self.protected):
                     raise ValueError("missing prior set")
         if self.c3 and counts.get("confirmation-3", 0) == 0:
             raise ValueError("confirmation-3 decided but empty")

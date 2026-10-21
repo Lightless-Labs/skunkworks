@@ -474,6 +474,25 @@ class Units(Base):
         self.assertTrue(after.startswith("['c3-f01', 'c3-f02', 'old-family']"), after)
         self.assertEqual(before.split()[-1], after.split()[-1])           # the frozen base manifest holds
 
+    def test_prior_corpus_refuses_aliases_of_confirmation3(self):
+        """Traversal follows symlinks, so a differently named alias of confirmation-3 (or of its
+        authoring records) is pruned by its resolved target, not by its name (Sol I5)."""
+        def task(d, fam):
+            d.mkdir(parents=True)
+            (d / "task.json").write_text(json.dumps({"id": d.name, "family": fam, "requirements": "R1. words"}))
+        task(self.holdout / "confirmation-1" / "a-l1", "old-family")
+        task(self.holdout / "confirmation-3" / "c3-f01-l1", "c3-f01")
+        task(self.holdout / "authoring" / "confirmation-3" / "_records" / "x-l1", "records-family")
+        (self.holdout / "confirmation-1" / "alias").symlink_to(self.holdout / "confirmation-3")
+        (self.holdout / "dev-holdout").mkdir()
+        (self.holdout / "dev-holdout" / "recs").symlink_to(self.holdout / "authoring" / "confirmation-3" / "_records")
+        probe = ("import gymlib\nrows, counts = gymlib.PriorCorpus().tasks()\n"
+                 "print(sorted({f for f, _ in rows} & {'old-family', 'c3-f01', 'records-family'}))")
+        self.assertEqual(self.lib(probe), "['old-family']")
+        (self.repo / "runs" / "c2-confirm3").mkdir(parents=True)
+        (self.repo / "runs" / "c2-confirm3" / "decision.json").write_text("{}")
+        self.assertEqual(self.lib(probe), "['c3-f01', 'old-family']")          # records stay out after the decision
+
     def test_child_env_is_scrubbed(self):
         env = dict(self.env, A2D_HOLDOUT_DIR=str(self.tmp / "nope"), C3_CODEX="/x", C3_TEST_PROBE="/y")
         out = self.lib("import gymlib, json\n"
@@ -498,10 +517,16 @@ class Units(Base):
                        "p = gymlib.profile(w, w / 'tag').strip().splitlines()[-1]\n"
                        "c = gymlib.compile_profile(w, '/x')\nr = gymlib.run_profile('/bin/ls', w)\n"
                        "h = str(Path.home() / '.a2d-holdout')\n"
-                       "print(p.startswith('(deny file-read* file-write*') and h in p,"
-                       " c.endswith(gymlib._protect_rules()) and h in c, r.endswith(gymlib._protect_rules()),"
-                       " str(gymlib.ROOT) in gymlib.profile(w, w / 'tag'))")
-        self.assertEqual(out, "True True True True")
+                       "d = '/System/Volumes/Data' + h\n"
+                       "sig = '(deny signal)(allow signal (target same-sandbox))(deny process-info*)'\n"
+                       "print(p.startswith('(deny file-read* file-write*') and h in p and d in p,"
+                       " c.endswith(gymlib._protect_rules()) and h in c and d in c, r.endswith(gymlib._protect_rules()),"
+                       " str(gymlib.ROOT) in gymlib.profile(w, w / 'tag'))\n"
+                       "print(sig in c, sig in r, all(x in c and x in r for x in ('(subpath \"/Users\")',"
+                       " '(subpath \"/System/Volumes/Data/Users\")', '(subpath \"/Volumes\")',"
+                       " '(subpath \"/System/Volumes/Data/private/tmp\")', '(subpath \"/System/Volumes/Data/private/var/folders\")',"
+                       " '(subpath \"/System/Volumes/Data' + str(Path.home().resolve()) + '\")')))")
+        self.assertEqual(out.splitlines(), ["True True True True", "True True True"])
 
     def test_symlink_refused(self):
         w = self.gym / "g3-f001"
@@ -622,13 +647,18 @@ class Units(Base):
                                             "(3, 1, 0.02) (0, 0, None)", "['b']"])
 
     def test_compile_profile_blocks_include_str_under_home(self):
-        """A compile-time include_str! of a file under HOME (or the temp roots) fails under the
-        gym's compile profile; the same read of a file in the step dir compiles (control)."""
+        """A compile-time include_str! of a file under HOME, the temp roots or the (fake) holdout
+        fails under the gym's compile profile, by its plain AND its /System/Volumes/Data spelling;
+        the same read of a file in the step dir compiles (control)."""
         scratch = Path.home() / f".a2d-gym-test-{os.getpid()}-{os.urandom(4).hex()}"
         scratch.mkdir()
+        data = "/System/Volumes/Data"
         try:
             (scratch / "secret.txt").write_text("GYM-HOME-SECRET\n")
             (self.tmp / "tmp-secret.txt").write_text("GYM-TMP-SECRET\n")
+            (self.holdout / "confirmation-3" / "SECRET.txt").write_text("C3-SECRET\n")
+            held = self.holdout / "confirmation-3" / "SECRET.txt"
+            self.assertTrue(Path(data + str(scratch / "secret.txt")).is_file())     # the alias exists here
             out = self.lib(
                 "import gymlib, shutil, tempfile\nfrom pathlib import Path\n"
                 "def build(target, inside=False):\n"
@@ -642,8 +672,10 @@ class Units(Base):
                 "    finally:\n"
                 "        shutil.rmtree(d, ignore_errors=True)\n"
                 f"print(build(Path({str(scratch / 'secret.txt')!r})), build(Path({str(self.tmp / 'tmp-secret.txt')!r})),"
-                " build(None, inside=True))", timeout=600)
-            self.assertEqual(out, "False False True")
+                " build(None, inside=True))\n"
+                f"print(build(Path({data + str(scratch / 'secret.txt')!r})), build(Path({str(held)!r})),"
+                f" build(Path({data + str(held)!r})))", timeout=600)
+            self.assertEqual(out.splitlines(), ["False False True", "False False False"])
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
@@ -779,6 +811,92 @@ class Sandbox(Base):
             f" capture_output=True, text=True, timeout=400)\n"
             f"print(r.returncode, a.returncode, 'API_OK' in a.stdout, 'test result: ok' in r.stdout)", timeout=900)
         self.assertEqual(out, "0 0 True True", out)
+
+    def test_run_profile_blocks_signals_outside_the_sandbox(self):
+        """Model-written Rust (compiled under compile_profile) that calls kill() on a sibling
+        process outside its sandbox fails under run_profile; unsandboxed, the same call succeeds
+        (control). The sibling survives a SIGKILL attempt."""
+        d = self.tmp / "sig"
+        d.mkdir()
+        (d / "k.rs").write_text(
+            'unsafe extern "C" { fn kill(pid: i32, sig: i32) -> i32; }\n'
+            "fn main() {\n    let a: Vec<String> = std::env::args().collect();\n"
+            "    let pid: i32 = a[1].parse().unwrap();\n    let sig: i32 = a[2].parse().unwrap();\n"
+            "    let r = unsafe { kill(pid, sig) };\n    println!(\"{}\", r);\n}\n")
+        self.lib(f"import gymlib\nr = gymlib.sandboxed_rustc(['--edition', '2024', 'k.rs', '-o', 'k'], {str(d)!r})\n"
+                 "assert r.returncode == 0, r.stderr")
+        sibling = subprocess.Popen(["/bin/sleep", "120"])
+        try:
+            run = self.tmp / "sigrun"
+            run.mkdir()
+            ctl = subprocess.run([str(d / "k"), str(sibling.pid), "0"], capture_output=True, text=True)
+            out = self.lib("import gymlib, subprocess\n"
+                           f"for sig in ('0', '9'):\n"
+                           f"    r = subprocess.run(['/usr/bin/sandbox-exec', '-p', gymlib.run_profile({str(d / 'k')!r}, {str(run)!r}),"
+                           f" {str(d / 'k')!r}, '{sibling.pid}', sig], capture_output=True, text=True)\n"
+                           "    print(r.stdout.strip())")
+            self.assertEqual(ctl.stdout.strip(), "0")                        # unsandboxed: the signal is allowed
+            self.assertEqual(out.splitlines(), ["-1", "-1"])
+            self.assertIsNone(sibling.poll())                                # the sibling was never killed
+        finally:
+            sibling.kill()
+            sibling.wait()
+
+    def test_codex_package_layouts_and_sandboxed_smoke(self):
+        """The pin's exact layout (bin/codex, bin/codex-code-mode-host, codex-package.json,
+        codex-path/rg, codex-resources/) resolves to its package root, which the job profile allows;
+        so does bin/ + codex-path/ without the marker file; a bare bin/ resolves to bin/. A codex that
+        reads its own package succeeds in the sandboxed --version smoke only when the root is allowed."""
+        def layout(name, files, reads):
+            root = self.tmp / name / "0.162.0"
+            (root / "bin").mkdir(parents=True)
+            for rel in files:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                if not rel.endswith("/"):
+                    (root / rel).write_text("x\n")
+            (root / "bin" / "codex").write_text('#!/bin/sh\nhere=$(cd "$(dirname "$0")" && pwd)\n'
+                                                f'cat "$here/../{reads}" > /dev/null || exit 3\necho "codex-cli 0.162.0"\n')
+            (root / "bin" / "codex").chmod(0o755)
+            return root
+        pin = layout("pin", ["bin/codex-code-mode-host", "codex-package.json", "codex-path/rg", "codex-resources/voice/"],
+                     "codex-path/rg")
+        bare_marker = layout("nomarker", ["codex-path/rg"], "codex-path/rg")
+        bare = layout("bare", ["share/x"], "share/x")                       # bin/ alone: no package marker
+        w = self.gym / "g3-f001"
+        w.mkdir(parents=True)
+        self.rec.mkdir(parents=True, exist_ok=True)
+        probe = ("import gymlib\nfrom pathlib import Path\n"
+                 f"w = Path({str(w)!r})\n"
+                 "root = gymlib.codex_package_root()\n"
+                 "print(root, f'(subpath \"{root}\")' in gymlib.profile(w, w / 'tag'), gymlib.codex_smoke(w))")
+        for root, want_root, smoke in ((pin, pin, "True"), (bare_marker, bare_marker, "True"), (bare, bare / "bin", "False")):
+            codex = root / "bin" / "codex"
+            sha = hashlib.sha256(codex.read_bytes()).hexdigest()[:16]
+            out = self.lib(probe, env=dict(self.env, GYM_CODEX=str(codex), GYM_PINNED_SHA=sha))
+            self.assertEqual(out, f"{want_root} True {smoke}", root)
+        codex = pin / "bin" / "codex"
+        out = self.lib(f"from gymlib import isolation_check\nprint(isolation_check({str(w)!r}))",
+                       env=dict(self.env, GYM_CODEX=str(codex), GYM_PINNED_SHA=hashlib.sha256(codex.read_bytes()).hexdigest()[:16]))
+        self.assertEqual(out, "True")
+
+    def test_codex_fingerprint_is_the_child_executable(self):
+        """The bracket fingerprints the `codex` the a2d child resolves on its PATH (the pinned
+        CODEX, its siblings and package files); a CODEX the child cannot reach by name has no
+        fingerprint, and a changed package file changes it."""
+        pkg = self.tmp / "pkg" / "0.162.0"
+        (pkg / "bin").mkdir(parents=True)
+        (pkg / "codex-path").mkdir()
+        (pkg / "codex-path" / "rg").write_text("rg\n")
+        (pkg / "bin" / "codex").write_text('#!/bin/sh\necho "codex-cli 0.162.0"\n')
+        (pkg / "bin" / "codex").chmod(0o755)
+        (pkg / "bin" / "other").write_text('#!/bin/sh\necho "codex-cli 0.162.0"\n')
+        (pkg / "bin" / "other").chmod(0o755)
+        fp = "import gymlib, json\nf = gymlib.codex_fingerprint()\nprint(json.dumps(f and [f['realpath'], sorted(f['files']), f['version']]))"
+        self.assertEqual(json.loads(self.lib(fp)), [str(FAKE), sorted(p.name for p in HERE.iterdir() if p.is_file()),
+                                                    "codex-cli 0.162.0"])
+        self.assertEqual(json.loads(self.lib(fp, env=dict(self.env, GYM_CODEX=str(pkg / "bin" / "codex")))),
+                         [str(pkg / "bin" / "codex"), ["codex", "codex-path/rg", "other"], "codex-cli 0.162.0"])
+        self.assertIsNone(json.loads(self.lib(fp, env=dict(self.env, GYM_CODEX=str(pkg / "bin" / "other")))))
 
     def test_validator_oracle_on_fixture(self):
         """The sandboxed oracle accepts the fixture task (depth and scale classes) and rejects an

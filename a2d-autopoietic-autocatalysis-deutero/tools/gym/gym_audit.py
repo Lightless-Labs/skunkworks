@@ -31,8 +31,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymlib import (BINARY, binary_allowed, CODEX_HOMES, PROVIDER_CANARIES, RECORDS, REPO, ROOT, RUNS, SUITE, TASK_RE,  # noqa: E402
-                    TESTING, DriverLock, build_a2d, child_env, emit, gate_or_exit, gateway, hashes_digest,
+from gymlib import (BINARY, CODEX_HOMES, PROVIDER_CANARIES, RECORDS, REPO, ROOT, RUNS, SUITE, TASK_RE,  # noqa: E402
+                    TESTING, DriverLock, binary_allowed, build_a2d, child_env, codex_fingerprint, emit,
+                    gate_or_exit, gateway, hashes_digest,
                     launch_gate, load_json, prereqs_ok, safe_copy, safe_read_text, save_json, suite_digest,
                     tree_hashes)
 from gymvendor import (CODEX_STDERR_MARKER, host_off, isolation_ok, lines, py_tool_events,  # noqa: E402
@@ -43,7 +44,6 @@ MUTANTS = tuple(f"m{i}.rs" for i in (1, 2, 3, 4))
 SOLVER = ("codex/gpt-6.1-sol", "medium")
 K = 3
 PENDING_SIM = ("reauthor", "reauthor-done", "reauthor-failed")
-MACHO = (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
 
 
 def sha256(path):
@@ -52,20 +52,6 @@ def sha256(path):
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
-
-
-def codex_fingerprint():
-    """The native codex binary and its helpers (copy of confirm3.codex_fingerprint)."""
-    exe = shutil.which("codex")
-    if not exe:
-        return None
-    real = pathlib.Path(os.path.realpath(exe))
-    with open(real, "rb") as f:
-        if f.read(4) not in MACHO:
-            return None
-    files = {p.name: sha256(p) for p in sorted(real.parent.iterdir()) if p.is_file()}
-    version = subprocess.run([str(real), "--version"], capture_output=True, text=True).stdout.strip()
-    return {"realpath": str(real), "files": files, "version": version}
 
 
 def clean_suite(suite):
@@ -254,8 +240,11 @@ def main():
             emit(stage="audit", status="preflight-failed")
             sys.exit(2)
         gate_or_exit("audit")                     # again, right before anything is reserved
-        content ={tid: hashes_digest(tree_hashes(SUITE / tid)) for tid in tasks}
-        before = None if TESTING else codex_fingerprint()
+        before = codex_fingerprint()              # the codex the provider will spawn (child PATH)
+        if before is None:
+            emit(stage="audit", status="codex-fingerprint-missing")
+            sys.exit(2)
+        content = {tid: hashes_digest(tree_hashes(SUITE / tid)) for tid in tasks}
         runs = load_json(RECORDS / "audit-runs.json", {"n": 0})
         n = runs["n"] + 1
         head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -269,8 +258,8 @@ def main():
             audit.setdefault(tid, {})[due[tid]] = {"reserved": True, "run": n, "content": content[tid]}
         save_json(RECORDS / "audit.json", audit)
         code, passed, void = run_lift(binary, tasks, n, lock.fd)
-        after = None if TESTING else codex_fingerprint()
-        bracket_ok = after == before
+        after = codex_fingerprint()
+        bracket_ok = after is not None and after == before
         runs["runs"][str(n)].update({"codex_after": after, "bracket_ok": bracket_ok})
         save_json(RECORDS / "audit-runs.json", runs)
         for tid in tasks:
