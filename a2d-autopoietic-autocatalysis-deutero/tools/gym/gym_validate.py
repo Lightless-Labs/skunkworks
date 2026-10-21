@@ -45,7 +45,7 @@ import gym_rubric  # noqa: E402
 from gymlib import (GYM, RECORDS, REPO, SUITE, TASK_RE, TESTING, DriverLock, compile_env, emit,  # noqa: E402
                     gate_or_exit, gateway, load_json, run_profile, safe_write_text, sandboxed_rustc, save_json,
                     suite_digest)
-from gymvendor import test_names  # noqa: E402
+from gymvendor import lines as rust_lines, test_names  # noqa: E402
 
 MIN_MUTANTS, MIN_PUBLIC_GREEN, MIN_HIDDEN, MIN_PUBLIC = 4, 2, 20, 3
 COMPILE_TIMEOUT = 120
@@ -66,9 +66,7 @@ def count_tests(source):
 
 def split_inner_attributes(code):
     """Leading `#![...]` attributes, `//` comments and blank lines (oracle.rs)."""
-    attrs, lines, open_brackets, i = [], code.split("\n"), 0, 0
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
+    attrs, lines, open_brackets, i = [], rust_lines(code), 0, 0
     while i < len(lines):
         t = lines[i].strip()
         if open_brackets > 0 or t.startswith("#!["):
