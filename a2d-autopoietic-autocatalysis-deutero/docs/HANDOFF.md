@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-21 20:15 UTC (session 145, cont.: **gym v3 tooling merged (09c80774f)**; **the dev gym is saturated, so phase B stops at R = 4** (pre-committed before round 4 reports). **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
+**Last updated:** 2026-10-21 19:55 UTC (session 145, cont.: **gym v3 tooling merged (09c80774f)**; **the dev gym is saturated, so phase B stops at R = 4** (pre-committed before round 4 reports). **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -28,7 +28,12 @@
      After round 4: commit its artifacts and results.tsv rows, then `python3 -I docs/experiments/analysis/c2_phaseb.py analyze`. Join the blinded idea-category labels (packet built 10-21 before any round-4 outcome; `runs/c2-pc/idea-labels.json` once committed) and fill the report's phase-B Result.
      Round 4's informed candidate is **byte-identical** to round 1's uninformed one (sha 48339373…, Sol review effort medium → high), so round 4 re-tests that harness on another quarter.
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`; tooling merged at 09c80774f after Sol + fresh-Claude reviews and a fix pass; `python3 -I -m unittest discover -s tools/gym/tests`, 59 tests, ~50 min): **no gym model call (Sol or Luna) before BOTH confirmation-3 replicates have a non-aborted `generation_complete` (first attempt or relaunch), and none while confirmation-3 is scored.** Gate (a) enforces both; gate (b) checks that the frozen paths still equal fb5110e7.
-     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Before wave 1, run a model-free pre-flight (plan "Fix pass": the real pin's sandboxed `--version`, fingerprint time, `isolation_ok()`, a real `cargo build`). Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
+     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
+     - `isolation_ok`, `codex_pinned` (14 s) and `codex_smoke`;
+     - the fingerprint: 42 files, the codex and host hashes equal the registration, 5 s;
+     - the full `isolation_check`, with every sealed path denied (9 s).
+
+     It left `~/.a2d-gym/authoring/gym-v3/_records/` behind: probe `.sb` profiles, `launch.lock`, `pids.txt` and `tags/_none`, all written 19:50:09–19:50:18. The auto-mode classifier refused to delete them, so move them aside before selection. A real `cargo build` is still untested. Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
    - The confirmation-3 lines in the 07:35 block below are unchanged and binding.
    - **Codex pin (13:00 UTC):** Homebrew codex became 0.163.0 at 10:32 UTC. The registered 0.162.0 is restored byte-identical at `~/.a2d-codex-pin/0.162.0/bin`, and L41, L42 and the round-4 job put it first on PATH (LOG "Ops — codex moved"). **Anything that must match the registration runs with that PATH.** Never delete `~/.a2d-codex-pin`.
 0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
