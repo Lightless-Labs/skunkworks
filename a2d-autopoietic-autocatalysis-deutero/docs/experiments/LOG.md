@@ -1868,3 +1868,31 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Daily-cap accounting fix** (before registration; `nano/confirm3.py` and `nano/eval.py`):
   - Phase B's 1-task proposal smokes write their ledgers five levels under `runs/` (`c2-pc/roundN/<arm>/attemptN/smoke/`). The `luna_today` globs reach only three, so about 10 Luna per round were uncounted. On the spend days, that would have blinded the confirmation's cap check.
   - Both counters now include those ledgers. Test added (27 confirm3 tests pass); round-run ledgers (`roundN/run`) were already counted.
+
+### Confirmation-3 registration review, fixes and the MCP finding  [cycle 2, 2026-10-21 02:30–05:10 UTC; registration not yet committed]
+- **Registration written (uncommitted)** with candidate E002 (look 2 invalid) and reviewed: Codex Sol and a fresh Claude, copies-only packets. Dispositions are in plan §0.15.
+  - Round 1: both answered **Yes, with blockers**: Sol 4, Claude 3.
+  - Re-check 1: Claude **Yes**, no new blockers; Sol **No**.
+  - Re-check 2: Sol **No** again, with 4 items partly fixed.
+  - All fixed, in 1b737b76, 675b77c9 and 19d6e1e6. The highlights:
+    - The runner builds before the preflight. It checks the suite hash and the crates binding before the attempt and before scoring.
+    - A failed attempt is audited conservatively: any unauditable call, or its own rate above 0.5%, blocks the claim.
+    - Invocation-level events void their tuple. Malformed records and summaries are void or Invalid, never a crash.
+    - Validation now records provenance (re-validated 144/144).
+    - The audit's evidence is re-derived without its binary: an independent sandboxed oracle re-scored all 144 final-round submissions (144/144 agree), and the runner's own detector port recounted their 144 transcripts (0 events).
+    - The channel scan is string-aware: 0 macros, 0 loaders, 0 sealed mentions.
+    - **Two dress rehearsals** on 2 dev tasks (the real binary, the exact flags, generate ×2, manifest, score) ended with runner voids 0 = controller voids 0.
+- **MCP finding (phase-B round 1, the first dev run at scale on the merged provider)** → plan §0.16.
+  - A Luna coder call listed codex's built-in MCP resources (2 tools, 4 events, 0.89%), so the run was integrity-invalid and the round used its one re-run. The re-run again had 2 events (0.44%).
+  - That pattern would decide confirmation-3's IntegrityReview about half the time.
+  - Probes: `code_mode_host` carries every MCP tool and shell execution. With it off, the tools are gone and codex emits one fixed pre-turn notice.
+  - Fix (19d6e1e6, c02ace34):
+    - the host is off;
+    - exactly one byte-identical pre-turn notice is exempt;
+    - the bound runner recounts every transcript with a port of the detector and requires the notice before every turn;
+    - the live controls are complete at c02ace34 (every positive kind counted with the host back on; the notice present and counted as 0; the negative control clean).
+- **Phase-B round 1 result** (E007 incumbent; quarter 1; the valid re-run, old provider):
+  - informed `repair-contracts`: **screen-fail**, Δall-pass +2.8 pp (net +1 task);
+  - uninformed `high-effort-review`: **screen-fail**, Δ 0.
+  - The round's first run was integrity-invalid (the MCP listing above) and was re-run with a new seed, as the protocol allows.
+  - Rounds 2–6 run on the new provider (disclosed).
