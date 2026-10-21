@@ -1979,7 +1979,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Phase-B round 4** was re-armed (new pid in `~/.a2d-queue/pc-round4.pid`, same command, same ≥ 00:10 UTC 10-22) with the same pin and a version guard, so it runs on the same codex as rounds 2–3.
 - **Lesson:** "don't upgrade codex" was a convention, and a shared machine broke it within hours. A spend-once instrument should pin its toolchain *by path* to a private copy at registration, not rely on the global install staying put.
 
-## Ops — gym v3 tooling merged (09c80774f) with three post-review deltas; model-free pre-flight passed  [2026-10-21 ~20:00 UTC; no model calls, no claim data touched]
+### Ops — gym v3 tooling merged (09c80774f) with three post-review deltas; model-free pre-flight passed  [2026-10-21 ~20:00 UTC; no model calls, no claim data touched]
 - **Merged:** `tools/gym` after Codex Sol (*Not ready*, 15 blockers) and fresh-Claude (*Ready with blockers*) reviews and a fix pass (7a53b9c92..ae55db4ae). The full suite gave 59 tests OK, with the acceptance line identical/True, at 613a8f4fe in the worktree.
 - **Three changes after the reviews, unreviewed** (send them in the next gym review batch):
   1. **34e75aa3a, gate (a) needs both replicates.** The window opens only when replicates 1 and 2 each hold a non-aborted `generation_complete` (first attempt or `-relaunch1`), or once `decision.json` exists. Keyed to replicate 2 alone, it would have opened during a replicate-1 relaunch on a later deferral day.
@@ -1994,7 +1994,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Still open:** a real `cargo build` into the gym target, the pilot accounting against a real ledger (check it on the first pilot's first lines), and `todos/gym-probe-profiles-leak.md`.
 - **Lesson:** `docs/solutions/best-practices/test-launch-gates-in-the-deployment-tree-2026-10-21.md`.
 
-## Ops — narrow Sol review of the gym post-review changes: *Not ready* → fixed (strict gate (b), median scale timing)  [2026-10-21 ~21:00 UTC; Sol high, copies only, 0 web searches]
+### Ops — narrow Sol review of the gym post-review changes: *Not ready* → fixed (strict gate (b), median scale timing)  [2026-10-21 ~21:00 UTC; Sol high, copies only, 0 web searches]
 - **Scope:** the four post-review changes (34e75aa3a, 613a8f4fe, a17d03ad5, c60dd784a).
 - **Sol's verdict: *Not ready*.**
   - **(1) gate (a), both replicates:** no findings. Sol checked 625 ledger combinations against `confirm3.complete`: deferrals, missing first-attempt ledgers and aborted relaunches.
@@ -2007,7 +2007,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **dd4b253e9:** the scale measure is the median of three timed runs after a warm-up run, and all four must pass.
 - **Lesson** (solution doc corrected): do not loosen an integrity check to tolerate a byproduct. Switch off the byproduct's producer, and send even a "trivial" post-review loosening to review.
 
-## C2-PB label join — pre-specified before round 4 reports  [2026-10-21 ~21:00 UTC; descriptive only]
+### C2-PB label join — pre-specified before round 4 reports  [cycle 2, 2026-10-21 ~21:00 UTC; descriptive only]
 - **Script:** `docs/experiments/analysis/c2_phaseb_labels.py`. It is new and separate: `c2_phaseb.py` stays untouched until the armed round-4 job, which executes it at 00:10, has finished.
   - It writes `runs/c2-pc/labels-join.json`.
   - Per proposal: category, candidate sha256 and registered decision.

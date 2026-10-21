@@ -1,17 +1,21 @@
 # Cycle 2: Autoresearch on a Minimal Coding Harness
 
-**Status: DRAFT (2026-10-17).** Sections marked **[pending]** are filled at close:
-- confirmation-2 (`runs/c2-confirm2/decision.json` plus the C2-WEB audits);
-- the E005–E010 batch and its confirmation step;
-- the proposer comparison (phase B);
-- the final dev-holdout look.
+**Status: DRAFT (updated 2026-10-21).** Sections marked **[pending]** are filled at close:
+- phase B round 4 (00:10 UTC 10-22) and the R = 4 analysis;
+- the confirmation-3 result (replicates on 10-24 and 10-25, then manifest and score);
+- confirmation-2's sealed numbers, descriptive only, released after confirmation-3's decision;
+- look-1 numbers, released at close;
+- the final claims wording.
 
 Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, per its read discipline.
 
 **Goal:** the session `/goal` of 2026-10-15 (quoted in the plan).
 **Plan:** `docs/plans/2026-10-15-cycle2-nanoharness.md`.
 **Evidence:** `docs/experiments/LOG.md`, section "Cycle 2" (every entry registered before its run), and `nano/results.tsv` (one row per experiment stage, including discards).
-**Outcome:** **[pending]**. Known so far (10-20): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim. Confirmation-3 (36 new families × 4, plan 2026-10-18) is being authored; its spend is at or after 10-24.
+**Outcome:** **[pending]**. Known so far (10-21):
+- Confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim.
+- Confirmation-3 (36 new families × 4) was **registered on 10-21 at `fb5110e7`** with candidate E002. Its replicates run on 10-24 and 10-25.
+- Phase B stopped at R = 4: the dev gym saturated (the incumbent E007 solves about 95%).
 
 ## The question
 
@@ -113,7 +117,12 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
     - a provider fix after the audit (cwd collision, §0.14), which the certification's ancestry check covers;
     - the audit ran from the provider branch before main's merge;
     - codex 0.162 injects about 10k chars of bundled skills and multi-agent text that no switch removes, the same in every arm.
-- **Status:** registration after T, then a full review, then the spend at or after 10-24, on the day after registration. **Result: [pending]**
+- **Registered** on 10-21, about 07:30 UTC, at `fb5110e7285b37b8125ca6fb17c717fb871f3809`, after a final review (Codex Sol and a fresh Claude, 7 blockers fixed; plan §0.15/§0.16).
+  - **Candidate: E002** (sha e772bd6e…). Look 2 (C2-LOOK2, the promoted batch keep E007) was **invalid**: one hidden-test name, coincidental, was echoed from a Luna draft into a judge prompt. Under §0.1 the candidate is fixed at the look's result.
+  - Arms D, B and X:frozen; 144 tasks; k = 5; Luna low, with a Sol-medium judge lane.
+- **Spend:** replicate 1 on 10-24 and replicate 2 on 10-25, from 00:05 UTC, with deferrals retried for up to 5 days. Then the manifests are committed, and the result is scored once.
+- **Toolchain disclosure:** Homebrew moved the global codex to 0.163.0 at 10:32 UTC on 10-21. This session did not do it. The registered 0.162.0 runs from a pinned copy, built from the official release package and byte-identical to the registered hashes. The runner's own fingerprint check decides before each replicate.
+- **Result: [pending]**
 
 ## Proposer comparison (phase B)
 
@@ -178,4 +187,5 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **Confirmation-3** replaces the spent confirmation-2 (plan addendum 10-18). Its §0 rules were fixed before replicate 2 and before any batch confirmation.
   - Look 2 (C2-LOOK2, the conditional dev-holdout look of a promoted batch keep) was registered on 10-19 because no queue line ran it. Without it, a promotion would have defaulted to E002.
 - **No live Claude lane:** the Claude CLI is blocked inside the session sandbox, so Claude contributed offline via subagents (C2-E1's primary judge, C2-E2, C2-FA2, proposer round c1, reviews). Their tool use was not machine-audited; this is disclosed.
-- **Phase B started before 3 confirmed keeps** (budget trigger), if so; a disclosed deviation that tests an earlier system. **[pending]**
+- **Phase B started before 3 confirmed keeps** (the budget trigger fired first). It started on 10-20 with 2 confirmed keeps (E002, then E007) and 2 provisional ones (E005, E010). This disclosed deviation tests the system as it stood then.
+- **Phase B stopped at R = 4 instead of 6.** This was pre-committed on 10-21, before round 4 reported, because the dev gym is saturated (see Phase B).
