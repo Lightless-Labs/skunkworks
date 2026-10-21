@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-21 07:35 UTC (session 145, cont.: **confirmation-3 REGISTERED at fb5110e7** (candidate E002; look 2 invalid). Reviewed by Sol and a fresh Claude (initial review plus four re-checks; all in-scope blockers fixed; plan §0.15/§0.16, including code_mode_host off). **Spend queued: L41 replicate 1 ≥ 00:05 UTC 10-24, L42 replicate 2 ≥ 00:05 UTC 10-25.** Phase B round 2 running; hold phase B during the generation windows.)
+**Last updated:** 2026-10-21 11:15 UTC (session 145, cont.: **the dev gym is saturated, so phase B stops at R = 4** (pre-committed before round 4 reports). **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -23,6 +23,13 @@
 - **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
+0. **State, 10-21 11:15 UTC (read first; supersedes the phase-B lines of the 07:35 block):**
+   - **Phase B stops at R = 4** (plan addendum 2026-10-21; LOG). Round 4 runs as armed (pid 36432, ≥ 00:10 UTC 10-22). No rounds 5–6 and no continuation.
+     After round 4: commit its artifacts and results.tsv rows, then `python3 -I docs/experiments/analysis/c2_phaseb.py analyze`. Join the blinded idea-category labels (packet built 10-21 before any round-4 outcome; `runs/c2-pc/idea-labels.json` once committed) and fill the report's phase-B Result.
+     Round 4's informed candidate is **byte-identical** to round 1's uninformed one (sha 48339373…, Sol review effort medium → high), so round 4 re-tests that harness on another quarter.
+   - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`, reviewed): **no gym model call (Sol or Luna) before confirmation-3 replicate 2's `generation_complete`.**
+     Until then: `tools/gym/` (an isolated copy of tools/holdout with GYM_* vars, `~/.a2d-gym`, vendored functions, sandboxed compiles, must-exist denial probes, a launch gate, the frozen rubric SPEC with M1–M5 checkers, power.py and the seeded split). It is being built on branch `gym-v3-tooling` in a worktree and is reviewed before merging.
+   - The confirmation-3 lines in the 07:35 block below are unchanged and binding.
 0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
    - **Confirmation-3 is registered** at `fb5110e7285b37b8125ca6fb17c717fb871f3809`, with candidate E002 (look 2 was invalid). Read plan §0.15 and §0.16 for the review dispositions and the code_mode_host change.
    - **Spend:** queue L41 (`confirm3.py generate --rep 1`, from 00:05 UTC 10-24) and L42 (rep 2, from 00:05 UTC 10-25). Both retry deferrals.
@@ -38,8 +45,7 @@
      - leave the partial holdout ledger unread.
    - **Phase B:** rounds 1–3 are done, and all 6 proposals failed the screen (best +1 net task).
      - Round 4's proposals are committed (e8e78242). A detached job runs `round --round 4` at ≥ 00:10 UTC 10-22 (pid 36432, `~/.a2d-queue/pc-round4-delayed.out`).
-     - Then round 5 on 10-22: quarters, stats, dossiers and `propose` after round 4's results (the informed brief needs them), commit, run.
-     - Round 6 on 10-23, finishing before about 22:00 UTC.
+     - ~~Rounds 5–6~~: cancelled (phase B stops at R = 4, see the 11:15 block).
      - The provider changed after round 1 (code_mode_host off; disclosed).
      - Sol capacity failures can make a run integrity-invalid; each round has one re-run.
    - **Confirmation-3 queue lines** L41 and L42 run the API health probe (`docs/experiments/analysis/c3_health.py`) before `generate` each day (LOG 10-21).
