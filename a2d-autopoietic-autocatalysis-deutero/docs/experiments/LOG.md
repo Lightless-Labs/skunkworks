@@ -1921,3 +1921,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Planned operational mitigation, outside the registered runner and decided before any confirmation-3 call:** the L41 and L42 queue lines will first run a Sol health probe (a few PONG calls through the provider's exact arguments). On any capacity failure they will wait and retry later in the same UTC day before invoking `generate`.
     - This uses API health only, never outcome data. The registration allows any start at or after 00:05 UTC.
     - It will be disclosed in the final report.
+- **Health probe in place** (`docs/experiments/analysis/c3_health.py`; queue lines L41/L42 rewritten before they ever ran).
+  - Each spend day, before `generate`: 2 Luna-low and 3 Sol-medium PONG calls with the provider's exact arguments and an isolated home. On any API error, `turn.failed` or timeout, the line waits 30 min and retries, at most 16 times (up to about 08:05 UTC), then runs `generate` anyway; the runner's own canary decides.
+  - The generation thus finishes the same UTC day, which keeps the replicates on separate days. A deferral still moves to the next 00:05.
+  - First run: healthy (5/5) at 08:48 UTC.
