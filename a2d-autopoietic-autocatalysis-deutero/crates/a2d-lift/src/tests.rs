@@ -295,6 +295,25 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
             .iter()
             .any(|r| r["kind"] == "invocation_refused" && r["reason"] == "arm budget exhausted")
     );
+    // Every call has a durable start record before it (a call in flight when the run dies stays
+    // visible as an unmatched start; plan 2026-10-18-confirmation-3 §0.16).
+    let key = |r: &Value| {
+        (
+            r["arm"].clone(),
+            r["task"].clone(),
+            r["replicate"].clone(),
+            r["index"].clone(),
+        )
+    };
+    let started: Vec<_> = records.iter().filter(|r| r["kind"] == "invocation_started").collect();
+    assert_eq!(started.len(), 8);
+    for inv in records.iter().filter(|r| r["kind"] == "invocation") {
+        let start = started
+            .iter()
+            .find(|s| key(s) == key(inv))
+            .expect("a start record");
+        assert!(start["seq"].as_u64() < inv["seq"].as_u64());
+    }
 }
 
 #[test]

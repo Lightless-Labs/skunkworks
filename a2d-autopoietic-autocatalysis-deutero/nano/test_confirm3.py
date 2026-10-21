@@ -159,6 +159,20 @@ class Tuples(unittest.TestCase):
         self.assertFalse(c3.host_off(T(st, tu, msg, done)))
         self.assertTrue(c3.host_off(T(st)))                    # no turn ran
 
+    def test_unicode_line_separators_inside_json_strings_are_not_lines(self):
+        # Rust's str::lines() splits on \n only; serde_json leaves U+2028/U+2029/U+0085 raw (Claude re-check 3).
+        msg = json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                                                              "text": "a\u2028b\u2029c\u0085d\x0be\x0cf\x1cg"}},
+                         ensure_ascii=False)
+        t = '{"type":"thread.started"}\n' + NOTICE_LINE + '\n{"type":"turn.started"}\n' + msg + \
+            '\r\n{"type":"turn.completed"}\n--- codex stderr ---\n'
+        self.assertEqual(c3.py_tool_events(t), 0)
+        self.assertTrue(c3.host_off(t))
+        self.assertEqual(c3.py_tool_events(t.replace(msg, '{"type":"item.completed","v":NaN}')), 1)  # NaN: unparsable
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "ledger.jsonl").write_text(json.dumps({"kind": "x", "t": "a\u2028b"}, ensure_ascii=False) + "\n")
+            self.assertEqual(c3.records_tolerant(d)[1], 0)
+
     def test_ledger_planned_otherwise_voids_everything(self):
         t, _ = self.tuples(self.replicate(arms=["D", "X:frozen"]))
         self.assertTrue(all(v["void"] for v in t.values()))
@@ -264,6 +278,18 @@ class Decide(unittest.TestCase):
         nan["comparisons"][0]["ci95"] = [0.02, float("nan")]
         self.assertEqual(self.decide(nan, self.tuples())["overall"], "Invalid")
 
+    def test_guard_fields_and_replicate_summaries_are_validated(self):
+        for broken in ({**summary(), "min_families": True}, {**summary(), "min_families": -1},
+                       {**summary(), "excluded_share": 1.5}, {**summary(), "max_excluded_share": -0.1}):
+            self.assertEqual(self.decide(broken, self.tuples())["overall"], "Invalid")
+        s = c3.fold_replicate_summary(summary(), [1, 2])               # a malformed replicate summary
+        self.assertEqual(self.decide(s, self.tuples())["overall"], "IntegrityReview")
+        s = c3.fold_replicate_summary(summary(), {"hidden_name_hits": 1, "integrity_ok": True})
+        self.assertEqual(self.decide(s, self.tuples())["overall"], "IntegrityReview")
+        s = c3.fold_replicate_summary(summary(), {"hidden_name_hits": [], "integrity_ok": True})
+        self.assertEqual(self.decide(s, self.tuples())["overall"], "SUPPORTED")
+        self.assertEqual(self.decide(c3.load_summary_obj("not json"), self.tuples())["overall"], "Invalid")
+
     def test_ruled_out_needs_the_best_case_point_too(self):
         # D voids imputed as fails can lift X's best case above +10 pp at the point while the CI
         # bound alone would not show it with iterations=0 (point = bounds): both must hold.
@@ -337,6 +363,17 @@ class FailedAttempt(unittest.TestCase):
         s = c3.merge_failed_attempt(summary(), stats, 1, {"invocations": 100, "tool_calls": 1, "unaudited": 0,
                                                          "hidden_name_hits": 0})
         self.assertEqual(c3.decide(s, Decide.tuples(Decide()), stats, 0)["overall"], "IntegrityReview")
+
+    def test_a_call_started_but_never_recorded_is_unauditable(self):
+        # The meter writes a durable invocation_started before each call (plan §0.16): a call in
+        # flight when the run died is an unmatched start.
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d)
+            recs = [{"kind": "invocation_started", "arm": "D", "task": "t", "replicate": 0, "index": 0},
+                    {"kind": "invocation_started", "arm": "D", "task": "t", "replicate": 0, "index": 1}]
+            (out / "ledger.jsonl").write_text("\n".join(map(json.dumps, recs)) + "\n")
+            with mock.patch.object(c3, "SUITE", out / "none"):
+                self.assertEqual(c3.failed_attempt_audit(out, [])["unaudited"], 2)
 
     def test_a_failed_attempt_without_a_ledger_is_unauditable(self):
         with tempfile.TemporaryDirectory() as d:

@@ -24,7 +24,12 @@ from c3lib import C3, HOLDOUT, REPO, SUITE  # noqa: E402
 
 MACRO = re.compile(r"\b(include_str|include_bytes|include|env|option_env)\s*!")
 RAW_MACRO = re.compile(r"\b(include_str|include_bytes|include|env|option_env)\b(?:\s|/\*.*?\*/|//[^\n]*\n)*!", re.S)
-LOADER = re.compile(r"#!?\[\s*path\s*=|\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;")
+LOADER = re.compile(r"#!?\[\s*path\s*=|\bmod\s+[^\s;{(]+\s*;")
+# Aliased imports of the reading macros (`use std::include_str as read;`) and any bare mention
+# of the unambiguous names count too (Sol third re-check); over-counting is the safe side.
+ALIAS = re.compile(r"\buse\s+[^;]*::[^;]*\b(include_str|include_bytes|include|option_env)\b[^;]*;"
+                   r"|\buse\s+[^;]*::\s*env\s+as\b[^;]*;")     # a Rust `use` has a `::` path; prose does not
+MENTION = re.compile(r"\b(include_str|include_bytes|option_env)\b")
 
 
 def strip_comments(src):
@@ -86,6 +91,7 @@ def scan(root):
         c["text_files"] += 1
         code = strip_comments(text) if p.suffix == ".rs" else text
         found = [m.group(1) for m in MACRO.finditer(code)] + [m.group(1) for m in RAW_MACRO.finditer(text)]
+        found += ["alias"] * len(ALIAS.findall(code)) + ["mention:" + m for m in MENTION.findall(code)]
         c["macros"].update(found)
         c["files_with_macro"] += bool(found)
         if p.suffix == ".rs":

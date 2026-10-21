@@ -301,6 +301,25 @@ impl Provider for MeteredProvider {
         let Some(index) = self.scope.take_slot() else {
             return Err(lock(&self.meter).refuse(&self.scope, request, "arm budget exhausted"));
         };
+        // A durable start record before the call: a call in flight when the run dies stays visible
+        // as an unmatched start (plan 2026-10-18-confirmation-3 §0.16, Sol re-check).
+        {
+            let mut meter = lock(&self.meter);
+            let started = meter.ledger.append(
+                "invocation_started",
+                json!({
+                    "arm": self.scope.arm,
+                    "task": self.scope.task,
+                    "replicate": self.scope.replicate,
+                    "index": index,
+                    "enzyme": request.enzyme_id.0,
+                }),
+            );
+            if started.is_err() {
+                meter.audit_failed = true;
+                self.scope.mark_void("audit trail write failed");
+            }
+        }
         let start = Instant::now();
         let result = self.inner.invoke(request);
         let elapsed = start.elapsed();

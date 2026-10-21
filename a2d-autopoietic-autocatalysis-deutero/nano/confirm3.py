@@ -56,19 +56,36 @@ BOOTSTRAP_SEED = 0x5EED_A2D0
 MASK64 = (1 << 64) - 1
 
 
-def records(out):
-    return [json.loads(line) for line in (pathlib.Path(out) / "ledger.jsonl").read_text().splitlines() if line.strip()]
+def lines(text):
+    """Rust's str::lines(): split on \\n only, dropping one trailing \\r. Python's splitlines() also
+    splits on U+2028, U+2029, U+0085 and other separators that serde_json leaves raw inside strings."""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return [p[:-1] if p.endswith("\r") else p for p in parts]
+
+
+def _reject_constant(name):
+    raise ValueError(f"{name} is not JSON")       # serde_json rejects NaN and Infinity
+
+
+def strict_json(line):
+    """json.loads as strict as serde_json: no NaN/Infinity; deep nesting is unparsable."""
+    try:
+        return json.loads(line, parse_constant=_reject_constant)
+    except RecursionError as e:
+        raise ValueError("nesting too deep") from e
 
 
 def records_tolerant(out):
     """(parsable records, count of unparsable lines): a dead run's ledger may end mid-line."""
     recs, bad = [], 0
     path = pathlib.Path(out) / "ledger.jsonl"
-    for line in (path.read_text(errors="replace").splitlines() if path.exists() else []):
+    for line in (lines(path.read_text(errors="replace")) if path.exists() else []):
         if not line.strip():
             continue
         try:
-            rec = json.loads(line)
+            rec = strict_json(line)
         except ValueError:
             bad += 1
             continue
@@ -96,9 +113,9 @@ def py_tool_events(transcript, failed=False):
     if failed and not events.strip():
         return 0
     count, completed, turn_started, notice_seen = 0, False, False, False
-    for line in (x for x in events.splitlines() if x.strip()):
+    for line in (x for x in lines(events) if x.strip()):
         try:
-            e = json.loads(line)
+            e = strict_json(line)
         except ValueError:
             count += 1
             continue
@@ -123,9 +140,9 @@ def host_off(transcript):
     """A call whose turn started shows the host-off notice before it: code_mode_host (MCP) was off."""
     events = _events(transcript) or ""
     seen = False
-    for line in (x for x in events.splitlines() if x.strip()):
+    for line in (x for x in lines(events) if x.strip()):
         try:
-            e = json.loads(line)
+            e = strict_json(line)
         except ValueError:
             continue
         if not isinstance(e, dict):
@@ -170,7 +187,7 @@ def transcript_ok(out, prompt_path):
 def test_names(source):
     """The controller's `validate::test_names`, ported line for line (#[test] functions)."""
     names, armed = set(), False
-    for line in (raw.strip() for raw in source.splitlines()):
+    for line in (raw.strip() for raw in lines(source)):
         if line.startswith("#[test]") and line[len("#[test]"):].lstrip().startswith("fn "):
             names.add(re.split(r"[(< ]", line[len("#[test]"):].lstrip()[3:], maxsplit=1)[0])
             continue
@@ -196,6 +213,10 @@ def failed_attempt_audit(out, tasks):
     if out.exists() and not (out / "ledger.jsonl").exists():
         unaudited += 1                           # no ledger: call coverage cannot be established
     recorded = set()
+    key = lambda r: (r.get("arm"), r.get("task"), r.get("replicate"), r.get("index"))  # noqa: E731
+    started = [key(r) for r in recs if r.get("kind") == "invocation_started"]
+    finished = {key(r) for r in recs if r.get("kind") == "invocation"}
+    unaudited += sum(1 for k in started if k not in finished)   # in flight when the run died
     for r in recs:
         if r.get("kind") == "submission":
             submission_tools += n(r.get("tool_calls"))
@@ -229,11 +250,37 @@ def failed_attempt_audit(out, tasks):
             "unaudited": unaudited, "hidden_name_hits": hits}
 
 
+def load_summary_obj(text):
+    """A controller summary from its JSON text; anything unparsable is marked malformed (Invalid)."""
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return {"__malformed__": True}
+    return obj if isinstance(obj, dict) else {"__malformed__": True}
+
+
+def fold_replicate_summary(summary, own):
+    """Fold a replicate's own summary into the pooled one: its hidden-name hits and integrity flag.
+    A malformed replicate summary, or hits that are not a list, block the claim (fail closed)."""
+    summary = dict(summary) if isinstance(summary, dict) else {"__malformed__": True}
+    hits = list(summary.get("hidden_name_hits") or []) if isinstance(summary.get("hidden_name_hits") or [], list) \
+        else ["malformed pooled hits"]
+    if not isinstance(own, dict):
+        summary["integrity_ok"] = False
+    else:
+        own_hits = own.get("hidden_name_hits") or []
+        hits += list(own_hits) if isinstance(own_hits, list) else ["malformed replicate hits"]
+        if "integrity_ok" in own and own["integrity_ok"] is not True:
+            summary["integrity_ok"] = False
+    summary["hidden_name_hits"] = hits
+    return summary
+
+
 def merge_failed_attempt(summary, stats, rep, audit):
     """Fold a failed attempt's audit into replicate `rep`'s counts and the run's hidden-name hits."""
     stats[rep]["invocations"] += audit["invocations"]
     stats[rep]["tool_calls"] += audit["tool_calls"]
-    summary = dict(summary)
+    summary = dict(summary) if isinstance(summary, dict) else {"__malformed__": True}
     summary["hidden_name_hits"] = list(summary.get("hidden_name_hits") or []) + \
         [f"failed attempt r{rep}"] * audit["hidden_name_hits"]
     if audit["unaudited"]:
@@ -392,9 +439,12 @@ def classify(c, min_families):
 def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
     """The confirmation-3 outcome from the pooled controller summary and the tuples."""
     finite = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)  # noqa: E731
-    malformed = not (isinstance(summary, dict) and isinstance(summary.get("comparisons"), list)
-                     and finite(summary.get("excluded_share")) and finite(summary.get("max_excluded_share"))
-                     and isinstance(summary.get("min_families"), int)
+    share = lambda v: finite(v) and 0 <= v <= 1  # noqa: E731
+    mf = summary.get("min_families") if isinstance(summary, dict) else None
+    malformed = not (isinstance(summary, dict) and summary.get("__malformed__") is not True
+                     and isinstance(summary.get("comparisons"), list)
+                     and share(summary.get("excluded_share")) and share(summary.get("max_excluded_share"))
+                     and isinstance(mf, int) and not isinstance(mf, bool) and mf >= 1
                      and isinstance(summary.get("hidden_name_hits") or [], list))
     if malformed:                                   # a malformed summary is Invalid, never a crash
         summary = {"comparisons": [], "hidden_name_hits": (summary.get("hidden_name_hits") if isinstance(summary, dict)
@@ -748,7 +798,11 @@ def luna_today():
         with open(real) as f:
             for line in f:
                 if '"invocation"' in line and LUNA in line:
-                    r = json.loads(line)
+                    try:
+                        r = strict_json(line)
+                    except ValueError:
+                        total += 1                 # a damaged line may be a Luna call: count it (cap side)
+                        continue
                     if r.get("kind") == "invocation" and r.get("provider") == LUNA and r.get("ts_ms", 0) >= lo_ms:
                         total += 1
     return total
@@ -1001,7 +1055,7 @@ def cmd_score(args):
                 for v in t.values():
                     v["void"] = True            # another codex ran, or the bracket is missing
             tuples.update(t)
-        summary = json.loads(pooled.read_text())
+        summary = load_summary_obj(pooled.read_text())
         failed = {}
         for rep, (out, relaunch) in outs.items():
             if relaunch and out_dir(rep).exists():   # the failed first attempt's evidence counts too
@@ -1010,10 +1064,8 @@ def cmd_score(args):
         if len(tuples) != 2 * len(reg["arms"]) * len(reg["tasks"]):
             sys.exit("planned tuples do not match the registration")
         for rep, (out, _) in outs.items():       # each replicate's own integrity record counts too
-            own = json.loads((out / "summary.json").read_text()) if (out / "summary.json").exists() else {}
-            summary["hidden_name_hits"] = list(summary.get("hidden_name_hits") or []) + list(own.get("hidden_name_hits") or [])
-            if own.get("integrity_ok") is False:
-                summary["integrity_ok"] = False
+            own = load_summary_obj((out / "summary.json").read_text()) if (out / "summary.json").exists() else None
+            summary = fold_replicate_summary(summary, own)
         decision = decide(summary, tuples, stats)
         decision["failed_attempt_audit"] = {str(k): v for k, v in failed.items()}
         decision["calls_and_tokens_by_lane"] = {str(rep): lane_usage(out) for rep, (out, _) in outs.items()}
