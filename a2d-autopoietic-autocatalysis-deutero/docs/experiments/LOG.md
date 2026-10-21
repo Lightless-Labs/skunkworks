@@ -1912,3 +1912,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Spend scheduled:** queue L41 (replicate 1, ≥ 00:05 UTC 10-24) and L42 (replicate 2, ≥ 00:05 UTC 10-25). Each retries a deferral at the next 00:05 for at most 5 days.
   - Manifest and score are manual: run `python3 -I nano/confirm3.py manifest --registered-at fb5110e7…`, commit and push the manifests, then run `… score --registered-at fb5110e7…`.
   - **Hold phase-B rounds and any other Luna/Sol work while a replicate generates** (10-24 and 10-25 from 00:05).
+- **Sol capacity failures, 10-21 morning** (dev data):
+  - Rehearsal 4 (about 06:50 UTC) had 1 Sol judge call fail with "Selected model is at capacity".
+  - Phase-B round 3's first run (07:50–08:30) had 3. Each is a top-level `error` plus `turn.failed`, counted as 2 tool events (fail closed), so 6 events (1.3%) made the run integrity-invalid; the round is on its one re-run.
+  - Earlier dev history had almost none on Sol: 8 timeouts and 1 other failure in about 2.3k Sol calls.
+  - **Risk for confirmation-3** (the rule is registered and stays): a degraded Sol during a window voids X tuples (failed judge calls, imputed as X fails) and, at 5 or more failures per replicate, makes the run IntegrityReview.
+  - The runner's own launch canary makes one Sol call and defers the day if it fails.
+  - **Planned operational mitigation, outside the registered runner and decided before any confirmation-3 call:** the L41 and L42 queue lines will first run a Sol health probe (a few PONG calls through the provider's exact arguments). On any capacity failure they will wait and retry later in the same UTC day before invoking `generate`.
+    - This uses API health only, never outcome data. The registration allows any start at or after 00:05 UTC.
+    - It will be disclosed in the final report.
