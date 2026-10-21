@@ -1,0 +1,132 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if customers[..index]
+            .iter()
+            .any(|earlier| earlier.id == customer.id)
+        {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::with_capacity(customers.len().saturating_mul(3));
+    let mut waiting: Vec<&Customer> = Vec::new();
+    let mut next_arrival = 0;
+    let mut now = 0u64;
+    let mut active: Option<(&Customer, u64)> = None;
+    let mut previous_finish: Option<u64> = None;
+    let mut first_dispatch = true;
+
+    while next_arrival < arrivals.len() || !waiting.is_empty() || active.is_some() {
+        let next_arrival_time = arrivals.get(next_arrival).map(|c| c.arrival);
+        let next_finish_time = active.map(|(_, finish)| finish);
+
+        now = match (next_arrival_time, next_finish_time) {
+            (Some(arrival), Some(finish)) => arrival.min(finish),
+            (Some(arrival), None) => arrival,
+            (None, Some(finish)) => finish,
+            (None, None) => break,
+        };
+
+        if let Some((customer, finish)) = active {
+            if finish == now {
+                events.push(Event {
+                    time: now,
+                    customer: customer.id,
+                    kind: Kind::Finish,
+                });
+                active = None;
+                previous_finish = Some(now);
+            }
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == now {
+            let customer = arrivals[next_arrival];
+            events.push(Event {
+                time: now,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(customer);
+            next_arrival += 1;
+        }
+
+        while active.is_none() && !waiting.is_empty() {
+            let customer = waiting.remove(0);
+            let wake = first_dispatch || previous_finish.is_some_and(|finish| now > finish);
+            let finish = customer
+                .service
+                .checked_add(0)
+                .and_then(|duration| now.checked_add(duration))
+                .and_then(|base| base.checked_add(if wake { wake_cost } else { 0 }))
+                .ok_or(Error::TimeOverflow {
+                    customer: customer.id,
+                    time: now,
+                })?;
+
+            events.push(Event {
+                time: now,
+                customer: customer.id,
+                kind: Kind::Start { finish, wake },
+            });
+            first_dispatch = false;
+
+            if finish == now {
+                events.push(Event {
+                    time: now,
+                    customer: customer.id,
+                    kind: Kind::Finish,
+                });
+                previous_finish = Some(now);
+            } else {
+                active = Some((customer, finish));
+            }
+        }
+    }
+
+    Ok(events)
+}

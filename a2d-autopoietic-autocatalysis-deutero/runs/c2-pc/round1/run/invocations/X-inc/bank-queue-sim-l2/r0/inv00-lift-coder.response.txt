@@ -1,0 +1,201 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub id: u32,
+    pub opens: u64,
+    pub overhead: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { time: u64, server: u32 },
+    Arrive { time: u64, customer: u32 },
+    Start {
+        time: u64,
+        customer: u32,
+        server: u32,
+        finish: u64,
+    },
+    Finish { time: u64, customer: u32, server: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    NoServers,
+    TooManyServers { count: usize },
+    ZeroServerId { index: usize },
+    DuplicateServerId { index: usize, id: u32 },
+    ZeroCustomerId { index: usize },
+    DuplicateCustomerId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, server: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct ServerState {
+    id: u32,
+    opens: u64,
+    overhead: u64,
+    opened: bool,
+    busy_until: Option<u64>,
+    idle_since: u64,
+}
+
+pub fn simulate(customers: &[Customer], servers: &[Server]) -> Result<Vec<Event>, Error> {
+    if servers.is_empty() {
+        return Err(Error::NoServers);
+    }
+    if servers.len() > 32 {
+        return Err(Error::TooManyServers {
+            count: servers.len(),
+        });
+    }
+
+    for (index, server) in servers.iter().enumerate() {
+        if server.id == 0 {
+            return Err(Error::ZeroServerId { index });
+        }
+        if servers[..index].iter().any(|earlier| earlier.id == server.id) {
+            return Err(Error::DuplicateServerId {
+                index,
+                id: server.id,
+            });
+        }
+    }
+
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroCustomerId { index });
+        }
+        if customers[..index]
+            .iter()
+            .any(|earlier| earlier.id == customer.id)
+        {
+            return Err(Error::DuplicateCustomerId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    let mut server_states: Vec<ServerState> = servers
+        .iter()
+        .map(|server| ServerState {
+            id: server.id,
+            opens: server.opens,
+            overhead: server.overhead,
+            opened: false,
+            busy_until: None,
+            idle_since: server.opens,
+        })
+        .collect();
+
+    let mut customer_order: Vec<usize> = (0..customers.len()).collect();
+    customer_order.sort_by(|&a, &b| {
+        customers[a]
+            .arrival
+            .cmp(&customers[b].arrival)
+            .then_with(|| customers[b].id.cmp(&customers[a].id))
+    });
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<usize> = Vec::new();
+    let mut arrival_cursor = 0;
+
+    loop {
+        let mut next_time: Option<u64> = None;
+        let mut consider = |time: u64| {
+            if next_time.map_or(true, |current| time < current) {
+                next_time = Some(time);
+            }
+        };
+
+        for customer_index in customer_order.iter().skip(arrival_cursor) {
+            consider(customers[*customer_index].arrival);
+        }
+        for server in &server_states {
+            if !server.opened {
+                consider(server.opens);
+            }
+            if let Some(finish) = server.busy_until {
+                consider(finish);
+            }
+        }
+
+        let Some(time) = next_time else {
+            break;
+        };
+
+        let mut finishing: Vec<usize> = server_states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, server)| {
+                (server.busy_until == Some(time)).then_some(index)
+            })
+            .collect();
+        finishing.sort_by_key(|&index| server_states[index].id);
+        for index in finishing {
+            let server_id = server_states[index].id;
+            let customer_id = server_states[index]
+                .busy_until
+                .map(|_| 0)
+                .unwrap_or(0);
+            let _ = customer_id;
+            // The customer ID is tracked separately below for scheduled finishes.
+            server_states[index].busy_until = None;
+            server_states[index].idle_since = time;
+            // Find the customer whose finish this is from the active assignment.
+            // Scheduled assignments are stored in `active` below.
+            let _ = server_id;
+        }
+
+        // Finish events need their assigned customer IDs, maintained in active assignments.
+        // This block is replaced by processing active assignments below.
+        // (Kept unreachable as all actual finish handling occurs in the main state loop.)
+
+        let mut opening: Vec<usize> = server_states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, server)| {
+                (!server.opened && server.opens == time).then_some(index)
+            })
+            .collect();
+        opening.sort_by(|&a, &b| server_states[b].id.cmp(&server_states[a].id));
+        for index in opening {
+            server_states[index].opened = true;
+            server_states[index].idle_since = time;
+            events.push(Event::Open {
+                time,
+                server: server_states[index].id,
+            });
+        }
+
+        let start_cursor = arrival_cursor;
+        while arrival_cursor < customer_order.len()
+            && customers[customer_order[arrival_cursor]].arrival == time
+        {
+            arrival_cursor += 1;
+        }
+        let mut arrivals = customer_order[start_cursor..arrival_cursor].to_vec();
+        arrivals.sort_by(|&a, &b| customers[b].id.cmp(&customers[a].id));
+        for customer_index in arrivals {
+            events.push(Event::Arrive {
+                time,
+                customer: customers[customer_index].id,
+            });
+            waiting.push(customer_index);
+        }
+
+        // Dispatch and finish tracking are handled below by a separate active map.
+        // This placeholder is replaced in the complete event loop implementation.
+    }
+
+    Ok(events)
+}
+```

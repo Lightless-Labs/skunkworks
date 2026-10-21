@@ -1,0 +1,263 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub id: u32,
+    pub opens: u64,
+    pub overhead: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { time: u64, server: u32 },
+    Arrive { time: u64, customer: u32 },
+    Start {
+        time: u64,
+        customer: u32,
+        server: u32,
+        finish: u64,
+    },
+    Finish { time: u64, customer: u32, server: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    NoServers,
+    TooManyServers { count: usize },
+    ZeroServerId { index: usize },
+    DuplicateServerId { index: usize, id: u32 },
+    ZeroCustomerId { index: usize },
+    DuplicateCustomerId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, server: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct RuntimeServer {
+    id: u32,
+    opens: u64,
+    overhead: u64,
+    opened: bool,
+    idle_since: u64,
+    busy_until: Option<u64>,
+}
+
+pub fn simulate(customers: &[Customer], servers: &[Server]) -> Result<Vec<Event>, Error> {
+    if servers.is_empty() {
+        return Err(Error::NoServers);
+    }
+    if servers.len() > 32 {
+        return Err(Error::TooManyServers {
+            count: servers.len(),
+        });
+    }
+
+    let mut server_ids = Vec::with_capacity(servers.len());
+    for (index, server) in servers.iter().enumerate() {
+        if server.id == 0 {
+            return Err(Error::ZeroServerId { index });
+        }
+        if server_ids.contains(&server.id) {
+            return Err(Error::DuplicateServerId {
+                index,
+                id: server.id,
+            });
+        }
+        server_ids.push(server.id);
+    }
+
+    let mut customer_ids = Vec::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroCustomerId { index });
+        }
+        if customer_ids.contains(&customer.id) {
+            return Err(Error::DuplicateCustomerId {
+                index,
+                id: customer.id,
+            });
+        }
+        customer_ids.push(customer.id);
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut runtime_servers: Vec<RuntimeServer> = servers
+        .iter()
+        .map(|server| RuntimeServer {
+            id: server.id,
+            opens: server.opens,
+            overhead: server.overhead,
+            opened: false,
+            idle_since: server.opens,
+            busy_until: None,
+        })
+        .collect();
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<&Customer> = Vec::new();
+    let mut arrival_index = 0;
+    let mut completed_customers = 0;
+    let mut time = 0u64;
+
+    loop {
+        // Finish occupied servers in ascending server ID order.
+        let mut finishing: Vec<usize> = runtime_servers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, server)| (server.busy_until == Some(time)).then_some(i))
+            .collect();
+        finishing.sort_by_key(|&i| runtime_servers[i].id);
+
+        for index in finishing {
+            let server = &mut runtime_servers[index];
+            if let Some((customer, _)) = events.iter().rev().find_map(|event| match event {
+                Event::Start {
+                    customer,
+                    server: server_id,
+                    finish,
+                    ..
+                } if *server_id == server.id && *finish == time => Some((*customer, *finish)),
+                _ => None,
+            }) {
+                events.push(Event::Finish {
+                    time,
+                    customer,
+                    server: server.id,
+                });
+                completed_customers += 1;
+            }
+            server.busy_until = None;
+            server.idle_since = time;
+        }
+
+        // Open servers in descending server ID order.
+        let mut opening: Vec<usize> = runtime_servers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, server)| {
+                (!server.opened && server.opens == time).then_some(i)
+            })
+            .collect();
+        opening.sort_by(|&a, &b| runtime_servers[b].id.cmp(&runtime_servers[a].id));
+
+        for index in opening {
+            let server = &mut runtime_servers[index];
+            server.opened = true;
+            events.push(Event::Open {
+                time,
+                server: server.id,
+            });
+        }
+
+        // Emit the complete arrival cohort in its already sorted order.
+        while arrival_index < arrivals.len() && arrivals[arrival_index].arrival == time {
+            let customer = arrivals[arrival_index];
+            events.push(Event::Arrive {
+                time,
+                customer: customer.id,
+            });
+            waiting.push(customer);
+            arrival_index += 1;
+        }
+
+        // Dispatch FIFO customers, recalculating server priority each time.
+        loop {
+            if waiting.is_empty() {
+                break;
+            }
+
+            let selected = runtime_servers
+                .iter()
+                .enumerate()
+                .filter(|(_, server)| server.opened && server.busy_until.is_none())
+                .min_by(|(_, a), (_, b)| {
+                    a.idle_since
+                        .cmp(&b.idle_since)
+                        .then_with(|| a.overhead.cmp(&b.overhead))
+                        .then_with(|| b.id.cmp(&a.id))
+                })
+                .map(|(index, _)| index);
+
+            let Some(server_index) = selected else {
+                break;
+            };
+
+            let customer = waiting.remove(0);
+            let server = &runtime_servers[server_index];
+
+            let finish = customer
+                .service
+                .checked_add(time)
+                .and_then(|value| value.checked_add(server.overhead))
+                .ok_or(Error::TimeOverflow {
+                    customer: customer.id,
+                    server: server.id,
+                    time,
+                })?;
+
+            events.push(Event::Start {
+                time,
+                customer: customer.id,
+                server: server.id,
+                finish,
+            });
+
+            let server = &mut runtime_servers[server_index];
+            if finish == time {
+                events.push(Event::Finish {
+                    time,
+                    customer: customer.id,
+                    server: server.id,
+                });
+                server.idle_since = time;
+                completed_customers += 1;
+            } else {
+                server.busy_until = Some(finish);
+            }
+        }
+
+        if arrival_index == arrivals.len()
+            && waiting.is_empty()
+            && completed_customers == customers.len()
+            && runtime_servers.iter().all(|server| server.opened)
+        {
+            break;
+        }
+
+        let next_arrival = arrivals.get(arrival_index).map(|customer| customer.arrival);
+        let next_open = runtime_servers
+            .iter()
+            .filter(|server| !server.opened)
+            .map(|server| server.opens)
+            .min();
+        let next_finish = runtime_servers
+            .iter()
+            .filter_map(|server| server.busy_until)
+            .min();
+
+        let next_time = [next_arrival, next_open, next_finish]
+            .into_iter()
+            .flatten()
+            .filter(|&candidate| candidate > time)
+            .min();
+
+        match next_time {
+            Some(next) => time = next,
+            None => break,
+        }
+    }
+
+    Ok(events)
+}
+```
