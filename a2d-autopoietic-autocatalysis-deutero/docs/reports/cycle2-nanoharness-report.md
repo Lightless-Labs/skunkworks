@@ -121,7 +121,16 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - 6 rounds, each a 3-arm run on a seeded quarter of the dev families.
   - Endpoints: confirmed keeps per arm, screen-pass rate, and the pooled paired precision difference. "Inconclusive" is the expected outcome at this budget.
 - **Trigger:** when the remaining budget reached 11k, it started after the batch's confirmation step (pre-registered 10-17). The keep count reached by then is reported prominently.
-- **Result:** **[pending]**
+  - Phase B started on 10-20 from incumbent E007, after three keeps: E002, then E007, with E005 and E010 provisional.
+- **Stopped at R = 4.** This deviation from R = 6 was pre-committed on 10-21, before round 4 reported, as a budget reallocation. R = 4 is the protocol's minimum for the precision metric.
+- **The finding: the search's ceiling became the gym's ceiling.**
+  - After two keeps, the incumbent E007 solves about 95% of the dev gym: 130/140 and 137/140 on its two replicates. By level, l1 is 70/70 and l4 63/70, and 28 of the 35 families are fully solved.
+  - A 35-task round quarter leaves at most about 2 tasks of headroom, against a +2-net screen, so neither endpoint can be informative at any R on this gym.
+  - Rounds 1–3: all 6 proposals screen-failed (best +1 net task).
+  - The proposers were productive. Ideas included repair contracts and blueprints, two-reading drafts, deeper Sol review, contrastive review and completion audits. The informed arm's round-4 `deeper-review` repeats the uninformed arm's round-1 `high-effort-review`.
+  - The gym could not rank them.
+  - **Consequence:** the next cycle starts with gym v3, a harder dev gym (plan 2026-10-21-gym-v3), where the proposer comparison can be re-run with headroom.
+- **Result** (endpoints at R = 4, as registered, with blinded idea-category labels): **[pending round 4]**
 
 ## Instrument integrity in cycle 2
 
