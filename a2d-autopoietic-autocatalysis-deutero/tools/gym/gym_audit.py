@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymlib import (BINARY, CODEX_HOMES, PROVIDER_CANARIES, RECORDS, REPO, ROOT, RUNS, SUITE, TASK_RE,  # noqa: E402
+from gymlib import (BINARY, binary_allowed, CODEX_HOMES, PROVIDER_CANARIES, RECORDS, REPO, ROOT, RUNS, SUITE, TASK_RE,  # noqa: E402
                     TESTING, DriverLock, build_a2d, child_env, emit, gate_or_exit, gateway, hashes_digest,
                     launch_gate, load_json, prereqs_ok, safe_copy, safe_read_text, save_json, suite_digest,
                     tree_hashes)
@@ -212,7 +212,7 @@ def run_lift(binary, tasks, n, lock_fd):
 def main():
     args = sys.argv[1:]
     binary = Path(args[args.index("--binary") + 1]) if "--binary" in args else BINARY
-    if binary != BINARY and not TESTING:
+    if not binary_allowed(binary, BINARY):
         emit(stage="audit", status="binary-override-refused")
         sys.exit(2)
     gate_or_exit("audit")

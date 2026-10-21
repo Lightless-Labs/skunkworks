@@ -4,15 +4,18 @@ A copy of tools/holdout/c3lib.py, adapted for the gym's isolation from confirmat
 
 - Own root: GYM_ROOT (default ~/.a2d-gym). The gym never reads or exports A2D_HOLDOUT_DIR and
   never imports nano/confirm3.py (pure functions are vendored in gymvendor.py). Test hooks
-  (GYM_TEST_*) are honoured only when TESTING: a non-default GYM_ROOT and GYM_TEST_SKIP_PREREQS.
+  (GYM_TEST_*) are honoured only when TESTING: a non-default GYM_ROOT and GYM_TEST_SKIP_PREREQS;
+  TESTING is confined to GYM_TEST_ROOT with a fake codex and fixture auth (refused at import
+  otherwise), so it cannot make a real model call or write real state.
 - Own STOP file, locks, records, tags, codex homes (A2D_CODEX_HOME_ROOT under the gym root),
   canary (~/.a2d-gym-canary.txt) and a separate CARGO_TARGET_DIR (<root>/target), so the repo's
   target/debug/a2d is never rebuilt by gym tooling.
 - Launch gate (every driver and every job launch; fails closed, content-free):
-  (a) confirmation-3 replicate 2's ledger holds a `generation_complete` record (kinds only), or
-      runs/c2-confirm3/decision.json exists; and
-  (b) `git diff --quiet fb5110e7 -- tools/holdout nano/confirm3.py crates Cargo.toml Cargo.lock`
-      passes (and nothing is untracked there). (b) is never bypassed, not even in tests.
+  (a) runs/c2-confirm3/decision.json exists, or replicate 2's ledger (first attempt or its
+      -relaunch1) holds a non-aborted `generation_complete` and no runs/c2-confirm3/manifest-r*.json
+      exists yet (confirmation-3's timed scoring is due once they do); and
+  (b) `git diff --quiet fb5110e7 -- <GATE_PATHS>` passes (and nothing is untracked there).
+      (b) is never bypassed, not even in tests.
 - Job profile: as c3lib's, plus explicit denials of ~/.a2d-holdout (and the gym root, the repo),
   placed after the allow rules. Must-exist denial probes: ~/.a2d-holdout/confirmation-3,
   .../authoring/confirmation-3/_records and .../runs/c2-confirm2-decision; a missing target
@@ -44,8 +47,13 @@ from gymvendor import generation_complete_in  # noqa: E402
 DEFAULT_ROOT = (Path.home() / ".a2d-gym").resolve()
 ROOT = Path(os.environ.get("GYM_ROOT", str(DEFAULT_ROOT))).resolve()
 # Test hooks (GYM_TEST_* overrides of the codex binary, pins, auth, canary, the holdout view and
-# the repo output dir) are honoured only against a non-default gym root.
+# the repo output dir) are honoured only against a non-default gym root. TESTING is confined
+# (assert_testing_confined, at import): every overridden path lies inside GYM_TEST_ROOT, the codex
+# is a non-Mach-O fake, the auth file a fixture; so test mode cannot make a real model call or
+# write real state.
 TESTING = ROOT != DEFAULT_ROOT and bool(os.environ.get("GYM_TEST_SKIP_PREREQS"))
+TESTS_DIR = Path(__file__).resolve().parent / "tests"
+TEST_ROOT = Path(os.environ["GYM_TEST_ROOT"]).resolve() if TESTING and os.environ.get("GYM_TEST_ROOT") else None
 
 
 def _cfg(name, default):
@@ -55,6 +63,10 @@ def _cfg(name, default):
 REPO = Path(__file__).resolve().parents[2]
 # The confirmation sets' dir, as a literal: never taken from A2D_HOLDOUT_DIR.
 HOLDOUT_REAL = Path.home() / ".a2d-holdout"
+REAL_AUTH_DEFAULT = Path.home() / ".codex" / "auth.json"
+PIN_ROOT = Path.home() / ".a2d-codex-pin"
+MACHO_MAGIC = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+               b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")       # Mach-O 32/64 either endianness, universal
 # What the gym treats as "the holdout dir" for the launch gate, the denial probes and the prior
 # corpus. Production: the real dir. Tests: a fake under the test root (never the real one).
 HOLDOUT_VIEW = Path(os.environ.get("GYM_TEST_HOLDOUT", str(ROOT / "fake-holdout"))).resolve() if TESTING \
@@ -82,9 +94,14 @@ CANARY = Path(_cfg("GYM_CANARY", str(Path.home() / ".a2d-gym-canary.txt")))
 AUTHORING_FILES = Path(__file__).resolve().parent / "authoring"
 
 GATE_COMMIT = "fb5110e7285b37b8125ca6fb17c717fb871f3809"
-GATE_PATHS = ("tools/holdout", "nano/confirm3.py", "crates", "Cargo.toml", "Cargo.lock")
-C3_R2_LEDGER = HOLDOUT_VIEW / "runs" / "c2-confirm3-r2" / "ledger.jsonl"
-C3_DECISION = OUT_REPO / "runs" / "c2-confirm3" / "decision.json"
+# The plan's no-edit list plus confirmation-3's bound files (confirm3.BOUND).
+GATE_PATHS = ("tools/holdout", "nano/confirm3.py", "nano/eval.py", "crates", "Cargo.toml", "Cargo.lock",
+              "runs/c2-confirm3/registration.json", "runs/c2-confirm3/frozen.py")
+# Replicate 2's ledgers: the first attempt and its one registered relaunch (confirm3.out_dir(2, relaunch)).
+C3_R2_LEDGERS = (HOLDOUT_VIEW / "runs" / "c2-confirm3-r2" / "ledger.jsonl",
+                 HOLDOUT_VIEW / "runs" / "c2-confirm3-r2-relaunch1" / "ledger.jsonl")
+C3_DIR = OUT_REPO / "runs" / "c2-confirm3"
+C3_DECISION = C3_DIR / "decision.json"
 PIPELINE_PATHS = ("tools/gym", "docs/plans/2026-10-21-gym-v3.md")
 
 DISABLE = [
@@ -127,7 +144,57 @@ def assert_disjoint():
         raise RuntimeError("test holdout view is the real holdout")
 
 
+def is_macho(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) in MACHO_MAGIC
+    except OSError:
+        return False
+
+
+def _real(p):
+    return Path(os.path.realpath(os.path.expanduser(str(p))))
+
+
+def assert_testing_confined():
+    """TESTING must be incapable of a real model call or a real-state write (fails at import):
+    - GYM_TEST_ROOT is set, is not HOME or an ancestor of it, and is disjoint (either way round)
+      from the real holdout dir, the repo, the production gym root, ~/.codex, the codex pin and
+      /opt/homebrew; GYM_ROOT lies inside it;
+    - GYM_CODEX is set, resolves inside tools/gym/tests/ or the test root, and is not Mach-O (a
+      script fake; never the pin, Homebrew's or any native codex);
+    - GYM_AUTH is set, resolves inside the test root (a fixture) and is not ~/.codex/auth.json;
+    - every other GYM_* value that is a path resolves inside the test root."""
+    if not TESTING:
+        return
+    if TEST_ROOT is None or not TEST_ROOT.is_dir():
+        raise RuntimeError("testing mode needs GYM_TEST_ROOT")
+    t = _real(TEST_ROOT)
+    if _within(Path.home(), t) or _within(_real(Path.home()), t):
+        raise RuntimeError("test root contains HOME")
+    for p in (HOLDOUT_REAL, _real(HOLDOUT_REAL), REPO, DEFAULT_ROOT, Path.home() / ".codex", PIN_ROOT,
+              Path("/opt/homebrew")):
+        if _within(t, p) or _within(p, t):
+            raise RuntimeError("test root overlaps a protected root")
+    if not _within(ROOT, t):
+        raise RuntimeError("gym root outside the test root")
+    codex, auth = os.environ.get("GYM_CODEX"), os.environ.get("GYM_AUTH")
+    if not codex or not auth:
+        raise RuntimeError("testing mode needs GYM_CODEX and GYM_AUTH")
+    c = _real(codex)
+    if not (_within(c, TESTS_DIR) or _within(c, t)) or not c.is_file() or is_macho(c):
+        raise RuntimeError("test codex is not a fake")
+    a = _real(auth)
+    if not _within(a, t) or a == _real(REAL_AUTH_DEFAULT):
+        raise RuntimeError("test auth is not a fixture")
+    for k, v in os.environ.items():
+        if k.startswith("GYM_") and k not in ("GYM_CODEX", "GYM_TEST_ROOT") and v.strip().startswith(("/", "~")):
+            if not _within(_real(v.strip()), t):
+                raise RuntimeError("a test path override outside the test root")
+
+
 assert_disjoint()
+assert_testing_confined()
 
 
 # ---------------------------------------------------------------- output gateway
@@ -475,8 +542,12 @@ def job_codex_home(workdir):
     return home
 
 
+TEST_PATH_TAIL = "/usr/bin:/bin"        # TESTING: no Homebrew, no pin, no native codex on any PATH
+
+
 def _env(workdir, home):
-    env = {"HOME": str(Path.home()), "PATH": codex_bin_dir() + ":/usr/bin:/bin:/opt/homebrew/bin",
+    tail = TEST_PATH_TAIL if TESTING else "/usr/bin:/bin:/opt/homebrew/bin"
+    env = {"HOME": str(Path.home()), "PATH": codex_bin_dir() + ":" + tail,
            "CODEX_HOME": str(home), "TMPDIR": _rp(workdir), "LANG": "en_US.UTF-8",
            "RUSTC": str(TOOLCHAIN / "bin" / "rustc")}
     if TESTING:
@@ -489,13 +560,27 @@ SCRUBBED = ("A2D_HOLDOUT_DIR",)
 
 def child_env(**extra):
     """Environment for gym subprocesses that are not codex jobs (`a2d lift run`, cargo): the
-    parent's, minus A2D_HOLDOUT_DIR and every C3_* / GYM_TEST_* hook (kept only in tests)."""
+    parent's, minus A2D_HOLDOUT_DIR and every C3_* / GYM_TEST_* hook (kept only in tests). PATH
+    starts with the pinned codex's dir (the provider spawns `codex` by name); in tests it is that
+    (fake) dir plus /usr/bin:/bin only, so no real codex is ever reachable by name."""
     env = {k: v for k, v in os.environ.items()
            if k not in SCRUBBED and not k.startswith("C3_") and (TESTING or not k.startswith("GYM_TEST_"))}
+    tail = TEST_PATH_TAIL if TESTING else env.get("PATH", "/usr/bin:/bin")
     env.update({"A2D_CODEX_HOME_ROOT": str(CODEX_HOMES), "CARGO_TARGET_DIR": str(TARGET),
-                "PATH": codex_bin_dir() + ":" + env.get("PATH", "/usr/bin:/bin")})   # the provider spawns `codex` by name
+                "PATH": codex_bin_dir() + ":" + tail})
     env.update(extra)
     return env
+
+
+def binary_allowed(binary, default):
+    """An `a2d` override (--binary) is accepted only in tests, and only a non-Mach-O fake inside
+    tools/gym/tests/ or the test root."""
+    if Path(binary) == Path(default):
+        return True
+    if not TESTING:
+        return False
+    b = _real(binary)
+    return (_within(b, TESTS_DIR) or _within(b, _real(TEST_ROOT))) and b.is_file() and not is_macho(b)
 
 
 def sandboxed(workdir, argv, record=None, **kw):
@@ -1027,10 +1112,23 @@ def c3_decided():
     return os.path.lexists(C3_DECISION)
 
 
+def c3_scoring_started():
+    """confirmation-3's manifests (written right before scoring) exist: its timed hidden runs are
+    due, so the gym must be idle until decision.json (runbook: --stop and --drained first)."""
+    try:
+        return any(os.path.lexists(p) for p in C3_DIR.glob("manifest-r*.json"))
+    except OSError:
+        return True
+
+
 def c3_window_open():
-    """Gate (a): replicate 2 of confirmation-3 has generated, or confirmation-3 is decided. In
-    tests both paths point into the test root (fake holdout view, scratch repo)."""
-    return generation_complete_in(C3_R2_LEDGER) or c3_decided()
+    """Gate (a): confirmation-3 is decided, or replicate 2 has generated (a non-aborted
+    `generation_complete` in its first attempt's or its relaunch's ledger, confirm3.complete's
+    rule) and confirmation-3's scoring has not started (no manifest-r*.json). In tests the
+    paths point into the test root (fake holdout view, scratch repo)."""
+    if c3_decided():
+        return True
+    return any(generation_complete_in(p) for p in C3_R2_LEDGERS) and not c3_scoring_started()
 
 
 def launch_gate():

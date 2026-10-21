@@ -1,7 +1,8 @@
 """Tests for the gym v3 pipeline, on fixtures with a fake codex and a fake `a2d lift run`.
 
 Every script runs as a subprocess with GYM_ROOT pointing at a fresh temp dir (TESTING mode:
-non-default root + GYM_TEST_SKIP_PREREQS), a fake confirmation-3 holdout view under the temp dir
+non-default root + GYM_TEST_SKIP_PREREQS, confined to GYM_TEST_ROOT = the temp dir, with the fake
+codex and a fixture auth file), a fake confirmation-3 holdout view under the temp dir
 (GYM_TEST_HOLDOUT) and a scratch git repo for repo outputs (GYM_TEST_OUT_REPO), under the real
 seatbelt profiles. No model is ever called. Gate (b) of the launch gate always runs against the
 real repo. One test reads the real ~/.a2d-holdout, only as allowed: a digest of
@@ -67,7 +68,8 @@ class Base(unittest.TestCase):
         (self.tmp / "auth.json").write_text("{}")
         self.canary = self.tmp / "canary.txt"
         sha = hashlib.sha256(FAKE.read_bytes()).hexdigest()[:16]
-        self.env = dict(clean_env(), GYM_ROOT=str(self.root), GYM_TEST_SKIP_PREREQS="1", GYM_CODEX=str(FAKE),
+        self.env = dict(clean_env(), GYM_ROOT=str(self.root), GYM_TEST_SKIP_PREREQS="1", GYM_TEST_ROOT=str(self.tmp),
+                        GYM_CODEX=str(FAKE),
                         GYM_AUTH=str(self.tmp / "auth.json"), GYM_CANARY=str(self.canary), GYM_PINNED_SHA=sha,
                         GYM_TEST_HOLDOUT=str(self.holdout), GYM_TEST_OUT_REPO=str(self.repo),
                         GYM_TEST_QUOTA="1", GYM_TEST_SPARES="1")
@@ -205,24 +207,112 @@ class Units(Base):
         self.assertEqual(out.splitlines(), ["0 1 1 1 True False", "26", "['a', 'b\\u2028c']"])
 
     def test_gate_a_ledger_kinds_only(self):
+        """Gate (a) mirrors confirm3.complete: only a NON-ABORTED generation_complete counts (an
+        aborted replicate 2 may still be relaunched), in the first attempt's or the relaunch's
+        ledger; the window closes again once confirmation-3's manifests exist (its scoring is
+        due); decision.json opens it for good."""
         led = self.tmp / "l.jsonl"
         cases = [("", False), ('{"kind": "registration"}\n', False), ("not json\n", False),
-                 ('{"kind": "generation_complete", "aborted": true}\n', True),
-                 ('garbage\n{"kind": "generation_complete"}\n', True), ('{"kind": NaN}\n', False),
-                 ('["generation_complete"]\n', False)]
+                 ('{"kind": "generation_complete", "aborted": true}\n', False),
+                 ('garbage\n{"kind": "generation_complete"}\n', False),
+                 ('{"kind": "generation_complete", "aborted": 0}\n', False),
+                 ('garbage\n{"kind": "generation_complete", "aborted": false}\n', True),
+                 ('{"kind": "generation_complete", "aborted": false}\u2028x\n', False),
+                 ('{"kind": NaN}\n', False), ('["generation_complete"]\n', False)]
         for text, want in cases:
             led.write_text(text)
             self.assertEqual(self.lib(f"from gymvendor import generation_complete_in\n"
                                       f"print(generation_complete_in({str(led)!r}))"), str(want), text)
         self.assertEqual(self.lib(f"from gymvendor import generation_complete_in\n"
                                   f"print(generation_complete_in({str(self.tmp / 'missing')!r}))"), "False")
-        # the gym's view: the fake replicate-2 ledger opens the window; decision.json opens it too
-        self.assertEqual(self.lib("import gymlib\nprint(gymlib.c3_window_open())"), "True")
-        self.ledger.write_text('{"kind": "registration"}\n')
-        self.assertEqual(self.lib("import gymlib\nprint(gymlib.c3_window_open())"), "False")
-        (self.repo / "runs" / "c2-confirm3").mkdir(parents=True)
-        (self.repo / "runs" / "c2-confirm3" / "decision.json").write_text("{}")
-        self.assertEqual(self.lib("import gymlib\nprint(gymlib.c3_window_open())"), "True")
+        window = "import gymlib\nprint(gymlib.c3_window_open())"
+        # the gym's view: the fake replicate-2 ledger (non-aborted) opens the window
+        self.assertEqual(self.lib(window), "True")
+        self.ledger.write_text('{"kind": "registration"}\n{"kind": "generation_complete", "aborted": true}\n')
+        self.assertEqual(self.lib(window), "False")                    # aborted: a relaunch may follow
+        relaunch = self.holdout / "runs" / "c2-confirm3-r2-relaunch1"
+        relaunch.mkdir(parents=True)
+        (relaunch / "ledger.jsonl").write_text('{"kind": "generation_complete", "aborted": false}\n')
+        self.assertEqual(self.lib(window), "True")                     # the relaunch completed
+        c3 = self.repo / "runs" / "c2-confirm3"
+        c3.mkdir(parents=True)
+        (c3 / "manifest-r1.json").write_text("{}")
+        self.assertEqual(self.lib(window), "False")                    # scoring is due: closed again
+        (c3 / "decision.json").write_text("{}")
+        self.assertEqual(self.lib(window), "True")                     # decided
+        (relaunch / "ledger.jsonl").unlink()
+        self.assertEqual(self.lib(window), "True")
+        self.assertEqual(self.lib("import gymlib\nprint(gymlib.GATE_PATHS)"),
+                         "('tools/holdout', 'nano/confirm3.py', 'nano/eval.py', 'crates', 'Cargo.toml', 'Cargo.lock', "
+                         "'runs/c2-confirm3/registration.json', 'runs/c2-confirm3/frozen.py')")
+
+    def test_launch_rechecks_gate_per_job(self):
+        """launch() evaluates gate (a) on every job: a manifest written between two jobs refuses the next."""
+        code = ("from gymlib import LaunchGateClosed, launch, RECORDS\nimport subprocess\n"
+                "RECORDS.mkdir(parents=True, exist_ok=True)\n"
+                "p = launch('/dev/null', ['/usr/bin/true'], stdin=subprocess.DEVNULL)\np.wait()\nprint('FIRST')\n"
+                f"open({str(self.repo / 'runs' / 'm')!r}, 'w').close()\n"
+                f"import os; os.makedirs({str(self.repo / 'runs' / 'c2-confirm3')!r}, exist_ok=True)\n"
+                f"open({str(self.repo / 'runs' / 'c2-confirm3' / 'manifest-r2.json')!r}, 'w').close()\n"
+                "try:\n    launch('/dev/null', ['/usr/bin/true'])\n    print('LAUNCHED')\n"
+                "except LaunchGateClosed:\n    print('REFUSED')")
+        self.assertEqual(self.lib(code).splitlines(), ["FIRST", "REFUSED"])
+
+    def test_testing_mode_is_confined(self):
+        """Test mode cannot reach a real codex, real auth or real state: each unconfined setting
+        refuses at import (before any driver runs)."""
+        def refused(**over):
+            env = dict(self.env, **over)
+            for k in [k for k, v in over.items() if v is None]:
+                env.pop(k)
+            r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(TOOLS)!r}); import gymlib"],
+                               capture_output=True, text=True, env=env)
+            return r.returncode != 0 and "RuntimeError" in r.stderr
+        self.assertFalse(refused())                                            # the fixture env is confined
+        macho = self.tmp / "native-codex"
+        shutil.copy("/bin/echo", macho)
+        pin = Path.home() / ".a2d-codex-pin" / "0.162.0" / "bin" / "codex"
+        elsewhere = Path(tempfile.mkdtemp(prefix="gymtest-outside-")).resolve()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        (elsewhere / "auth.json").write_text("{}")
+        cases = {
+            "no test root": dict(GYM_TEST_ROOT=None),
+            "test root is HOME": dict(GYM_TEST_ROOT=str(Path.home())),
+            "gym root outside the test root": dict(GYM_ROOT=str(elsewhere / "gym")),
+            "no codex": dict(GYM_CODEX=None),
+            "pinned codex": dict(GYM_CODEX=str(pin)),
+            "homebrew codex": dict(GYM_CODEX="/opt/homebrew/bin/codex"),
+            "a native codex in the test root": dict(GYM_CODEX=str(macho)),
+            "no auth": dict(GYM_AUTH=None),
+            "real auth": dict(GYM_AUTH=str(Path.home() / ".codex" / "auth.json")),
+            "auth outside the test root": dict(GYM_AUTH=str(elsewhere / "auth.json")),
+            "canary outside": dict(GYM_CANARY=str(elsewhere / "canary.txt")),
+            "canary at the production location": dict(GYM_CANARY=str(Path.home() / ".a2d-gym-canary.txt")),
+            "holdout view outside": dict(GYM_TEST_HOLDOUT=str(elsewhere)),
+            "repo out outside": dict(GYM_TEST_OUT_REPO=str(elsewhere)),
+            "harness outside": dict(GYM_TEST_HARNESS=str(A2D / "nano" / "harness.py")),
+            "toolchain override outside": dict(GYM_TOOLCHAIN=str(elsewhere)),
+        }
+        for name, over in cases.items():
+            self.assertTrue(refused(**over), name)
+
+    def test_testing_child_paths_hold_no_real_codex(self):
+        out = self.lib("import gymlib, json, os\n"
+                       "e = gymlib.child_env()['PATH'].split(':')\nj = gymlib._env('/tmp', '/tmp/h')['PATH'].split(':')\n"
+                       "print(json.dumps([e[0] == gymlib.codex_bin_dir(), e[1:], j[1:],"
+                       " [d for d in e + j if os.path.exists(os.path.join(d, 'codex')) and gymlib.is_macho(os.path.join(d, 'codex'))]]))")
+        self.assertEqual(json.loads(out), [True, ["/usr/bin", "/bin"], ["/usr/bin", "/bin"], []])
+
+    def test_binary_override_confined_to_fakes(self):
+        out = self.lib("import gymlib\n"
+                       f"print(gymlib.binary_allowed({str(FAKE_A2D)!r}, gymlib.BINARY),"
+                       " gymlib.binary_allowed('/usr/bin/true', gymlib.BINARY),"
+                       f" gymlib.binary_allowed({str(A2D / 'target' / 'debug' / 'a2d')!r}, gymlib.BINARY),"
+                       " gymlib.binary_allowed(gymlib.BINARY, gymlib.BINARY))")
+        self.assertEqual(out, "True False False True")
+        for name in ("gym_audit.py", "gym_pilot.py"):
+            code, lines = self.run_script(name, "--binary", "/usr/bin/true", *(["--wave", "1"] if name == "gym_pilot.py" else []))
+            self.assertEqual((code, lines[-1]["status"]), (2, "binary-override-refused"), name)
 
     def test_gate_b_real_repo_and_negative(self):
         self.assertEqual(self.lib("import gymlib\nprint(gymlib.c3_frozen(), gymlib.GATE_COMMIT[:8])"), "True fb5110e7")

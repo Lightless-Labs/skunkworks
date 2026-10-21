@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymlib import (BINARY, HOLDOUT_VIEW, OUT_REPO, RECORDS, REPO, RUNS, SUITE, TESTING, DriverLock,  # noqa: E402
+from gymlib import (BINARY, binary_allowed, HOLDOUT_VIEW, OUT_REPO, RECORDS, REPO, RUNS, SUITE, TESTING, DriverLock,  # noqa: E402
                     _cfg, build_a2d, child_env, emit, gate_or_exit, gateway, launch_gate, load_json, prereqs_ok,
                     repo_write_root, safe_copy, save_json, spec_sha)
 from gymvendor import strict_json, test_names  # noqa: E402
@@ -152,7 +152,7 @@ def main():
     from gym_split import assignment, committed, load_split
     args = sys.argv[1:]
     binary = Path(args[args.index("--binary") + 1]) if "--binary" in args else BINARY
-    if binary != BINARY and not TESTING:
+    if not binary_allowed(binary, BINARY):
         emit(stage="pilot", status="binary-override-refused")
         sys.exit(2)
     gate_or_exit("pilot")

@@ -238,9 +238,11 @@ def isolation_ok():
 
 
 def generation_complete_in(ledger):
-    """Gym launch gate (a): True iff the ledger file holds a record whose kind is
-    "generation_complete". Lines are parsed with strict_json and only `kind` is inspected;
-    nothing is returned or printed but the boolean. A missing or unreadable ledger is False."""
+    """Gym launch gate (a): True iff the ledger file holds a record with kind
+    "generation_complete" and `aborted is False` (confirm3.complete's rule: an aborted generation
+    may still be relaunched). Lines are split by lines() and parsed with strict_json; only `kind`
+    and `aborted` are inspected; nothing is returned or printed but the boolean. A missing or
+    unreadable ledger is False."""
     try:
         text = pathlib.Path(ledger).read_text(errors="replace")
     except OSError:
@@ -252,6 +254,6 @@ def generation_complete_in(ledger):
             rec = strict_json(line)
         except ValueError:
             continue
-        if isinstance(rec, dict) and rec.get("kind") == "generation_complete":
+        if isinstance(rec, dict) and rec.get("kind") == "generation_complete" and rec.get("aborted") is False:
             return True
     return False
