@@ -1233,23 +1233,18 @@ def _git(*args, repo=None):
                           stdin=subprocess.DEVNULL)
 
 
-def _bytecode_cache(path):
-    """`<dir>/__pycache__/<name>.pyc`: written by any import of a tracked module, and never loaded
-    without its source (which the diff covers). A sourceless `.pyc` beside the sources still counts."""
-    parts = path.split("/")
-    return len(parts) >= 2 and parts[-2] == "__pycache__" and parts[-1].endswith(".pyc")
-
-
 def frozen_since(repo, commit, paths):
-    """`git diff --quiet <commit> -- <paths>` passes and nothing is untracked under the paths
-    (bytecode caches aside: importing tools/holdout modules writes them, e.g. during the spend)."""
+    """`git diff --quiet <commit> -- <paths>` passes and nothing is untracked under the paths.
+    Strict, bytecode caches included: a crafted `__pycache__/<mod>.<tag>.pyc` whose header matches
+    an unchanged source's mtime and size is loaded instead of that source (Sol review, 10-21).
+    Processes importing tools/holdout run with -B (the queue's confirmation-3 lines, the runbook)."""
     try:
         if _git("diff", "--quiet", commit, "--", *paths, repo=repo).returncode != 0:
             return False
-        r = _git("ls-files", "-z", "--others", "--exclude-standard", "--", *paths, repo=repo)
+        r = _git("ls-files", "--others", "--exclude-standard", "--", *paths, repo=repo)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return r.returncode == 0 and not [p for p in r.stdout.split("\0") if p and not _bytecode_cache(p)]
+    return r.returncode == 0 and not r.stdout.strip()
 
 
 def c3_frozen():

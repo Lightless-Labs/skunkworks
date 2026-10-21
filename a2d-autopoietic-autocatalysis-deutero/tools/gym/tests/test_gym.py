@@ -403,11 +403,9 @@ class Units(Base):
         self.assertEqual(self.lib(check), "False")
         (r / "tools" / "holdout" / "new.py").unlink()
         self.assertEqual(self.lib(check), "True")
-        # bytecode caches from importing tracked modules do not close the gate; anything else does
-        (r / "tools" / "holdout" / "__pycache__").mkdir()
-        (r / "tools" / "holdout" / "__pycache__" / "x.cpython-39.pyc").write_bytes(b"\0")
-        self.assertEqual(self.lib(check), "True")
-        for stray in ("__pycache__/x.py", "x.pyc", "__pycache__/sub/y.pyc"):
+        # strict: a bytecode cache can substitute code for an unchanged tracked source, so it closes
+        # the gate like any other untracked file (Sol review, 10-21)
+        for stray in ("__pycache__/x.cpython-39.pyc", "__pycache__/x.py", "x.pyc", "__pycache__/sub/y.pyc"):
             p = r / "tools" / "holdout" / stray
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("x\n")
