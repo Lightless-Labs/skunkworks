@@ -817,6 +817,105 @@ class Units(Base):
         split.write_text('{"edited": 1}\n')
         self.assertEqual(self.lib(probe), "False")                        # modified after the commit
 
+    def test_audit_rounds_follow_content_and_settle_on_it(self):
+        """C-B7: a new audit round is due whenever the latest round's content differs from the
+        current content, and after a void until the content has 2 void rounds; settled() and the
+        adjudication schedule always speak about the current content; a task void twice still
+        needs its M4 spec review (B12)."""
+        out = self.lib(
+            "import gym_audit as a, gym_export as e, gym_adjudicate as j\n"
+            "R = lambda c, v=False, p=True, run=1: {'content': c, 'void': v, 'passed': p and not v, 'run': run}\n"
+            "cases = {\n"
+            " 'new': ({}, {}),\n"
+            " 'audited': ({'r1': R('A')}, {}),\n"
+            " 'adjudicated': ({'r1': R('A')}, {'r1': {'repaired': False, 'excluded': False}}),\n"
+            " 'changed': ({'r1': R('X')}, {'r1': {'repaired': False, 'excluded': False}}),\n"
+            " 'repaired': ({'r1': R('X', p=False)}, {'r1': {'repaired': True, 'excluded': False}}),\n"
+            " 'void1': ({'r1': R('A', v=True)}, {}),\n"
+            " 'void2': ({'r1': R('A', v=True), 'r2': R('A', v=True)}, {}),\n"
+            " 'void2-reviewed': ({'r1': R('A', v=True), 'r2': R('A', v=True)}, {'r2': {'repaired': False, 'excluded': False}}),\n"
+            " 'void-other-content': ({'r1': R('X', v=True), 'r2': R('A', v=True)}, {}),\n"
+            " 'r3-after-change': ({'r1': R('X'), 'r2': R('Y'), 'r3': R('A', p=False)}, {'r1': {}, 'r2': {}}),\n"
+            "}\n"
+            "for k, (au, ad) in cases.items():\n"
+            "    d = j.due({'t': au}, {'t': ad}, ['t'], {'t': 'A'})\n"
+            "    print(k, a.needs({'t': au}, 't', 'A'), e.settled('t', {'t': au}, {'t': ad}, 'A'),"
+            " [(m, x['round'], x['kind']) for (f, m), xs in d.items() for x in xs])")
+        self.assertEqual(out.splitlines(), [
+            "new r1 audit-pending []",
+            "audited None adjudication-pending [('repair', 'r1', 'audit')]",
+            "adjudicated None ok []",
+            "changed r2 stale-audit []",
+            "repaired r2 stale-audit []",
+            "void1 r2 audit-pending []",
+            "void2 None adjudication-pending [('classify', 'r2', 'void')]",
+            "void2-reviewed None void-twice []",
+            "void-other-content r3 audit-pending []",
+            "r3-after-change None adjudication-pending [('repair', 'r3', 'audit')]"])
+
+    def test_m4_needs_positive_task_bound_evidence(self):
+        """B12/C-B8/C-I19: a passed task's evidence is the audit score with every hidden test
+        passed (its hidden output is never read); a failed task's is its hidden output; a task
+        that did not compile, or was void twice, still gets 2 seeded hidden tests reviewed;
+        without evidence the task stays pending."""
+        t = self.fixture_task("depth", 1)
+        suite = self.root / "gym-v3"
+        names = sorted(re.findall(r"fn (h_[0-9a-f]+)\(", (t / "hidden_tests.rs").read_text()))
+        tids = {}
+        run = self.root / "runs" / "g3-audit-1"
+        recs = []
+        for i, (case, result, hidden_out) in enumerate([
+                ("passed", {"all_passed": True, "compiled": True, "passed": 26, "expected": 26}, None),
+                ("passed-noscore", None, None),
+                ("passed-partial", {"all_passed": True, "compiled": True, "passed": 20, "expected": 26}, None),
+                ("failed", {"all_passed": False, "compiled": True, "passed": 25, "expected": 26},
+                 "".join(f"test m::{n} ... {'FAILED' if k == 0 else 'ok'}\n" for k, n in enumerate(names[:-1]))),
+                ("failed-nooutput", {"all_passed": False, "compiled": True, "passed": 25, "expected": 26}, None),
+                ("nocompile", {"all_passed": False, "compiled": False, "passed": 0, "expected": 26}, "error[E0425]\n")]):
+            tid = f"g3-f{i + 1:03d}-l1"
+            tids[case] = tid
+            shutil.copytree(t, suite / tid)
+            sub = run / "submissions" / "D" / tid
+            sub.mkdir(parents=True)
+            (sub / "r0.rs").write_text("// x\n")
+            if hidden_out is not None:
+                (sub / "r0.hidden.txt").write_text(hidden_out)
+            if result is not None:
+                recs.append({"kind": "score", "arm": "D", "task": tid, "result": result})
+        (run / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        out = self.lib(
+            "import gym_adjudicate as j, json\n"
+            f"tids = {tids!r}\n"
+            "for case, tid in tids.items():\n"
+            "    e = j.plan_tests({'task': tid, 'run': 1, 'passed': case.startswith('passed'), 'content': 'c', 'kind': 'audit'})\n"
+            "    print(case, e['evidence'], len(e['failing']), e['failing'][:1] if e['failing'] == ['*'] else '', len(e['sampled']))\n"
+            "e = j.plan_tests({'task': tids['passed'], 'run': 9, 'passed': False, 'content': 'c', 'kind': 'void'})\n"
+            "print('void', e['evidence'], len(e['failing']), len(e['sampled']))")
+        self.assertEqual(out.splitlines(), [
+            "passed True 0  2", "passed-noscore False 0  0", "passed-partial False 0  0",
+            "failed True 2  2",                          # the FAILED test and the one never reported
+            "failed-nooutput False 0  0", "nocompile True 1 ['*'] 2", "void True 0 2"])
+
+    def test_repairs_keep_clause_ids_and_rubric(self):
+        """C-B6: a requirements repair may only reword or extend existing clauses; a new clause id,
+        or a change that breaks a mechanical rubric check, is refused (the hidden tests stay)."""
+        t = self.fixture_task("depth", 1)
+        tid = "g3-f001-l1"
+        shutil.copytree(t, self.root / "gym-v3" / tid)
+        self.rec.mkdir(parents=True)
+        (self.rec / "active.json").write_text(json.dumps({"active": ["g3-f001"], "classes": {"g3-f001": "depth"}}))
+        req = json.loads((t / "task.json").read_text())["requirements"]
+        rub = json.loads((t / "rubric.json").read_text())
+        variants = {"extend": req + " (clarified)", "new clause": req + "\nR21. a brand new clause",
+                    "drop a quoted sentence": req.replace(rub["mutants"]["m1"]["refuted_by"], "reworded"),
+                    "leak a hidden name": req + " see " + re.findall(r"fn (h_[0-9a-f]+)\(", (t / "hidden_tests.rs").read_text())[0]}
+        (self.tmp / "v.json").write_text(json.dumps(variants))
+        out = self.lib("import gym_adjudicate as j, json\n"
+                       f"v = json.load(open({str(self.tmp / 'v.json')!r}))\n"
+                       f"print(json.dumps({{k: j.repair_keeps_rubric('g3-f001', {tid!r}, {req!r}, x) for k, x in v.items()}}))")
+        self.assertEqual(json.loads(out), {"extend": True, "new clause": False, "drop a quoted sentence": False,
+                                           "leak a hidden name": False})
+
     def test_band_rules(self):
         out = self.lib(
             "import gym_band as b\nT, F, V = True, False, None\n"
@@ -1160,7 +1259,8 @@ class Flows(Base):
         code, lines = self.run_script("gym_adjudicate.py", env=dict(self.env, GYM_TEST_ADJ_UNDER=f"{f}-l2"))
         adj = json.loads((self.rec / "adjudication.json").read_text())
         self.assertTrue(adj[f"{f}-l2"]["r2"]["excluded"])
-        self.assertNotIn("r2", adj[f"{f}-l3"])                                # passed its re-audit: nothing left
+        # passed its re-audit: the repaired content still gets its own M4 spec review (B12)
+        self.assertEqual((len(adj[f"{f}-l3"]["r2"]["m4"]), adj[f"{f}-l3"]["r2"]["excluded"]), (2, False))
         code, lines = self.run_script("gym_assemble.py")
         self.assertIn({"stage": "assemble-exclude", "id": f, "status": "replaced"}, lines)
         act = self.active()
@@ -1192,6 +1292,58 @@ class Flows(Base):
         self.assertEqual(len([k for k in cache if k.endswith(":" + val["oracle_sha256"])]), 4)
         code, lines = self.run_script("gym_validate.py")
         self.assertEqual((code, json.loads((self.rec / "validate-cache.json").read_text())), (0, cache))
+
+    def test_fix_never_edits_hidden_tests_after_audit(self):
+        """C-B6: once a family has an audit round, a FIX that changes a hidden_tests.rs fails and
+        the verified files are restored."""
+        self.select_and_split()
+        f = (self.gym / "FAMILIES.txt").read_text().split()[0]
+        self.run_script("gym_author.py", "--only", f, env=dict(self.env, GYM_TEST_BADRUBRIC=f))
+        self.assertEqual(self.run_script("gym_assemble.py")[0], 0)
+        self.assertEqual(self.run_script("gym_validate.py")[0], 0)
+        out = self.gym / f / "out" / f
+        before = {lv: (out / f"{f}-l{lv}" / "hidden_tests.rs").read_bytes() for lv in (1, 2, 3, 4)}
+        (self.rec / "audit.json").write_text(json.dumps({f"{f}-l1": {"r1": {"content": "x", "void": True, "passed": False, "run": 1}}}))
+        code, lines = self.run_script("gym_fix.py")
+        self.assertFalse([x for x in lines if x.get("stage") == "fix" and x.get("id") == f][0]["ok"], lines)
+        self.assertEqual({lv: (out / f"{f}-l{lv}" / "hidden_tests.rs").read_bytes() for lv in (1, 2, 3, 4)}, before)
+
+    def test_similarity_flags_only_the_unaudited_family(self):
+        """C-B7: on a gym-gym overlap, only the family that has not been audited is re-authored."""
+        self.select_and_split()
+        f1, f2 = (self.gym / "FAMILIES.txt").read_text().split()[:2]
+        for f in (f1, f2):
+            self.run_script("gym_author.py", "--only", f, env=dict(self.env, GYM_TEST_DUP=f"{f1} {f2}"))
+        self.assertEqual(self.run_script("gym_assemble.py")[0], 0)
+        (self.rec / "audit.json").write_text(json.dumps({f"{f1}-l1": {"r1": {"content": "x", "void": False, "passed": True, "run": 1}}}))
+        code, lines = self.run_script("gym_similarity.py")
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(json.loads((self.rec / "similarity.json").read_text()), {f2: "reauthor"})
+
+    def test_audit_codex_bracket_voids_a_changed_package(self):
+        """I4/C-I8: the audit fingerprints the codex the a2d child resolves on its PATH, before and
+        after; a package file changing during the run voids every tuple of the run."""
+        self.select_and_split()
+        f = (self.gym / "FAMILIES.txt").read_text().split()[0]
+        self.run_script("gym_author.py", "--only", f)
+        self.settle()
+        pkg = self.tmp / "pkg" / "0.162.0"
+        (pkg / "bin").mkdir(parents=True)
+        (pkg / "codex-path").mkdir()
+        (pkg / "codex-path" / "rg").write_text("rg\n")
+        (pkg / "bin" / "codex").write_text('#!/bin/sh\necho "codex-cli 0.162.0"\n')
+        (pkg / "bin" / "codex").chmod(0o755)
+        env = dict(GYM_CODEX=str(pkg / "bin" / "codex"))
+        code, lines = self.audit(**env, GYM_TEST_A2D_TOUCH=str(pkg / "codex-path" / "rg"))
+        self.assertEqual((code, lines[-1]["skipped"]), (0, 4), lines)               # all 4 void
+        runs = json.loads((self.rec / "audit-runs.json").read_text())["runs"]["1"]
+        self.assertEqual((runs["bracket_ok"], runs["codex"]["realpath"]), (False, str(pkg / "bin" / "codex")))
+        code, lines = self.audit(**env)
+        self.assertEqual((code, lines[-1]["skipped"], lines[-1]["tasks"]), (0, 0, 4), lines)
+        os.rename(pkg / "bin" / "codex", pkg / "bin" / "codex-moved")
+        (self.rec / "audit.json").write_text("{}")
+        code, lines = self.audit(GYM_CODEX=str(pkg / "bin" / "codex-moved"))
+        self.assertEqual((code, lines[-1]["status"]), (2, "codex-fingerprint-missing"), lines)
 
     def test_pilot_refusals_and_seal_check(self):
         sp = self.select_and_split()

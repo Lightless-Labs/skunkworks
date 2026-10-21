@@ -2,9 +2,10 @@
 
 Codex Sol (medium), arm D, k = 3, once per task per round: one `a2d lift run` over a sub-suite
 of the tasks due, with the hidden output recorded (for adjudication only; never printed; it
-stays under the gym root). Round 1 covers every suite task; round 2 is the single re-audit, of
-tasks repaired by adjudication and of tasks whose round-1 tuple was void. A failing task is
-NEVER dropped for failing: it goes to two adjudicators (gym_adjudicate.py).
+stays under the gym root). Round 1 covers every suite task; a new round is due whenever a
+task's content changed since its latest round (a fix, a requirements repair, a re-author), and
+after a void round until the current content has 2 void rounds. A failing task is NEVER dropped
+for failing: it goes to two adjudicators (gym_adjudicate.py).
 
 The controller is built into the gym's own CARGO_TARGET_DIR (<gym root>/target; never the repo's
 target/debug/a2d) and that binary is used; `--binary` is refused outside tests. Every call's
@@ -32,8 +33,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (BINARY, CODEX_HOMES, PROVIDER_CANARIES, RECORDS, REPO, ROOT, RUNS, SUITE, TASK_RE,  # noqa: E402
-                    TESTING, DriverLock, binary_allowed, build_a2d, child_env, codex_fingerprint, emit,
-                    gate_or_exit, gateway, hashes_digest,
+                    MAX_VOID_ROUNDS, TESTING, DriverLock, binary_allowed, build_a2d, child_env, codex_fingerprint,
+                    emit, gate_or_exit, gateway, hashes_digest, latest_round, task_content, void_rounds,
                     launch_gate, load_json, prereqs_ok, safe_copy, safe_read_text, save_json, suite_digest,
                     tree_hashes)
 from gymvendor import (CODEX_STDERR_MARKER, host_off, isolation_ok, lines, py_tool_events,  # noqa: E402
@@ -68,16 +69,20 @@ def clean_suite(suite):
             and not any(v in PENDING_SIM for v in state.values()))
 
 
-def needs(audit, adj, tid):
+def needs(audit, tid, cur):
+    """The audit round due for a task (r1, r2, ...), or None. A new round is due whenever the
+    latest round's content differs from the task's current content (a fix, a requirements repair
+    or a re-author changed it; adjudication is keyed by round, so the new round starts with none),
+    or when the latest round was void and the current content has fewer than 2 void rounds."""
     a = audit.get(tid, {})
-    if "r1" not in a:
+    name, last = latest_round(a)
+    if name is None:
         return "r1"
-    if "r2" in a:
-        return None
-    if a["r1"]["void"]:
-        return "r2"
-    if adj.get(tid, {}).get("r1", {}).get("repaired"):
-        return "r2"                              # its requirements changed: audit the repaired text
+    nxt = f"r{int(name[1:]) + 1}"
+    if last.get("content") != cur:
+        return nxt
+    if last.get("void") and void_rounds(a, cur) < MAX_VOID_ROUNDS:
+        return nxt
     return None
 
 
@@ -227,8 +232,8 @@ def main():
         if not suite or not clean_suite(suite):
             emit(stage="audit", status="suite-not-clean")
             sys.exit(2)
-        adj = load_json(RECORDS / "adjudication.json", {})
-        due = {tid: needs(audit, adj, tid) for tid in suite}
+        cur = {tid: task_content(tid) for tid in suite}
+        due = {tid: needs(audit, tid, cur[tid]) for tid in suite}
         tasks = sorted(t for t, r in due.items() if r)
         if not tasks:
             emit(stage="audit", tasks=0, status="nothing-due")
@@ -244,7 +249,7 @@ def main():
         if before is None:
             emit(stage="audit", status="codex-fingerprint-missing")
             sys.exit(2)
-        content = {tid: hashes_digest(tree_hashes(SUITE / tid)) for tid in tasks}
+        content = {tid: cur[tid] for tid in tasks}
         runs = load_json(RECORDS / "audit-runs.json", {"n": 0})
         n = runs["n"] + 1
         head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -272,7 +277,7 @@ def main():
         emit(stage="audit", exit=code, tasks=len(tasks), count=len(tasks) - len(failing) - len(void & set(tasks)),
              missing=len(failing), skipped=len(void & set(tasks)), round=n)
         for t in failing:
-            emit(stage="audit-fail", id=t, round=int(due[t][1]))
+            emit(stage="audit-fail", id=t, round=int(due[t][1:]))
 
 
 if __name__ == "__main__":

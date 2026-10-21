@@ -6,7 +6,8 @@ and a score; with --record-hidden-output, submissions/<arm>/<task>/r0.rs and r0.
 Env hooks (space-separated task ids): GYM_TEST_AUDIT_FAIL, GYM_TEST_AUDIT_VOID,
 GYM_TEST_AUDIT_NOCOMPILE, GYM_TEST_PILOT_FAIL, GYM_TEST_PILOT_VOID; GYM_TEST_ENV_DUMP=<file>
 records which isolation-relevant variables the child saw; GYM_TEST_LEAK=1 writes a hidden test
-name into a submission (seal-breach test)."""
+name into a submission (seal-breach test); GYM_TEST_A2D_TOUCH=<file> appends to that file (a codex
+package file changing during the run)."""
 import json
 import os
 import re
@@ -37,6 +38,9 @@ if dump:
                   or k.startswith("C3_"))
     Path(dump).write_text(json.dumps({k: os.environ[k] for k in keys}))
 tasks = sorted(p.name for p in suite.iterdir() if (p / "task.json").exists())
+if os.environ.get("GYM_TEST_A2D_TOUCH"):
+    with open(os.environ["GYM_TEST_A2D_TOUCH"], "a") as f:
+        f.write("changed\n")
 pilot = "X:inc" in arms
 fail = set(os.environ.get("GYM_TEST_PILOT_FAIL" if pilot else "GYM_TEST_AUDIT_FAIL", "").split())
 void = set(os.environ.get("GYM_TEST_PILOT_VOID" if pilot else "GYM_TEST_AUDIT_VOID", "").split())

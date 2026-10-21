@@ -3,9 +3,9 @@
 certify: the suite is clean and settled -> records/certified.json binds its digest, every
   task's content hash and the frozen rubric's (SPEC.md) sha256. Clean: the latest sandboxed
   validation (rubric included) and similarity both on exactly this suite with nothing rejected,
-  conflicting or pending; no excluded task in it. Settled: every task has an audit round on its
-  current content; its first informative round is adjudicated (M4 included); a repaired task
-  was re-audited and, if it failed again, adjudicated; a task void twice is kept and disclosed.
+  conflicting or pending; no excluded task in it. Settled (gym_export.settled): every task's
+  latest audit round is on its current content and adjudicated, M4 included; a task void twice on
+  its current content is kept after its M4 spec review and disclosed.
   Pilots run only on the certified suite (gym_pilot.py); a later repair changes the content and
   invalidates that family's pilot data (gym_band.py).
 
@@ -25,7 +25,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymlib import (OUT_REPO, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gate_or_exit, gateway,  # noqa: E402
+from gymlib import (MAX_VOID_ROUNDS, OUT_REPO, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gate_or_exit,  # noqa: E402
+                    gateway, latest_round, void_rounds,
                     hashes_digest, load_json, repo_write_root, safe_write_text, save_json, spec_sha, suite_digest,
                     tree_hashes)
 from gym_rubric import leaked_names  # noqa: E402
@@ -41,34 +42,26 @@ def content(tid):
 
 
 def settled(tid, audit, adj, cur):
-    """'ok', 'void-twice' or a pending reason for one task."""
+    """'ok', 'void-twice' or a pending reason for one task, always about its CURRENT content:
+    its latest audit round is on the current content and is adjudicated (M3 for failing tests and
+    the M4 spec review), not excluded; or the current content has 2 void rounds and the latest
+    got the M4 spec review without solver evidence ('void-twice', disclosed)."""
     a, j = audit.get(tid, {}), adj.get(tid, {})
-    r1, r2 = a.get("r1"), a.get("r2")
-    if r1 is None or any(r.get("reserved") for r in (r1, r2) if r):
+    name, last = latest_round(a)
+    if name is None or any(r.get("reserved") for r in a.values()):
         return "audit-pending"
-    if r1["void"]:
-        if r2 is None:
-            return "audit-pending"
-        if r2["void"]:
-            return "void-twice"
-        if r2["content"] != cur:
-            return "stale-audit"
-        return "ok" if j.get("r2") else "adjudication-pending"
-    if not j.get("r1"):
+    if last.get("content") != cur:
+        return "stale-audit"                        # gym_audit.py schedules the next round
+    if last["void"] and void_rounds(a, cur) < MAX_VOID_ROUNDS:
+        return "audit-pending"
+    rec = j.get(name)
+    if not rec:
         return "adjudication-pending"
-    if j["r1"].get("excluded"):
+    if rec.get("excluded"):
         return "excluded"
-    if j["r1"].get("repaired"):
-        if r2 is None:
-            return "audit-pending"
-        if r2["void"]:
-            return "void-after-repair" if r2["content"] == cur else "stale-audit"
-        if r2["content"] != cur:
-            return "stale-audit"
-        if not r2["passed"] and not j.get("r2"):
-            return "adjudication-pending"
-        return "excluded" if (j.get("r2") or {}).get("excluded") else "ok"
-    return "ok" if r1["content"] == cur else "stale-audit"
+    if rec.get("repaired"):
+        return "stale-audit"                        # the repair changed the content: a new round is due
+    return "void-twice" if last["void"] else "ok"
 
 
 def certify():
@@ -90,7 +83,7 @@ def certify():
     adj = load_json(RECORDS / "adjudication.json", {})
     cur = {t: content(t) for t in suite}
     states = {t: settled(t, audit, adj, cur[t]) for t in suite}
-    pending = sorted(t for t, s in states.items() if s not in ("ok", "void-twice", "void-after-repair"))
+    pending = sorted(t for t, s in states.items() if s not in ("ok", "void-twice"))
     if pending:
         emit(stage="certify", status="not-settled", pending=len(pending))
         return False

@@ -56,12 +56,17 @@ def main():
             mine.append((d["family"], shingles(d["requirements"])))
         worst_j = worst_c = 0.0
         conflicted = set()
+        audit = load_json(RECORDS / "audit.json", {})
+        audited = {t.rsplit("-l", 1)[0] for t, rounds in audit.items() if rounds}
         for fam, sh in mine:
-            for ofam, osh in corpus + [m for m in mine if m[0] != fam]:
+            for ofam, osh, prior in [(f, s, True) for f, s in corpus] + [(f, s, False) for f, s in mine if f != fam]:
                 j, c = scores(sh, osh)
                 worst_j, worst_c = max(worst_j, j), max(worst_c, c)
                 if j >= JACCARD or c >= CONTAIN:
-                    conflicted.add(fam)
+                    # a gym-gym pair flags only the family not yet audited (an audited family is
+                    # never re-authored for a later wave's overlap); both when neither or both are
+                    if prior or not (fam in audited and ofam not in audited):
+                        conflicted.add(fam)
         emit(stage="similarity", tasks=len(mine), n=len(corpus), max_sim=round(worst_j, 2),
              max_contain=round(worst_c, 2), conflicts=len(conflicted))
         state = load_json(RECORDS / "similarity.json", {})

@@ -1479,6 +1479,29 @@ class PriorCorpus:
         return {"sha256": h.hexdigest(), "count": n}
 
 
+# ------------------------------------------------------------- audit rounds
+
+MAX_VOID_ROUNDS = 2
+
+
+def audit_rounds(a):
+    """A task's audit round names in order (r1, r2, ...)."""
+    return sorted(a, key=lambda k: int(k[1:]))
+
+
+def latest_round(a):
+    rs = audit_rounds(a)
+    return (rs[-1], a[rs[-1]]) if rs else (None, None)
+
+
+def void_rounds(a, content):
+    return sum(1 for r in a.values() if r.get("content") == content and r.get("void"))
+
+
+def task_content(tid):
+    return hashes_digest(tree_hashes(SUITE / tid))
+
+
 def replace_family(fid, reason):
     """An excluded family is replaced by the next unused spare of the SAME rubric class (in id
     order), which inherits its split slot; otherwise it is dropped. Recorded in active.json."""

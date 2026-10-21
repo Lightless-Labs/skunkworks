@@ -7,7 +7,7 @@ An independent programmer solved each task below from its `requirements` and pub
 For each task `<id>` in `tasks/`:
 - `tasks/<id>/task.json` — the task (its `requirements` field is what the programmer read);
 - `tasks/<id>/public_tests.rs`, `tasks/<id>/hidden_tests.rs`, `tasks/<id>/reference.rs`, `tasks/<id>/mutants/`;
-- `solver/<id>/submission.rs` and `solver/<id>/hidden_output.txt` — the programmer's submission and its hidden-test run.
+- `solver/<id>/submission.rs` and `solver/<id>/hidden_output.txt` — the programmer's submission and its hidden-test run (for a task the submission passed completely, or whose solver attempts were void, `hidden_output.txt` says so and the submission may be absent).
 
 ## Decision rule (per listed test)
 - **DETERMINED:** a careful programmer reading the requirements (and public tests) could have known the exact expected behaviour. A requirement that is explicit but easy to overlook is still DETERMINED.

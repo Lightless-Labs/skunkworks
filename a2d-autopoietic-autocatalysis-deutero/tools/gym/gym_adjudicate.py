@@ -24,7 +24,9 @@ only counts and opaque ids.
 
 usage: python3 -I tools/gym/gym_adjudicate.py [--parallel N]
 """
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -34,12 +36,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gym_rubric  # noqa: E402
-from gymlib import (AUTHORING_FILES, GYM, RECORDS, ROOT, RUNS, SUITE, TASK_RE, DriverLock,  # noqa: E402
+from gymlib import (AUTHORING_FILES, GYM, MAX_VOID_ROUNDS, RECORDS, ROOT, RUNS, SUITE, TASK_RE, DriverLock,  # noqa: E402
+                    latest_round, task_content, void_rounds,
                     LaunchGateClosed, StopRequested, emit, gate_or_exit, gateway, isolation_check, load_json,
-                    parse_task_json,
+                    parse_task_json, safe_read_bytes, strict_json_doc,
                     prereqs_ok, run_codex, safe_copy, safe_read_text, safe_write_text, save_json, stop_requested,
                     suspicious_commands, tree_hashes)
-from gymvendor import lines, test_names  # noqa: E402
+from gymvendor import lines, strict_json, test_names  # noqa: E402
 
 MAX_JOBS = 2
 FILES = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
@@ -54,38 +57,36 @@ def _bare(name):
     return name.rsplit("::", 1)[-1]
 
 
-def failing_tests(hidden_output, passed):
-    """Bare names of the failing hidden tests; `*` when the task failed without any test line
-    (it did not compile); [] for a passed task."""
-    if passed:
-        return []
-    names = sorted({_bare(m.group(1)) for m in map(FAILED.match, lines(hidden_output)) if m})
-    if names:
-        return names
-    return ["*"]
+def test_statuses(hidden_output):
+    """{bare test name: ok | FAILED | ignored} from libtest lines of a hidden-test run."""
+    out = {}
+    for m in map(TEST_LINE.match, lines(hidden_output)):
+        if m:
+            out[_bare(m.group(1))] = m.group(2)
+    return out
 
 
-def ran_tests(hidden_output):
-    return any(TEST_LINE.match(x) for x in lines(hidden_output))
-
-
-def due(audit, adj, suite):
-    """{(family, mode): [task entry]} of informative audit rounds awaiting adjudication."""
+def due(audit, adj, suite, cur):
+    """{(family, mode): [task entry]} of rounds awaiting adjudication, each on the task's CURRENT
+    content: the latest informative round (mode "repair" until the task has had a requirements
+    repair, then "classify"), or, when the current content has 2 void rounds, the latest void
+    round (kind "void": the M4 spec review without solver evidence, mode "classify")."""
     out = {}
     for tid in suite:
         a, j = audit.get(tid, {}), adj.get(tid, {})
-        if "r1" in a and not a["r1"]["void"] and "r1" not in j:
-            mode, rnd = "repair", "r1"
-        elif "r2" in a and not a["r2"]["void"] and "r2" not in j:
-            mode, rnd = "classify", "r2"
-        else:
+        name, last = latest_round(a)
+        if name is None or last.get("reserved") or last.get("content") != cur[tid] or name in j:
             continue
-        first = not ("r1" in a and not a["r1"]["void"]) or rnd == "r1"     # M4 on the first informative round
-        if rnd == "r2" and a["r2"]["passed"] and not first:
-            continue             # a passed re-audit after an adjudicated r1: nothing left to review
+        if last["void"]:
+            if void_rounds(a, cur[tid]) < MAX_VOID_ROUNDS:
+                continue
+            kind, mode = "void", "classify"
+        else:
+            kind = "audit"
+            mode = "classify" if any((r or {}).get("repaired") for r in j.values()) else "repair"
         out.setdefault((tid.rsplit("-l", 1)[0], mode), []).append(
-            {"task": tid, "round": rnd, "run": a[rnd]["run"], "passed": a[rnd]["passed"],
-             "content": a[rnd]["content"], "m4": first})
+            {"task": tid, "round": name, "run": last["run"], "passed": bool(last.get("passed")),
+             "content": last["content"], "kind": kind})
     return out
 
 
@@ -93,15 +94,66 @@ def solver_dir(entry):
     return RUNS / f"g3-audit-{entry['run']}" / "submissions" / "D" / entry["task"]
 
 
+def audit_score(entry):
+    """The audit ledger's score record for the task (arm D), or None; read with lines() + strict
+    JSON from the sealed run dir."""
+    try:
+        text = safe_read_text(RUNS / f"g3-audit-{entry['run']}" / "ledger.jsonl", ROOT)
+    except OSError:
+        return None
+    for line in lines(text):
+        if not line.strip():
+            continue
+        try:
+            r = strict_json(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("kind") == "score" and r.get("arm") == "D" and r.get("task") == entry["task"] \
+                and isinstance(r.get("result"), dict):
+            return r["result"]
+    return None
+
+
 def plan_tests(entry):
-    """Fill in failing and sampled tests for one task entry from the recorded hidden output."""
+    """Fill in the failing tests (M3) and the 2 seeded spec-review tests (M4) for one task entry,
+    from positive, task-bound evidence only (the round is on the current content, due()):
+    - passed: the audit's score record shows every hidden test passed; M4 samples any 2 hidden tests;
+    - failed and compiled: the recorded hidden output (read only for failed tasks) has test
+      lines; every hidden test it does not show passing (FAILED, or never reported, e.g. after a
+      timeout) goes to M3, and M4 samples 2 of the passing ones;
+    - did not compile (score `compiled` false): `*` goes to M3 and M4 samples any 2 hidden tests;
+    - void twice: M4 samples any 2 hidden tests (no solver evidence).
+    Without that evidence `evidence` is False and the task stays pending (never adjudicated OK)."""
     tid = entry["task"]
-    hidden_out = safe_read_text(solver_dir(entry) / "r0.hidden.txt", ROOT)
-    entry["failing"] = failing_tests(hidden_out, entry["passed"])
     names = test_names((SUITE / tid / "hidden_tests.rs").read_text())
-    can_sample = entry["m4"] and entry["failing"] != ["*"] and ran_tests(hidden_out)
-    entry["sampled"] = gym_rubric.sample_passing(tid, entry["content"], names, entry["failing"], M4_SEED) \
-        if can_sample else []
+    entry.update({"failing": [], "sampled": [], "evidence": False})
+    if entry["kind"] == "void":
+        entry.update(sampled=gym_rubric.sample_passing(tid, entry["content"], names, [], M4_SEED), evidence=True)
+        return entry
+    score = audit_score(entry)
+    if not isinstance(score, dict):
+        return entry
+    if entry["passed"]:
+        if score.get("all_passed") is True and isinstance(score.get("expected"), int) and score["expected"] > 0 \
+                and score.get("passed") == score["expected"]:
+            entry.update(sampled=gym_rubric.sample_passing(tid, entry["content"], names, [], M4_SEED), evidence=True)
+        return entry
+    if score.get("compiled") is False:
+        entry.update(failing=["*"], sampled=gym_rubric.sample_passing(tid, entry["content"], names, [], M4_SEED),
+                     evidence=True)
+        return entry
+    try:
+        statuses = test_statuses(safe_read_text(solver_dir(entry) / "r0.hidden.txt", ROOT))
+    except OSError:
+        return entry
+    if not statuses or not set(statuses) <= names:
+        return entry                                   # missing, empty or foreign evidence
+    passing = sorted(n for n in names if statuses.get(n) == "ok")
+    failing = sorted(n for n in names if statuses.get(n) != "ok")
+    if not failing:
+        return entry                                   # inconsistent with the failed score
+    entry.update(failing=failing, sampled=gym_rubric.sample_passing(tid, entry["content"], passing, [], M4_SEED),
+                 evidence=True)
     return entry
 
 
@@ -117,8 +169,18 @@ def prepare(w, tasks, role, mode):
         for m in MUTANTS:
             safe_copy(SUITE / tid / "mutants" / m, w / "tasks" / tid / "mutants" / m, SUITE, w)
         if role != "R":
-            safe_copy(solver_dir(e) / "r0.rs", w / "solver" / tid / "submission.rs", ROOT, w)
-            safe_copy(solver_dir(e) / "r0.hidden.txt", w / "solver" / tid / "hidden_output.txt", ROOT, w)
+            (w / "solver" / tid).mkdir(parents=True, exist_ok=True)
+            if e["kind"] == "void":
+                note = "(no solver evidence: both audit attempts on this content were void)\n"
+            elif e["passed"]:
+                note = "(the submission passed every hidden test)\n"
+            else:
+                note = None
+                safe_copy(solver_dir(e) / "r0.hidden.txt", w / "solver" / tid / "hidden_output.txt", ROOT, w)
+            if note:
+                safe_write_text(w / "solver" / tid / "hidden_output.txt", note, w)
+            if e["kind"] != "void" and os.path.lexists(solver_dir(e) / "r0.rs"):
+                safe_copy(solver_dir(e) / "r0.rs", w / "solver" / tid / "submission.rs", ROOT, w)
         if role == "A":
             listed = [(t, "failing") for t in e["failing"]]
         elif role == "B":
@@ -137,10 +199,17 @@ def prepare(w, tasks, role, mode):
     return expected
 
 
-def run_role(fid, mode, role, tasks):
+def unit_id(fid, mode, tasks):
+    """A unit of adjudication: one family, mode and set of (task, round, content). A later round
+    (new content) is a new unit, with fresh verdicts and its own job caps."""
+    sig = json.dumps(sorted((e["task"], e["round"], e["content"]) for e in tasks))
+    return f"{fid}-{mode}-{hashlib.sha256(sig.encode()).hexdigest()[:8]}"
+
+
+def run_role(fid, mode, role, tasks, unit):
     """One adjudicator (A, B) or repair (R) job. Returns (status, payload): ("ok", verdicts or
     workdir), ("failed", None), ("capped", None) or ("stopped", None)."""
-    key = f"{fid}-{mode}-{role}"
+    key = f"{unit}-{role}"
     with _lock:
         if stop_requested():
             return "stopped", None
@@ -183,9 +252,29 @@ def run_role(fid, mode, role, tasks):
     return ("ok", verdicts) if verdicts is not None else ("failed", None)
 
 
+def repair_keeps_rubric(fid, tid, old_req, new_req):
+    """A requirements-only repair rewords or extends existing clauses only: the clause ids stay
+    exactly R1..Rn, and the unchanged hidden tests, public tests, reference and rubric.json still
+    pass every mechanical rubric check (M1 coverage, M2 quotes, M5, clause floor, tag evidence)
+    against the new text. Otherwise the repair is refused: the task is excluded as
+    underdetermined, without spending the family's FIX rounds (hidden tests are never edited)."""
+    d = SUITE / tid
+    try:
+        if sorted(gym_rubric.clauses(new_req)) != sorted(gym_rubric.clauses(old_req)):
+            return False
+        cls = load_json(RECORDS / "active.json", {}).get("classes", {}).get(fid)
+        rubric = strict_json_doc((d / "rubric.json").read_bytes())
+        r = gym_rubric.check_task(new_req, (d / "hidden_tests.rs").read_text(), (d / "public_tests.rs").read_text(),
+                                  (d / "reference.rs").read_text(), rubric, int(tid[-1]), cls)
+    except (OSError, ValueError):
+        return False
+    return r["ok"]
+
+
 def apply_repair(fid, tid, w):
     """c3_fix pattern: verified author files, snapshot, copy the repair in, verify, else restore.
-    Only task.json, and in it only `requirements`, may change."""
+    Only task.json, and in it only `requirements`, may change; the new text must keep the rubric
+    (repair_keeps_rubric)."""
     from gym_author import complete
     status_path = RECORDS / f"author-{fid}" / "status.json"
     st = load_json(status_path, {})
@@ -197,12 +286,13 @@ def apply_repair(fid, tid, w):
         names = sorted(p.name for p in src.iterdir()) if src.is_dir() and not src.is_symlink() else []
         if names != ["task.json"]:
             return False
-        old = json.loads(safe_read_text(out / tid / "task.json", GYM))
-        new = json.loads(safe_read_text(src / "task.json", w))
-        if not isinstance(new, dict) or not isinstance(new.get("requirements"), str) \
-                or not new["requirements"].strip() or new["requirements"] == old.get("requirements") \
+        old = parse_task_json(safe_read_bytes(out / tid / "task.json", GYM))
+        new = parse_task_json(safe_read_bytes(src / "task.json", w))
+        if not new["requirements"].strip() or new["requirements"] == old["requirements"] \
                 or {k: v for k, v in new.items() if k != "requirements"} != \
                 {k: v for k, v in old.items() if k != "requirements"}:
+            return False
+        if not repair_keeps_rubric(fid, tid, old["requirements"], new["requirements"]):
             return False
     except (OSError, PermissionError, ValueError):
         return False
@@ -253,7 +343,15 @@ def _exclude(tids, reason):
 def one(key, tasks):
     fid, mode = key
     tasks = [plan_tests(e) for e in tasks]
-    unit = RECORDS / "adj-units" / f"{fid}-{mode}.json"
+    missing = [e["task"] for e in tasks if not e["evidence"]]
+    if missing:
+        with _lock:
+            emit(stage="adjudicate", id=fid, status="evidence-missing", pending=len(missing))
+    tasks = [e for e in tasks if e["evidence"]]                # the rest stay pending
+    if not tasks:
+        return
+    uid = unit_id(fid, mode, tasks)
+    unit = RECORDS / "adj-units" / f"{uid}.json"
     res = load_json(unit, {})
     roles = ["A", "B"] if any(e["failing"] for e in tasks) else ["B"]
     if not any(e["failing"] or e["sampled"] for e in tasks):
@@ -261,12 +359,12 @@ def one(key, tasks):
     for role in roles:
         if res.get(role) is not None:
             continue
-        status, verdicts = run_role(fid, mode, role, tasks)
+        status, verdicts = run_role(fid, mode, role, tasks, uid)
         if status == "stopped":
             return
         res[role] = verdicts
         res.setdefault("capped", {})[role] = status in ("capped", "failed") and \
-            load_json(RECORDS / "adj-jobs.json", {}).get(f"{fid}-{mode}-{role}", 0) >= MAX_JOBS
+            load_json(RECORDS / "adj-jobs.json", {}).get(f"{uid}-{role}", 0) >= MAX_JOBS
         save_json(unit, res)
     failed_roles = [r for r in roles if res.get(r) is None]
     if failed_roles:
@@ -287,10 +385,10 @@ def one(key, tasks):
             e["repair"] = sorted(t for t, v in tests.items() if v["combined"] == "REPAIR")
             need.append(e)
     if need and mode == "repair":
-        status, w = run_role(fid, mode, "R", need)
+        status, w = run_role(fid, mode, "R", need, uid)
         if status == "stopped":
             return
-        if status == "failed" and load_json(RECORDS / "adj-jobs.json", {}).get(f"{fid}-{mode}-R", 0) < MAX_JOBS:
+        if status == "failed" and load_json(RECORDS / "adj-jobs.json", {}).get(f"{uid}-R", 0) < MAX_JOBS:
             return                                                # one more repair attempt next run
         for e in need:
             recs[e["task"]]["repaired"] = status == "ok" and apply_repair(fid, e["task"], w)
@@ -322,7 +420,7 @@ def main():
         audit = load_json(RECORDS / "audit.json", {})
         adj = load_json(RECORDS / "adjudication.json", {})
         suite = sorted(p.name for p in SUITE.iterdir() if TASK_RE.match(p.name))
-        work = due(audit, adj, suite)
+        work = due(audit, adj, suite, {t: task_content(t) for t in suite})
         emit(stage="adjudicate", families=len({f for f, _ in work}), tasks=sum(len(v) for v in work.values()))
         with ThreadPoolExecutor(max_workers=parallel) as ex:
             list(ex.map(lambda kv: one(*kv), sorted(work.items())))

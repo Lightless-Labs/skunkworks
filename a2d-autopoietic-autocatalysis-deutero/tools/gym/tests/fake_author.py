@@ -12,7 +12,7 @@ names, `// R..` traces); rubric.json labels the fixture mutants and carries the 
 evidence of every declared tag (modifiers, states/sequences, signatures, boundaries, scale).
 Adjudicators quote 8 words of a clause the listed test's trace cites (any clause for `*`).
 Env hooks: GYM_TEST_ADJ_UNDER, GYM_TEST_ADJ_SPLIT, GYM_TEST_ADJ_BADQUOTE (space-separated task
-ids), GYM_TEST_REPAIR_BAD.
+ids), GYM_TEST_REPAIR_BAD, GYM_TEST_REPAIR_NEWCLAUSE (a task id: its repair adds R21).
 """
 import hashlib
 import json
@@ -146,7 +146,8 @@ def adjudicate():
 def repair():
     for tid in sorted({row[0] for row in listed()}):
         t = json.loads((Path("tasks") / tid / "task.json").read_text())
-        t["requirements"] += " (clarified)"
+        t["requirements"] += ("\nR21. a brand new clause" if os.environ.get("GYM_TEST_REPAIR_NEWCLAUSE") == tid
+                              else " (clarified)")
         (Path("out") / tid).mkdir(parents=True, exist_ok=True)
         json.dump(t, open(Path("out") / tid / "task.json", "w"))
         if os.environ.get("GYM_TEST_REPAIR_BAD"):

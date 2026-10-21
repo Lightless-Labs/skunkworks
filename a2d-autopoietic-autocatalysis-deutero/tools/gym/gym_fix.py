@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (AUTHORING_FILES, GYM, RECORDS, DriverLock, LaunchGateClosed, StopRequested, emit,  # noqa: E402
                     gate_or_exit, gateway, isolation_check, job_codex_home, load_json, prereqs_ok, run_codex,
+                    safe_read_bytes,
                     safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
 
 MAX_ROUNDS = 2
@@ -27,6 +28,26 @@ _lock = threading.Lock()
 def complete(fam):
     from gym_author import complete as author_complete
     return author_complete(fam)
+
+
+def audited(fam):
+    return any(t.rsplit("-l", 1)[0] == fam and rounds for t, rounds in load_json(RECORDS / "audit.json", {}).items())
+
+
+def hidden_tests_kept(fam, snapshot, out):
+    """Hidden tests are never edited after the audit: once any task of the family has an audit
+    round, a FIX must leave every hidden_tests.rs byte-identical (else the round fails and the
+    verified files are restored)."""
+    if not audited(fam):
+        return True
+    for lv in (1, 2, 3, 4):
+        rel = Path(f"{fam}-l{lv}") / "hidden_tests.rs"
+        try:
+            if safe_read_bytes(out / rel, GYM) != safe_read_bytes(snapshot / rel, RECORDS):
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def one(fam, stamp):
@@ -71,7 +92,7 @@ def one(fam, stamp):
             emit(stage="fix", id=fam, status="stopped")
         return
     susp = suspicious_commands(record, w)
-    ok = code == 0 and other == 0 and susp == 0 and complete(fam)
+    ok = code == 0 and other == 0 and susp == 0 and complete(fam) and hidden_tests_kept(fam, snapshot, out)
     with _lock:
         if ok:
             st["hashes"] = tree_hashes(out)
