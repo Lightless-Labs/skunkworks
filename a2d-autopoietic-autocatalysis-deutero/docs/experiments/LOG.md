@@ -1844,3 +1844,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - uninformed: the judge lane was passed as `codex/gpt-6.1-sol:high`.
   - **As designed.**
 - **Round 1 evaluation** (X:inc, X:inf, X:uninf on quarter 1, about 0.43k Luna) runs after look 2 and the provider merge (10-21).
+- **Look 2 started** at 00:05:04 UTC 10-21, through the armed job (`qrun.sh L38early-look2`).
+  - The snapshot `runs/c2-look2/harness.py` = E007 (c1e3e897…); the holdout run dir was created. About 3 h.
+  - Queue, same minute: L23–L27 (E-resumes) exited rc=1 ("the snapshot incumbent differs from the A/A incumbent") with no calls, by design after a promotion. L28 and L29 printed "E007 was already promoted". L30 holds until 10-22.
