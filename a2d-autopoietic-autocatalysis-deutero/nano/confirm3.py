@@ -92,12 +92,24 @@ def failed_attempt_audit(out, tasks):
     auditable --json transcript counts as one tool event (fail closed); and the controller's
     hidden-test-name scan of the attempt's prompts. Counts only."""
     out = pathlib.Path(out)
-    invocations = tools = unaudited = 0
+    invocations = tools = submission_tools = unaudited = 0
+    n = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0  # noqa: E731
     if (out / "ledger.jsonl").exists():
-        for r in records(out):
-            if r.get("kind") == "invocation":
+        recs = []
+        for line in (out / "ledger.jsonl").read_text(errors="replace").splitlines():
+            try:
+                rec = json.loads(line) if line.strip() else None
+            except ValueError:
+                unaudited += 1               # a dead run's cut-off line: unauditable (fail closed)
+                continue
+            if isinstance(rec, dict):
+                recs.append(rec)
+        for r in recs:
+            if r.get("kind") == "submission":
+                submission_tools += n(r.get("tool_calls"))
+            elif r.get("kind") == "invocation":
                 invocations += 1
-                tools += r.get("tool_calls") or 0
+                tools += n(r.get("tool_calls"))
                 if not transcript_ok(out, r.get("prompt_path", "")):
                     unaudited += 1
     hits = 0
@@ -110,7 +122,7 @@ def failed_attempt_audit(out, tasks):
         for prompt in sorted((out / "invocations").glob(f"*/{task}/**/*.prompt.txt")):
             if pattern.search(prompt.read_text(errors="replace")):
                 hits += 1
-    return {"invocations": invocations, "tool_calls": tools + unaudited, "unaudited": unaudited,
+    return {"invocations": invocations, "tool_calls": max(tools, submission_tools) + unaudited, "unaudited": unaudited,
             "hidden_name_hits": hits}
 
 
@@ -121,6 +133,10 @@ def merge_failed_attempt(summary, stats, rep, audit):
     summary = dict(summary)
     summary["hidden_name_hits"] = list(summary.get("hidden_name_hits") or []) + \
         [f"failed attempt r{rep}"] * audit["hidden_name_hits"]
+    if audit["unaudited"]:
+        summary["integrity_ok"] = False     # an unauditable call could hide any number of events (Sol re-check)
+    if audit["tool_calls"] > TOOL_RATE_MAX * audit["invocations"] + EPS:
+        summary["integrity_ok"] = False     # the failed attempt is gated on its own rate too (Claude re-check)
     return summary
 
 
@@ -243,6 +259,16 @@ def _ceil(x):
     return i if i == x else i + 1
 
 
+def well_formed(c):
+    """A pooled comparison record has the fields classify() reads, with sane types."""
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    count = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0  # noqa: E731
+    ci = c.get("ci95") if isinstance(c, dict) else None
+    return (isinstance(c, dict) and count(c.get("families")) and count(c.get("discordant_treatment_only"))
+            and count(c.get("discordant_comparator_only")) and num(c.get("lift"))
+            and isinstance(ci, (list, tuple)) and len(ci) == 2 and all(num(v) for v in ci))
+
+
 def classify(c, min_families):
     """crates/a2d-lift/src/stats.rs classify_guarded, on a pooled comparison record."""
     if c["families"] < min_families or (c["discordant_treatment_only"] == 0 and c["discordant_comparator_only"] == 0):
@@ -262,7 +288,9 @@ def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
         c = next((c for c in (summary.get("comparisons") or []) if isinstance(c, dict)
                   and c.get("treatment") == X and c.get("comparator") == comp), None)
         comparisons[comp] = c
-        classes[comp] = classify(c, summary["min_families"]) if c and "min_families" in summary else "Invalid"
+        min_families = summary.get("min_families")
+        classes[comp] = (classify(c, min_families) if c and well_formed(c) and isinstance(min_families, int)
+                         else "Invalid")
     worst = {comp: bootstrap(imputed(tuples, comp, "worst"), iterations) for comp in COMPARATORS}
     best_d = bootstrap(imputed(tuples, "D", "best"), iterations)
     voids = sum(v["void"] for v in tuples.values())
@@ -815,6 +843,8 @@ def cmd_score(args):
         binary = build_controller()
         if suite_hash_now() != reg["suite_hash"]:
             sys.exit("the suite hash differs from the registered one; nothing is scored")
+        if not crates_clean(registration_commit()):
+            sys.exit("crates/, Cargo.toml or Cargo.lock differ from the registration commit; nothing is scored")
         outs = {}
         for rep in (1, 2):
             rel = str((DIR / f"manifest-r{rep}.json").relative_to(ROOT))

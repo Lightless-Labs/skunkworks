@@ -34,6 +34,9 @@ MAX_FIX_ROUNDS = 2
 @gateway("validate")
 def main():
     args = sys.argv[1:]
+    if (REPO / "runs" / "c2-confirm3" / "registration.json").exists() and not TESTING:
+        emit(stage="validate", status="closed-after-registration")   # no further unconfined API compile
+        sys.exit(2)
     if "--binary" in args and not TESTING:
         emit(stage="validate", status="binary-override-refused")
         sys.exit(2)

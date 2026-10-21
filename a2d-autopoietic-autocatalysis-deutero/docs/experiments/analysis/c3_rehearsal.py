@@ -23,14 +23,15 @@ import pathlib
 import shutil
 import sys
 
-SCRATCH = pathlib.Path.home() / ".a2d-rehearsal"
+TAG = os.environ.get("C3_REHEARSAL_TAG", "")             # a later rehearsal gets fresh dirs
+SCRATCH = pathlib.Path.home() / f".a2d-rehearsal{TAG}"
 os.environ["A2D_HOLDOUT_DIR"] = str(SCRATCH)          # c3lib reads it at import
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / "nano"), str(ROOT / "tools" / "holdout")]
 import confirm3 as c3  # noqa: E402
 
 TASKS = ["csv-quote-l1", "varint-codec-l1"]
-DIR = ROOT / "runs" / "c2-confirm3-rehearsal"
+DIR = ROOT / "runs" / f"c2-confirm3-rehearsal{TAG}"
 c3.HOLDOUT, c3.SUITE, c3.DIR = SCRATCH, SCRATCH / "confirmation-3", DIR
 c3.CODEX_HOMES, c3.CANARY = SCRATCH / "codex-homes", SCRATCH / "canary"
 REAL_NOW, REAL_TODAY = c3.now, c3.today
@@ -67,7 +68,9 @@ def setup():
         sys.exit("a2d lift hash failed on the rehearsal suite")
     (DIR / "registration.json").write_text(json.dumps(reg, indent=1) + "\n")
     (DIR / "registered_at.txt").write_text(c3.git("rev-parse", "HEAD")[1].strip() + "\n")
-    print(json.dumps({"setup": True, "tasks": len(TASKS), "registered_at": registered_at()[:10]}))
+    (DIR / "runner_sha256.txt").write_text(c3.sha256(ROOT / "nano" / "confirm3.py") + "\n")
+    print(json.dumps({"setup": True, "tasks": len(TASKS), "registered_at": registered_at()[:10],
+                      "runner_sha256": c3.sha256(ROOT / "nano" / "confirm3.py")[:12]}))
 
 
 def check():
@@ -85,6 +88,9 @@ def check():
 
 def main():
     step = sys.argv[1] if len(sys.argv) > 1 else ""
+    pinned = DIR / "runner_sha256.txt"
+    if step != "setup" and pinned.exists() and pinned.read_text().strip() != c3.sha256(ROOT / "nano" / "confirm3.py"):
+        sys.exit("nano/confirm3.py changed since this rehearsal's setup")
     ns = argparse.Namespace
     if step == "setup":
         setup()

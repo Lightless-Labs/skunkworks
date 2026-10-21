@@ -222,6 +222,12 @@ class Decide(unittest.TestCase):
             x[(1, "X:frozen", task)] = {"pass": False, "void": True}
         self.assertEqual(self.decide(s, x)["overall"], "INCONCLUSIVE (best-case void imputation)")
 
+    def test_a_malformed_comparison_is_invalid_not_a_crash(self):
+        s = summary()
+        for c in s["comparisons"]:
+            c.pop("ci95", None)
+        self.assertEqual(self.decide(s, self.tuples())["overall"], "Invalid")
+
     def test_ruled_out_needs_the_best_case_point_too(self):
         # D voids imputed as fails can lift X's best case above +10 pp at the point while the CI
         # bound alone would not show it with iterations=0 (point = bounds): both must hold.
@@ -269,6 +275,32 @@ class FailedAttempt(unittest.TestCase):
             with mock.patch.object(c3, "SUITE", suite):
                 a = c3.failed_attempt_audit(out, ["t-l1"])
         self.assertEqual(a, {"invocations": 2, "tool_calls": 3, "unaudited": 1, "hidden_name_hits": 1})
+
+    def test_an_unauditable_failed_call_blocks_the_claim_and_submission_events_count(self):
+        # Sol re-check: one unauditable call could hide any number of events; it blocks a claim.
+        stats = {1: {"invocations": 1600, "tool_calls": 0}}
+        s = c3.merge_failed_attempt(summary(), stats, 1, {"invocations": 1, "tool_calls": 1, "unaudited": 1,
+                                                         "hidden_name_hits": 0})
+        self.assertEqual(c3.decide(s, Decide.tuples(Decide()), stats, 0)["overall"], "IntegrityReview")
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d)
+            (out / "ledger.jsonl").write_text(json.dumps({"kind": "submission", "tool_calls": 10, "invocations": 5}) + "\n")
+            with mock.patch.object(c3, "SUITE", out / "none"):
+                self.assertEqual(c3.failed_attempt_audit(out, [])["tool_calls"], 10)
+
+    def test_a_dead_attempts_truncated_ledger_counts_as_unaudited_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d)
+            (out / "ledger.jsonl").write_text(json.dumps({"kind": "invocation", "tool_calls": 0}) + '\n{"kind": "invoc')
+            with mock.patch.object(c3, "SUITE", out / "none"):
+                a = c3.failed_attempt_audit(out, [])
+        self.assertEqual((a["invocations"], a["unaudited"]), (1, 2))   # the bad line and the transcript-less call
+
+    def test_a_failed_attempt_above_the_rate_on_its_own_is_integrity_review(self):
+        stats = {1: {"invocations": 100000, "tool_calls": 0}}
+        s = c3.merge_failed_attempt(summary(), stats, 1, {"invocations": 100, "tool_calls": 1, "unaudited": 0,
+                                                         "hidden_name_hits": 0})
+        self.assertEqual(c3.decide(s, Decide.tuples(Decide()), stats, 0)["overall"], "IntegrityReview")
 
     def test_a_failed_attempts_evidence_reaches_the_decision(self):
         stats = {1: {"invocations": 100, "tool_calls": 0}}

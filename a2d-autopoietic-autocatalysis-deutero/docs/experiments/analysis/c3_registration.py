@@ -202,6 +202,14 @@ def _certified(tasks, reg):
     if not (val.get("built") is True and val.get("binary_sha256") and val.get("head") and reg.get("provider_commit")
             and not c3.git("merge-base", "--is-ancestor", reg["provider_commit"], val["head"])[0]):
         return False                    # the last validation built its own controller from a checkout with the provider
+    rescore = c3.DIR / "audit-rescore.json"
+    channel = c3.DIR / "channel-audit.json"
+    if not (rescore.exists() and channel.exists()):
+        return False
+    rs, ch = json.loads(rescore.read_text()), json.loads(channel.read_text())
+    if not (rs.get("tasks") == len(tasks) and rs.get("agree") == len(tasks) and rs.get("disagree") == 0
+            and rs.get("missing") == 0 and ch.get("clean") is True):
+        return False                    # the audit's verdicts re-scored independently; no compile-time read channel
     from c3lib import SUITE, hashes_digest, tree_hashes
     runs = load_json(RECORDS / "audit-runs.json", {}).get("runs", {})
     for t in tasks:                     # the final informative audit round saw exactly the current task
@@ -299,7 +307,8 @@ def build(args, suite):
                                "calls included, each call without an auditable transcript counted as one event), or "
                                "the controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
-                       "own Invalid, or a missing comparison (an aborted generation is a failed attempt: failure_policy)",
+                       "own Invalid, an aborted run, or a missing or malformed comparison or summary (an aborted "
+                       "generation is a failed attempt: failure_policy)",
             "void tuple": "void or unscored submission; any tool event on the submission or on any of its "
                           "invocation records (lane calls included); any invocation without a --json transcript "
                           "carrying the stderr marker (a legacy text transcript is void); recorded invocations != "
@@ -315,7 +324,8 @@ def build(args, suite):
                               "drained, codex = the registered fingerprint",
                   "latency_go": f"median of {c3.LATENCY_PROBES} canary coding calls on the coder lane through "
                                 f"`a2d lift run` <= {c3.LATENCY_MAX_MEDIAN_SECS:g} s, plus one canary call per registered "
-                                "lane; all with 0 tool events and the canary secret in no response",
+                                "lane; every lane needs at least one successful, transcript-audited call; all with 0 "
+                                "tool events and the canary secret in no response",
                   "daily_cap": c3.DAILY_CAP, "replicate_2": "a later UTC day than replicate 1's generation"},
         "failure_policy": "each replicate is attempted once (attempt record before any model call); a deferral is not "
                           "an attempt; a generation that fails before generation_complete may be relaunched once with "
