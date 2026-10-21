@@ -1326,6 +1326,23 @@ class Sandbox(Base):
         self.assertIn("scale: naive mutant m4 fails the public tests (it must be correct but slow)", b)
         self.assertEqual(c, "True 1 1 True")
 
+    def test_scale_timing_takes_the_fastest_passing_run(self):
+        """A load spike must not reject a scale reference: the fastest passing run counts, and two
+        more runs are timed before a reference over the margin is rejected (failed runs never count)."""
+        out = self.lib(
+            "import gym_validate as v\n"
+            "def run(s, ok=True): return {'all_passed': ok, 'secs': s}\n"
+            "def rerun_with(*xs):\n"
+            "    calls = []\n"
+            "    def f(rep): calls.append(rep); return xs[rep - 2]\n"
+            "    return f, calls\n"
+            "f, c = rerun_with(run(9.0), run(9.0))\nprint(v.scale_reference_secs([run(0.3), run(5.0)], f, 1.2), c)\n"
+            "f, c = rerun_with(run(0.4), run(3.0))\nprint(v.scale_reference_secs([run(2.0), run(5.0)], f, 1.2), c)\n"
+            "f, c = rerun_with(run(2.0), run(3.0))\nprint(v.scale_reference_secs([run(2.0), run(5.0)], f, 1.2), c)\n"
+            "f, c = rerun_with(run(0.1, False), run(None))\nprint(v.scale_reference_secs([run(2.0), run(0.1, False)], f, 1.2), c)\n"
+            "f, c = rerun_with(run(0.1, False), run(0.2, False))\nprint(v.scale_reference_secs([run(None), run(0.1, False)], f, 1.2), c)")
+        self.assertEqual(out.splitlines(), ["0.3 []", "0.4 [2, 3]", "2.0 [2, 3]", "2.0 [2, 3]", "None [2, 3]"])
+
     fixture_task = Units.fixture_task
 
 

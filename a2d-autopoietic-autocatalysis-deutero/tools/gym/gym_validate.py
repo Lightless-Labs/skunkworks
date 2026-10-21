@@ -50,7 +50,7 @@ from gymvendor import lines as rust_lines, test_names  # noqa: E402
 MIN_MUTANTS, MIN_PUBLIC_GREEN, MIN_HIDDEN, MIN_PUBLIC = 4, 2, 20, 3
 COMPILE_TIMEOUT = 120
 SCALE_SHARE = 0.05              # the rule (SPEC.md): the reference uses at most 5% of test_timeout_secs
-SCALE_MARGIN_SHARE = 0.04       # applied at validation: max(libtest time, wall) <= 4% (noise margin)
+SCALE_MARGIN_SHARE = 0.04       # applied at validation: fastest passing run's max(libtest, wall) <= 4%
 MAX_FIX_ROUNDS = 2
 TRUSTED_MACROS = ("use ::std::{assert, assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, "
                   "matches, unreachable};")
@@ -175,6 +175,20 @@ def score_tests(code, tests, label, timeout_secs, rep=0):
         shutil.rmtree(run, ignore_errors=True)
 
 
+def scale_reference_secs(runs, rerun, limit):
+    """The scale rule's measure: the fastest passing run's time. The rule bounds the reference's own
+    cost, and load spikes and first-exec costs only add time; each run's figure already includes its
+    wall clock, so a forged libtest summary cannot lower it. Over `limit`, two more runs
+    (`rerun(rep)`, reps 2 and 3) are timed before the caller rejects. None when no run passed."""
+    def fastest(rs):
+        timed = [r["secs"] for r in rs if r["all_passed"] and r["secs"] is not None]
+        return min(timed) if timed else None
+    secs = fastest(runs)
+    if secs is None or secs > limit:
+        secs = fastest(list(runs) + [rerun(rep) for rep in (2, 3)])
+    return secs
+
+
 def _remember(key, res):
     if _MEMO is not None:
         with _memo_lock:
@@ -280,8 +294,10 @@ def validate_task(d, family_class):
             problems.append(f"reference fails hidden ({h1['passed']}/{h1['expected']}"
                             f"{'' if h1['compiled'] else ', does not compile'})")
         if scale and h1["all_passed"]:
-            secs = max(h1["secs"] or 0, h2["secs"] or 0)
-            if secs > SCALE_MARGIN_SHARE * timeout:
+            limit = SCALE_MARGIN_SHARE * timeout
+            secs = scale_reference_secs([h1, h2], lambda rep: score_tests(reference, hidden, "hidden", timeout, rep=rep),
+                                        limit)
+            if secs is None or secs > limit:
                 problems.append("scale: reference hidden run exceeds 4% of the time limit (rule 5%, validation margin)")
     mdir = d / "mutants"
     mutants = sorted(p for p in mdir.iterdir() if p.suffix == ".rs") if mdir.is_dir() else []
