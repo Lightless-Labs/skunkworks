@@ -1,0 +1,664 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+    InvalidModifier { pos: usize },
+    TypeMismatch { pos: usize },
+    DuplicateKey { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Scalar(String),
+    List(Vec<String>),
+    Map(Vec<(String, String)>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operator {
+    Simple,
+    Plus,
+    Hash,
+    Dot,
+    Slash,
+    Semicolon,
+    Question,
+    Ampersand,
+}
+
+impl Operator {
+    fn separator(self) -> char {
+        match self {
+            Self::Simple | Self::Plus | Self::Hash => ',',
+            Self::Dot => '.',
+            Self::Slash => '/',
+            Self::Semicolon => ';',
+            Self::Question | Self::Ampersand => '&',
+        }
+    }
+
+    fn prefix(self) -> Option<char> {
+        match self {
+            Self::Simple | Self::Plus => None,
+            Self::Hash => Some('#'),
+            Self::Dot => Some('.'),
+            Self::Slash => Some('/'),
+            Self::Semicolon => Some(';'),
+            Self::Question => Some('?'),
+            Self::Ampersand => Some('&'),
+        }
+    }
+
+    fn reserved(self) -> bool {
+        matches!(self, Self::Plus | Self::Hash)
+    }
+
+    fn named(self) -> bool {
+        matches!(self, Self::Semicolon | Self::Question | Self::Ampersand)
+    }
+}
+
+#[derive(Clone)]
+struct Spec {
+    name: String,
+    start: usize,
+    modifier: Modifier,
+}
+
+#[derive(Clone, Copy)]
+enum Modifier {
+    None,
+    Explode,
+    Prefix(usize),
+}
+
+fn operator_for(c: char) -> Option<Operator> {
+    match c {
+        '+' => Some(Operator::Plus),
+        '#' => Some(Operator::Hash),
+        '.' => Some(Operator::Dot),
+        '/' => Some(Operator::Slash),
+        ';' => Some(Operator::Semicolon),
+        '?' => Some(Operator::Question),
+        '&' => Some(Operator::Ampersand),
+        _ => None,
+    }
+}
+
+fn valid_name_byte(b: u8, first: bool) -> bool {
+    if first {
+        b.is_ascii_alphabetic() || b == b'_'
+    } else {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+}
+
+fn parse_specifier(raw: &str, start: usize) -> Result<Spec, Error> {
+    if raw.is_empty() {
+        return Err(Error::EmptyVariable { pos: start });
+    }
+
+    let bytes = raw.as_bytes();
+    let modifier_at = bytes.iter().position(|&b| b == b'*' || b == b':');
+    let name_end = modifier_at.unwrap_or(bytes.len());
+
+    if name_end == 0 {
+        return Err(Error::InvalidName { pos: start });
+    }
+    for i in 0..name_end {
+        if !valid_name_byte(bytes[i], i == 0) {
+            return Err(Error::InvalidName { pos: start + i });
+        }
+    }
+
+    let modifier = if let Some(i) = modifier_at {
+        let suffix = &raw[i..];
+        if suffix == "*" {
+            Modifier::Explode
+        } else if let Some(digits) = suffix.strip_prefix(':') {
+            let valid = !digits.is_empty()
+                && digits.len() <= 4
+                && digits.as_bytes()[0].is_ascii_digit()
+                && digits.as_bytes()[0] != b'0'
+                && digits.bytes().all(|b| b.is_ascii_digit());
+            if !valid {
+                return Err(Error::InvalidModifier { pos: start + i });
+            }
+            let count = digits.bytes().fold(0usize, |n, b| n * 10 + (b - b'0') as usize);
+            if !(1..=9999).contains(&count) {
+                return Err(Error::InvalidModifier { pos: start + i });
+            }
+            Modifier::Prefix(count)
+        } else {
+            return Err(Error::InvalidModifier { pos: start + i });
+        }
+    } else {
+        Modifier::None
+    };
+
+    Ok(Spec {
+        name: raw[..name_end].to_owned(),
+        start,
+        modifier,
+    })
+}
+
+fn parse_expression(content: &str, content_start: usize, close: usize) -> Result<(Operator, Vec<Spec>), Error> {
+    let mut op = Operator::Simple;
+    let mut body_start = 0;
+    if let Some(c) = content.chars().next() {
+        if let Some(found) = operator_for(c) {
+            op = found;
+            body_start = c.len_utf8();
+        } else if "+#./;?&".contains(c) {
+            return Err(Error::UnsupportedOperator { pos: content_start });
+        }
+    }
+
+    if body_start == content.len() {
+        return Err(Error::EmptyExpression { pos: close });
+    }
+
+    let body = &content[body_start..];
+    let absolute_start = content_start + body_start;
+    let mut specs = Vec::new();
+    let mut offset = 0;
+    for part in body.split(',') {
+        let spec = parse_specifier(part, absolute_start + offset)?;
+        if specs.iter().any(|s: &Spec| s.name == spec.name) {
+            return Err(Error::DuplicateVariable { pos: absolute_start + offset });
+        }
+        specs.push(spec);
+        offset += part.len() + 1;
+    }
+    Ok((op, specs))
+}
+
+fn selected_value<'a>(name: &str, vars: &'a [(&str, Value)]) -> Option<&'a Value> {
+    vars.iter().rev().find(|(key, _)| *key == name).map(|(_, value)| value)
+}
+
+fn is_unreserved(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_hex(b: u8) -> bool {
+    b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b)
+}
+
+fn upper_hex(b: u8) -> u8 {
+    if (b'a'..=b'f').contains(&b) { b - 32 } else { b }
+}
+
+fn encode(input: &str, reserved: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = input.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' && i + 2 < bytes.len() && is_hex(bytes[i + 1]) && is_hex(bytes[i + 2]) {
+            out.push('%');
+            out.push(upper_hex(bytes[i + 1]) as char);
+            out.push(upper_hex(bytes[i + 2]) as char);
+            i += 3;
+        } else if is_unreserved(b) || (reserved && is_reserved(b)) {
+            out.push(b as char);
+            i += 1;
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn is_reserved(b: u8) -> bool {
+    matches!(
+        b,
+        b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&'
+            | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+    )
+}
+
+fn prefix_chars(input: &str, count: usize) -> String {
+    input.chars().take(count).collect()
+}
+
+fn named_field(name: &str, value: String, op: Operator) -> String {
+    if op == Operator::Semicolon && value.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}={value}")
+    }
+}
+
+fn expand_expression(op: Operator, specs: &[Spec], vars: &[(&str, Value)]) -> Result<String, Error> {
+    let mut fields = Vec::new();
+    for spec in specs {
+        let Some(value) = selected_value(&spec.name, vars) else {
+            continue;
+        };
+
+        let prefix = match spec.modifier {
+            Modifier::Prefix(n) => match value {
+                Value::Scalar(s) => Some(prefix_chars(s, n)),
+                Value::List(_) | Value::Map(_) => {
+                    return Err(Error::TypeMismatch { pos: spec.start });
+                }
+            },
+            _ => None,
+        };
+
+        let reserved = op.reserved();
+        match value {
+            Value::Scalar(s) => {
+                let source = prefix.as_deref().unwrap_or(s);
+                fields.push(if op.named() {
+                    named_field(&spec.name, encode(source, reserved), op)
+                } else {
+                    encode(source, reserved)
+                });
+            }
+            Value::List(items) => {
+                if items.is_empty() {
+                    continue;
+                }
+                let explode = matches!(spec.modifier, Modifier::Explode);
+                if explode {
+                    for item in items {
+                        let encoded = encode(item, reserved);
+                        fields.push(if op.named() {
+                            named_field(&spec.name, encoded, op)
+                        } else {
+                            encoded
+                        });
+                    }
+                } else {
+                    let joined = items.iter().map(|s| encode(s, reserved)).collect::<Vec<_>>().join(",");
+                    fields.push(if op.named() {
+                        named_field(&spec.name, joined, op)
+                    } else {
+                        joined
+                    });
+                }
+            }
+            Value::Map(entries) => {
+                let mut seen: Vec<&str> = Vec::new();
+                for (key, _) in entries {
+                    if seen.contains(&key.as_str()) {
+                        return Err(Error::DuplicateKey { pos: spec.start });
+                    }
+                    seen.push(key);
+                }
+                if entries.is_empty() {
+                    continue;
+                }
+                let explode = matches!(spec.modifier, Modifier::Explode);
+                if explode {
+                    for (key, val) in entries {
+                        let k = encode(key, reserved);
+                        let v = encode(val, reserved);
+                        if op == Operator::Semicolon && v.is_empty() {
+                            fields.push(k);
+                        } else {
+                            fields.push(format!("{k}={v}"));
+                        }
+                    }
+                } else {
+                    let mut components = Vec::with_capacity(entries.len() * 2);
+                    for (key, val) in entries {
+                        components.push(encode(key, reserved));
+                        components.push(encode(val, reserved));
+                    }
+                    let joined = components.join(",");
+                    fields.push(if op.named() {
+                        named_field(&spec.name, joined, op)
+                    } else {
+                        joined
+                    });
+                }
+            }
+        }
+    }
+
+    if fields.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = String::new();
+    if let Some(prefix) = op.prefix() {
+        out.push(prefix);
+    }
+    out.push_str(&fields.join(&op.separator().to_string()));
+    Ok(out)
+}
+
+pub fn expand(template: &str, vars: &[(&str, Value)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut out = String::new();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'}' => return Err(Error::UnexpectedClose { pos: cursor }),
+            b'{' => {
+                let open = cursor;
+                let Some(relative_close) = bytes[cursor + 1..].iter().position(|&b| b == b'}') else {
+                    return Err(Error::Unclosed { pos: open });
+                };
+                let close = cursor + 1 + relative_close;
+                if let Some(relative_inner) = bytes[open + 1..close].iter().position(|&b| b == b'{') {
+                    return Err(Error::NestedOpen { pos: open + 1 + relative_inner });
+                }
+
+                let content_start = open + 1;
+                let content = &template[content_start..close];
+                let (op, specs) = parse_expression(content, content_start, close)?;
+                out.push_str(&expand_expression(op, &specs, vars)?);
+                cursor = close + 1;
+            }
+            _ => {
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor] != b'{' && bytes[cursor] != b'}' {
+                    cursor += 1;
+                }
+                out.push_str(&template[start..cursor]);
+            }
+        }
+    }
+
+    Ok(out)
+}
+```
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+    InvalidModifier { pos: usize },
+    TypeMismatch { pos: usize },
+    DuplicateKey { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Scalar(String),
+    List(Vec<String>),
+    Map(Vec<(String, String)>),
+}
+
+#[derive(Clone, Copy)]
+enum Op {
+    Simple,
+    Plus,
+    Hash,
+    Dot,
+    Slash,
+    Semi,
+    Question,
+    Amp,
+}
+
+impl Op {
+    fn separator(self) -> char {
+        match self {
+            Op::Simple | Op::Plus | Op::Hash => ',',
+            Op::Dot => '.',
+            Op::Slash => '/',
+            Op::Semi => ';',
+            Op::Question | Op::Amp => '&',
+        }
+    }
+    fn prefix(self) -> Option<char> {
+        match self {
+            Op::Simple | Op::Plus => None,
+            Op::Hash => Some('#'),
+            Op::Dot => Some('.'),
+            Op::Slash => Some('/'),
+            Op::Semi => Some(';'),
+            Op::Question => Some('?'),
+            Op::Amp => Some('&'),
+        }
+    }
+    fn reserved(self) -> bool {
+        matches!(self, Op::Plus | Op::Hash)
+    }
+    fn named(self) -> bool {
+        matches!(self, Op::Semi | Op::Question | Op::Amp)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mod {
+    Plain,
+    Explode,
+    Prefix(usize),
+}
+struct Variable {
+    name: String,
+    pos: usize,
+    modifier: Mod,
+}
+
+fn parse_var(raw: &str, pos: usize) -> Result<Variable, Error> {
+    if raw.is_empty() {
+        return Err(Error::EmptyVariable { pos });
+    }
+    let bytes = raw.as_bytes();
+    let delim = bytes.iter().position(|b| *b == b'*' || *b == b':').unwrap_or(bytes.len());
+    if delim == 0 {
+        return Err(Error::InvalidName { pos });
+    }
+    for i in 0..delim {
+        let b = bytes[i];
+        let ok = if i == 0 {
+            b.is_ascii_alphabetic() || b == b'_'
+        } else {
+            b.is_ascii_alphanumeric() || b == b'_'
+        };
+        if !ok {
+            return Err(Error::InvalidName { pos: pos + i });
+        }
+    }
+    let mod_part = &raw[delim..];
+    let modifier = match mod_part {
+        "" => Mod::Plain,
+        "*" => Mod::Explode,
+        _ if mod_part.starts_with(':') => {
+            let digits = &mod_part[1..];
+            if digits.is_empty()
+                || digits.len() > 4
+                || digits.as_bytes()[0] == b'0'
+                || !digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Err(Error::InvalidModifier { pos: pos + delim });
+            }
+            let n = digits.bytes().fold(0usize, |x, b| x * 10 + (b - b'0') as usize);
+            if n > 9999 || n == 0 {
+                return Err(Error::InvalidModifier { pos: pos + delim });
+            }
+            Mod::Prefix(n)
+        }
+        _ => return Err(Error::InvalidModifier { pos: pos + delim }),
+    };
+    Ok(Variable { name: raw[..delim].to_string(), pos, modifier })
+}
+
+fn parse_expr(content: &str, start: usize, close: usize) -> Result<(Op, Vec<Variable>), Error> {
+    let mut op = Op::Simple;
+    let mut skip = 0;
+    if let Some(ch) = content.chars().next() {
+        op = match ch {
+            '+' => { skip = 1; Op::Plus }
+            '#' => { skip = 1; Op::Hash }
+            '.' => { skip = 1; Op::Dot }
+            '/' => { skip = 1; Op::Slash }
+            ';' => { skip = 1; Op::Semi }
+            '?' => { skip = 1; Op::Question }
+            '&' => { skip = 1; Op::Amp }
+            _ => op,
+        };
+    }
+    if skip == content.len() {
+        return Err(Error::EmptyExpression { pos: close });
+    }
+    let body = &content[skip..];
+    let bodypos = start + skip;
+    let mut vars = Vec::new();
+    let mut offset = 0;
+    for raw in body.split(',') {
+        let v = parse_var(raw, bodypos + offset)?;
+        if vars.iter().any(|old: &Variable| old.name == v.name) {
+            return Err(Error::DuplicateVariable { pos: v.pos });
+        }
+        vars.push(v);
+        offset += raw.len() + 1;
+    }
+    Ok((op, vars))
+}
+
+fn hex(b: u8) -> bool {
+    b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b)
+}
+fn keep(b: u8, reserved: bool) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(b, b'-' | b'.' | b'_' | b'~')
+        || (reserved && matches!(b, b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='))
+}
+fn encode(s: &str, reserved: bool) -> String {
+    const H: &[u8; 16] = b"0123456789ABCDEF";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() && hex(b[i + 1]) && hex(b[i + 2]) {
+            out.push('%');
+            out.push((if b[i + 1].is_ascii_lowercase() { b[i + 1] - 32 } else { b[i + 1] }) as char);
+            out.push((if b[i + 2].is_ascii_lowercase() { b[i + 2] - 32 } else { b[i + 2] }) as char);
+            i += 3;
+        } else if keep(b[i], reserved) {
+            out.push(b[i] as char);
+            i += 1;
+        } else {
+            out.push('%');
+            out.push(H[(b[i] >> 4) as usize] as char);
+            out.push(H[(b[i] & 15) as usize] as char);
+            i += 1;
+        }
+    }
+    out
+}
+fn named(name: &str, val: String, op: Op) -> String {
+    if matches!(op, Op::Semi) && val.is_empty() { name.to_owned() } else { format!("{name}={val}") }
+}
+fn chosen<'a>(name: &str, vars: &'a [(&str, Value)]) -> Option<&'a Value> {
+    vars.iter().rev().find(|(n, _)| *n == name).map(|(_, v)| v)
+}
+fn prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+pub fn expand(template: &str, vars: &[(&str, Value)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut result = String::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'}' {
+            return Err(Error::UnexpectedClose { pos: at });
+        }
+        if bytes[at] != b'{' {
+            let begin = at;
+            while at < bytes.len() && bytes[at] != b'{' && bytes[at] != b'}' { at += 1; }
+            result.push_str(&template[begin..at]);
+            continue;
+        }
+        let open = at;
+        let Some(delta) = bytes[at + 1..].iter().position(|b| *b == b'}') else {
+            return Err(Error::Unclosed { pos: open });
+        };
+        let close = at + 1 + delta;
+        if let Some(nested) = bytes[open + 1..close].iter().position(|b| *b == b'{') {
+            return Err(Error::NestedOpen { pos: open + 1 + nested });
+        }
+        let begin = open + 1;
+        let content = &template[begin..close];
+        let (op, variables) = parse_expr(content, begin, close)?;
+        let mut fields = Vec::new();
+        for var in variables {
+            let Some(value) = chosen(&var.name, vars) else { continue };
+            let prefix_value = match (var.modifier, value) {
+                (Mod::Prefix(n), Value::Scalar(s)) => Some(prefix(s, n)),
+                (Mod::Prefix(_), _) => return Err(Error::TypeMismatch { pos: var.pos }),
+                _ => None,
+            };
+            match value {
+                Value::Scalar(s) => {
+                    let value = encode(prefix_value.as_deref().unwrap_or(s), op.reserved());
+                    fields.push(if op.named() { named(&var.name, value, op) } else { value });
+                }
+                Value::List(items) => {
+                    if items.is_empty() { continue; }
+                    if matches!(var.modifier, Mod::Explode) {
+                        for item in items {
+                            let value = encode(item, op.reserved());
+                            fields.push(if op.named() { named(&var.name, value, op) } else { value });
+                        }
+                    } else {
+                        let value = items.iter().map(|x| encode(x, op.reserved())).collect::<Vec<_>>().join(",");
+                        fields.push(if op.named() { named(&var.name, value, op) } else { value });
+                    }
+                }
+                Value::Map(entries) => {
+                    for i in 0..entries.len() {
+                        if entries[..i].iter().any(|(key, _)| key == &entries[i].0) {
+                            return Err(Error::DuplicateKey { pos: var.pos });
+                        }
+                    }
+                    if entries.is_empty() { continue; }
+                    if matches!(var.modifier, Mod::Explode) {
+                        for (key, value) in entries {
+                            let key = encode(key, op.reserved());
+                            let value = encode(value, op.reserved());
+                            fields.push(if matches!(op, Op::Semi) && value.is_empty() {
+                                key
+                            } else {
+                                format!("{key}={value}")
+                            });
+                        }
+                    } else {
+                        let mut values = Vec::with_capacity(entries.len() * 2);
+                        for (key, value) in entries {
+                            values.push(encode(key, op.reserved()));
+                            values.push(encode(value, op.reserved()));
+                        }
+                        let value = values.join(",");
+                        fields.push(if op.named() { named(&var.name, value, op) } else { value });
+                    }
+                }
+            }
+        }
+        if !fields.is_empty() {
+            if let Some(ch) = op.prefix() { result.push(ch); }
+            result.push_str(&fields.join(&op.separator().to_string()));
+        }
+        at = close + 1;
+    }
+    Ok(result)
+}
+```

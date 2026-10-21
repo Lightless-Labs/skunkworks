@@ -1,0 +1,98 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    RowTooLong { len: usize },
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowResult {
+    pub cells: Vec<u32>,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn slide_row(row: &[u32], side: Side) -> Result<RowResult, Error> {
+    if row.len() > 32 {
+        return Err(Error::RowTooLong { len: row.len() });
+    }
+
+    for (index, &value) in row.iter().enumerate() {
+        if value != 0
+            && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two())
+        {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    let indices: Vec<usize> = match side {
+        Side::Left => (0..row.len()).collect(),
+        Side::Right => (0..row.len()).rev().collect(),
+    };
+    let nonempty: Vec<usize> = indices.into_iter().filter(|&i| row[i] != 0).collect();
+
+    let mut cells = vec![0; row.len()];
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let mut input_pos = 0usize;
+    let mut output_pos = 0usize;
+
+    while input_pos < nonempty.len() {
+        let first = nonempty[input_pos];
+        let value = row[first];
+
+        if input_pos + 1 < nonempty.len() {
+            let second = nonempty[input_pos + 1];
+            if row[second] == value {
+                let Some(merged_value) = value.checked_mul(2) else {
+                    return Err(Error::MergeOverflow { first, second });
+                };
+
+                let to = match side {
+                    Side::Left => output_pos,
+                    Side::Right => row.len() - 1 - output_pos,
+                };
+                cells[to] = merged_value;
+                merges.push(Merge {
+                    from: [first, second],
+                    to,
+                    value: merged_value,
+                });
+                score += u64::from(merged_value);
+                input_pos += 2;
+                output_pos += 1;
+                continue;
+            }
+        }
+
+        let to = match side {
+            Side::Left => output_pos,
+            Side::Right => row.len() - 1 - output_pos,
+        };
+        cells[to] = value;
+        input_pos += 1;
+        output_pos += 1;
+    }
+
+    let changed = cells != row;
+    Ok(RowResult {
+        cells,
+        score,
+        changed,
+        merges,
+    })
+}

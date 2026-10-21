@@ -1,0 +1,656 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Minute,
+    Hour,
+    DayOfMonth,
+    Month,
+    DayOfWeek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    FieldCount { found: usize },
+    InvalidCharacter { field: Field, offset: usize },
+    EmptyItem { field: Field, offset: usize },
+    InvalidSyntax { field: Field, offset: usize },
+    LeadingZero { field: Field, offset: usize },
+    NumberOverflow { field: Field, offset: usize },
+    OutOfRange { field: Field, offset: usize },
+    ReversedRange { field: Field, offset: usize },
+    BadStep { field: Field, offset: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    sets: [Vec<bool>; 5],
+    unrestricted_days: [bool; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CivilDateTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePart {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DateError {
+    InvalidDateTime { component: DatePart },
+}
+
+const FIELDS: [Field; 5] = [
+    Field::Minute,
+    Field::Hour,
+    Field::DayOfMonth,
+    Field::Month,
+    Field::DayOfWeek,
+];
+
+fn bounds(field: Field) -> (u32, u32) {
+    match field {
+        Field::Minute => (0, 59),
+        Field::Hour => (0, 23),
+        Field::DayOfMonth => (1, 31),
+        Field::Month => (1, 12),
+        Field::DayOfWeek => (0, 6),
+    }
+}
+
+fn names(field: Field, s: &str) -> Option<u32> {
+    let table: &[(&str, u32)] = match field {
+        Field::Month => &[
+            ("JAN", 1), ("FEB", 2), ("MAR", 3), ("APR", 4), ("MAY", 5), ("JUN", 6),
+            ("JUL", 7), ("AUG", 8), ("SEP", 9), ("OCT", 10), ("NOV", 11), ("DEC", 12),
+        ],
+        Field::DayOfWeek => &[
+            ("SUN", 0), ("MON", 1), ("TUE", 2), ("WED", 3), ("THU", 4), ("FRI", 5),
+            ("SAT", 6),
+        ],
+        _ => return None,
+    };
+    table
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(s))
+        .map(|(_, value)| *value)
+}
+
+fn syntax_error(field: Field, offset: usize) -> ParseError {
+    ParseError::InvalidSyntax { field, offset }
+}
+
+fn parse_number(field: Field, s: &str, offset: usize, step: bool) -> Result<u32, ParseError> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return Err(syntax_error(field, offset));
+    }
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return Err(ParseError::LeadingZero { field, offset });
+    }
+    let mut n = 0u32;
+    for &b in bytes {
+        n = n
+            .checked_mul(10)
+            .and_then(|x| x.checked_add((b - b'0') as u32))
+            .ok_or(ParseError::NumberOverflow { field, offset })?;
+    }
+    if step {
+        let (lo, hi) = bounds(field);
+        let width = hi - lo + 1;
+        if n == 0 || n > width {
+            return Err(ParseError::BadStep { field, offset });
+        }
+    } else {
+        let (lo, hi) = bounds(field);
+        if n < lo || n > hi {
+            return Err(ParseError::OutOfRange { field, offset });
+        }
+    }
+    Ok(n)
+}
+
+fn parse_base(field: Field, s: &str, offset: usize) -> Result<u32, ParseError> {
+    if s.as_bytes().iter().all(u8::is_ascii_digit) && !s.is_empty() {
+        parse_number(field, s, offset, false)
+    } else if let Some(n) = names(field, s) {
+        Ok(n)
+    } else {
+        Err(syntax_error(field, offset))
+    }
+}
+
+fn parse_field(field: Field, text: &str, set: &mut [bool]) -> Result<(), ParseError> {
+    for (i, &b) in text.as_bytes().iter().enumerate() {
+        if !(b.is_ascii_digit()
+            || b.is_ascii_alphabetic()
+            || matches!(b, b'*' | b'-' | b'/' | b','))
+        {
+            return Err(ParseError::InvalidCharacter { field, offset: i });
+        }
+    }
+
+    let (min, max) = bounds(field);
+    let mut start = 0usize;
+    for item in text.split(',') {
+        if item.is_empty() {
+            return Err(ParseError::EmptyItem { field, offset: start });
+        }
+        let slash_count = item.bytes().filter(|&b| b == b'/').count();
+        if slash_count > 1 {
+            return Err(syntax_error(field, start));
+        }
+        let (base, step_text) = if let Some(pos) = item.find('/') {
+            (&item[..pos], Some((&item[pos + 1..], start + pos + 1)))
+        } else {
+            (item, None)
+        };
+        if base.is_empty() || step_text.is_some_and(|(s, _)| s.is_empty()) {
+            return Err(syntax_error(field, start));
+        }
+
+        let (lo, hi) = if base == "*" {
+            (min, max)
+        } else {
+            let hyphens = base.bytes().filter(|&b| b == b'-').count();
+            if hyphens > 1 || base.starts_with('-') || base.ends_with('-') {
+                return Err(syntax_error(field, start));
+            }
+            if let Some(pos) = base.find('-') {
+                let a = &base[..pos];
+                let b = &base[pos + 1..];
+                if a == "*" || b == "*" {
+                    return Err(syntax_error(field, start));
+                }
+                let a_num = parse_base(field, a, start)?;
+                let b_num = parse_base(field, b, start + pos + 1)?;
+                if a_num > b_num {
+                    return Err(ParseError::ReversedRange {
+                        field,
+                        offset: start + pos + 1,
+                    });
+                }
+                (a_num, b_num)
+            } else {
+                let n = parse_base(field, base, start)?;
+                (n, if step_text.is_some() { max } else { n })
+            }
+        };
+
+        let step = if let Some((s, off)) = step_text {
+            Some(parse_number(field, s, off, true)?)
+        } else {
+            None
+        };
+        let stride = step.unwrap_or(1);
+        let mut n = lo;
+        while n <= hi {
+            set[(n - min) as usize] = true;
+            match n.checked_add(stride) {
+                Some(next) => n = next,
+                None => break,
+            }
+        }
+        start += item.len() + 1;
+    }
+    Ok(())
+}
+
+pub fn parse_cron(input: &str) -> Result<Cron, ParseError> {
+    let parts: Vec<&str> = input.split(' ').collect();
+    if parts.len() != 5 {
+        return Err(ParseError::FieldCount { found: parts.len() });
+    }
+    let mut sets: [Vec<bool>; 5] = std::array::from_fn(|i| {
+        let (lo, hi) = bounds(FIELDS[i]);
+        vec![false; (hi - lo + 1) as usize]
+    });
+    for i in 0..5 {
+        parse_field(FIELDS[i], parts[i], &mut sets[i])?;
+    }
+    Ok(Cron {
+        sets,
+        unrestricted_days: [parts[2] == "*", parts[4] == "*"],
+    })
+}
+
+impl Cron {
+    pub fn allowed(&self, field: Field) -> Vec<u8> {
+        let i = match field {
+            Field::Minute => 0,
+            Field::Hour => 1,
+            Field::DayOfMonth => 2,
+            Field::Month => 3,
+            Field::DayOfWeek => 4,
+        };
+        let (lo, _) = bounds(field);
+        self.sets[i]
+            .iter()
+            .enumerate()
+            .filter_map(|(j, &yes)| yes.then_some((lo as usize + j) as u8))
+            .collect()
+    }
+
+    pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError> {
+        validate(at)?;
+        Ok(self.matches_valid(at))
+    }
+
+    pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError> {
+        validate(after)?;
+        let mut cur = after;
+        loop {
+            if cur.year == 2399 && cur.month == 12 && cur.day == 31 && cur.hour == 23 && cur.minute == 59 {
+                return Ok(None);
+            }
+            cur = increment_minute(cur);
+            if self.matches_valid(cur) {
+                return Ok(Some(cur));
+            }
+        }
+    }
+
+    fn has(&self, field: Field, value: u8) -> bool {
+        let i = match field {
+            Field::Minute => 0,
+            Field::Hour => 1,
+            Field::DayOfMonth => 2,
+            Field::Month => 3,
+            Field::DayOfWeek => 4,
+        };
+        let (lo, _) = bounds(field);
+        self.sets[i][(value as u32 - lo) as usize]
+    }
+
+    fn matches_valid(&self, at: CivilDateTime) -> bool {
+        if !self.has(Field::Minute, at.minute)
+            || !self.has(Field::Hour, at.hour)
+            || !self.has(Field::Month, at.month)
+        {
+            return false;
+        }
+        let dom = self.has(Field::DayOfMonth, at.day);
+        let dow = self.has(Field::DayOfWeek, weekday(at.year, at.month, at.day));
+        match self.unrestricted_days {
+            [true, true] => true,
+            [true, false] => dow,
+            [false, true] => dom,
+            [false, false] => {
+                if at.day == month_length(at.year, at.month) {
+                    dom && dow
+                } else {
+                    dom || dow
+                }
+            }
+        }
+    }
+}
+
+fn leap(year: u16) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn month_length(year: u16, month: u8) -> u8 {
+    match month {
+        2 => if leap(year) { 29 } else { 28 },
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+fn validate(at: CivilDateTime) -> Result<(), DateError> {
+    if !(2000..=2399).contains(&at.year) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Year });
+    }
+    if !(1..=12).contains(&at.month) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Month });
+    }
+    if at.day == 0 || at.day > month_length(at.year, at.month) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Day });
+    }
+    if at.hour > 23 {
+        return Err(DateError::InvalidDateTime { component: DatePart::Hour });
+    }
+    if at.minute > 59 {
+        return Err(DateError::InvalidDateTime { component: DatePart::Minute });
+    }
+    Ok(())
+}
+
+fn weekday(year: u16, month: u8, day: u8) -> u8 {
+    let mut days = 0u32;
+    for y in 2000..year {
+        days += if leap(y) { 366 } else { 365 };
+    }
+    for m in 1..month {
+        days += month_length(year, m) as u32;
+    }
+    days += day as u32 - 1;
+    ((6 + days) % 7) as u8
+}
+
+fn increment_minute(mut at: CivilDateTime) -> CivilDateTime {
+    if at.minute < 59 {
+        at.minute += 1;
+    } else {
+        at.minute = 0;
+        if at.hour < 23 {
+            at.hour += 1;
+        } else {
+            at.hour = 0;
+            if at.day < month_length(at.year, at.month) {
+                at.day += 1;
+            } else {
+                at.day = 1;
+                if at.month < 12 {
+                    at.month += 1;
+                } else {
+                    at.month = 1;
+                    at.year += 1;
+                }
+            }
+        }
+    }
+    at
+}
+```
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Minute,
+    Hour,
+    DayOfMonth,
+    Month,
+    DayOfWeek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    FieldCount { found: usize },
+    InvalidCharacter { field: Field, offset: usize },
+    EmptyItem { field: Field, offset: usize },
+    InvalidSyntax { field: Field, offset: usize },
+    LeadingZero { field: Field, offset: usize },
+    NumberOverflow { field: Field, offset: usize },
+    OutOfRange { field: Field, offset: usize },
+    ReversedRange { field: Field, offset: usize },
+    BadStep { field: Field, offset: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minute: u64,
+    hour: u32,
+    day: u32,
+    month: u16,
+    weekday: u8,
+    day_unrestricted: bool,
+    weekday_unrestricted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CivilDateTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePart {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DateError {
+    InvalidDateTime { component: DatePart },
+}
+
+fn info(f: Field) -> (u32, u32) {
+    match f {
+        Field::Minute => (0, 59),
+        Field::Hour => (0, 23),
+        Field::DayOfMonth => (1, 31),
+        Field::Month => (1, 12),
+        Field::DayOfWeek => (0, 6),
+    }
+}
+
+fn bit_index(f: Field, n: u32) -> u32 {
+    n - info(f).0
+}
+
+fn name_value(f: Field, s: &str) -> Option<u32> {
+    let v = match f {
+        Field::Month => match s.to_ascii_uppercase().as_str() {
+            "JAN" => 1, "FEB" => 2, "MAR" => 3, "APR" => 4, "MAY" => 5, "JUN" => 6,
+            "JUL" => 7, "AUG" => 8, "SEP" => 9, "OCT" => 10, "NOV" => 11, "DEC" => 12,
+            _ => return None,
+        },
+        Field::DayOfWeek => match s.to_ascii_uppercase().as_str() {
+            "SUN" => 0, "MON" => 1, "TUE" => 2, "WED" => 3, "THU" => 4, "FRI" => 5,
+            "SAT" => 6, _ => return None,
+        },
+        _ => return None,
+    };
+    Some(v)
+}
+
+fn parse_decimal(f: Field, s: &str, offset: usize, step: bool) -> Result<u32, ParseError> {
+    let b = s.as_bytes();
+    if b.is_empty() || !b.iter().all(u8::is_ascii_digit) {
+        return Err(ParseError::InvalidSyntax { field: f, offset });
+    }
+    if b.len() > 1 && b[0] == b'0' {
+        return Err(ParseError::LeadingZero { field: f, offset });
+    }
+    let mut value = 0u32;
+    for &digit in b {
+        value = value.checked_mul(10)
+            .and_then(|x| x.checked_add((digit - b'0') as u32))
+            .ok_or(ParseError::NumberOverflow { field: f, offset })?;
+    }
+    let (lo, hi) = info(f);
+    if step {
+        if value == 0 || value > hi - lo + 1 {
+            return Err(ParseError::BadStep { field: f, offset });
+        }
+    } else if value < lo || value > hi {
+        return Err(ParseError::OutOfRange { field: f, offset });
+    }
+    Ok(value)
+}
+
+fn parse_endpoint(f: Field, s: &str, offset: usize) -> Result<u32, ParseError> {
+    if !s.is_empty() && s.as_bytes().iter().all(u8::is_ascii_digit) {
+        parse_decimal(f, s, offset, false)
+    } else if let Some(v) = name_value(f, s) {
+        Ok(v)
+    } else {
+        Err(ParseError::InvalidSyntax { field: f, offset })
+    }
+}
+
+fn parse_field(f: Field, text: &str, bits: &mut u64) -> Result<(), ParseError> {
+    for (i, b) in text.bytes().enumerate() {
+        if !(b.is_ascii_digit() || b.is_ascii_alphabetic() || b"*/,-".contains(&b)) {
+            return Err(ParseError::InvalidCharacter { field: f, offset: i });
+        }
+    }
+    let (min, max) = info(f);
+    let mut offset = 0;
+    for item in text.split(',') {
+        if item.is_empty() {
+            return Err(ParseError::EmptyItem { field: f, offset });
+        }
+        if item.bytes().filter(|&b| b == b'/').count() > 1 {
+            return Err(ParseError::InvalidSyntax { field: f, offset });
+        }
+        let (base, step) = match item.split_once('/') {
+            Some((base, tail)) if !base.is_empty() && !tail.is_empty() => (base, Some(tail)),
+            Some(_) => return Err(ParseError::InvalidSyntax { field: f, offset }),
+            None => (item, None),
+        };
+        let (a, z, range_end_offset) = if base == "*" {
+            (min, max, None)
+        } else {
+            let hyphens = base.bytes().filter(|&b| b == b'-').count();
+            if hyphens > 1 || base.starts_with('-') || base.ends_with('-') {
+                return Err(ParseError::InvalidSyntax { field: f, offset });
+            }
+            if let Some((left, right)) = base.split_once('-') {
+                if left == "*" || right == "*" {
+                    return Err(ParseError::InvalidSyntax { field: f, offset });
+                }
+                let end_offset = offset + left.len() + 1;
+                let start = parse_endpoint(f, left, offset)?;
+                let end = parse_endpoint(f, right, end_offset)?;
+                if start > end {
+                    return Err(ParseError::ReversedRange { field: f, offset: end_offset });
+                }
+                (start, end, Some(end_offset))
+            } else {
+                let n = parse_endpoint(f, base, offset)?;
+                (n, if step.is_some() { max } else { n }, None)
+            }
+        };
+        let stride = match step {
+            Some(s) => parse_decimal(f, s, offset + item.len() - s.len(), true)?,
+            None => 1,
+        };
+        let mut n = a;
+        while n <= z {
+            *bits |= 1u64 << bit_index(f, n);
+            n += stride;
+        }
+        let _ = range_end_offset;
+        offset += item.len() + 1;
+    }
+    Ok(())
+}
+
+pub fn parse_cron(input: &str) -> Result<Cron, ParseError> {
+    let p: Vec<&str> = input.split(' ').collect();
+    if p.len() != 5 {
+        return Err(ParseError::FieldCount { found: p.len() });
+    }
+    let fields = [Field::Minute, Field::Hour, Field::DayOfMonth, Field::Month, Field::DayOfWeek];
+    let mut bits = [0u64; 5];
+    for i in 0..5 {
+        parse_field(fields[i], p[i], &mut bits[i])?;
+    }
+    Ok(Cron {
+        minute: bits[0], hour: bits[1], day: bits[2], month: bits[3], weekday: bits[4] as u8,
+        day_unrestricted: p[2] == "*",
+        weekday_unrestricted: p[4] == "*",
+    })
+}
+
+impl Cron {
+    pub fn allowed(&self, field: Field) -> Vec<u8> {
+        let (lo, hi) = info(field);
+        (lo..=hi).filter(|&n| self.contains(field, n)).map(|n| n as u8).collect()
+    }
+
+    fn contains(&self, f: Field, n: u32) -> bool {
+        let bit = 1u64 << bit_index(f, n);
+        match f {
+            Field::Minute => self.minute & bit != 0,
+            Field::Hour => self.hour as u64 & bit != 0,
+            Field::DayOfMonth => self.day as u64 & bit != 0,
+            Field::Month => self.month as u64 & bit != 0,
+            Field::DayOfWeek => self.weekday as u64 & bit != 0,
+        }
+    }
+
+    pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError> {
+        validate(at)?;
+        Ok(self.matches_ok(at))
+    }
+
+    pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError> {
+        validate(after)?;
+        let mut t = after;
+        loop {
+            if t == CivilDateTime { year: 2399, month: 12, day: 31, hour: 23, minute: 59 } {
+                return Ok(None);
+            }
+            t.minute += 1;
+            if t.minute == 60 {
+                t.minute = 0;
+                t.hour += 1;
+                if t.hour == 24 {
+                    t.hour = 0;
+                    t.day += 1;
+                    if t.day > month_days(t.year, t.month) {
+                        t.day = 1;
+                        t.month += 1;
+                        if t.month == 13 {
+                            t.month = 1;
+                            t.year += 1;
+                        }
+                    }
+                }
+            }
+            if self.matches_ok(t) {
+                return Ok(Some(t));
+            }
+        }
+    }
+
+    fn matches_ok(&self, t: CivilDateTime) -> bool {
+        if !self.contains(Field::Minute, t.minute as u32)
+            || !self.contains(Field::Hour, t.hour as u32)
+            || !self.contains(Field::Month, t.month as u32)
+        {
+            return false;
+        }
+        let dom = self.contains(Field::DayOfMonth, t.day as u32);
+        let dow = self.contains(Field::DayOfWeek, weekday(t.year, t.month, t.day) as u32);
+        match (self.day_unrestricted, self.weekday_unrestricted) {
+            (true, true) => true,
+            (true, false) => dow,
+            (false, true) => dom,
+            (false, false) if t.day == month_days(t.year, t.month) => dom && dow,
+            (false, false) => dom || dow,
+        }
+    }
+}
+
+fn leap(y: u16) -> bool {
+    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+}
+fn month_days(y: u16, m: u8) -> u8 {
+    match m { 2 => if leap(y) { 29 } else { 28 }, 4 | 6 | 9 | 11 => 30, _ => 31 }
+}
+fn validate(t: CivilDateTime) -> Result<(), DateError> {
+    if !(2000..=2399).contains(&t.year) { return Err(DateError::InvalidDateTime { component: DatePart::Year }); }
+    if !(1..=12).contains(&t.month) { return Err(DateError::InvalidDateTime { component: DatePart::Month }); }
+    if t.day == 0 || t.day > month_days(t.year, t.month) { return Err(DateError::InvalidDateTime { component: DatePart::Day }); }
+    if t.hour > 23 { return Err(DateError::InvalidDateTime { component: DatePart::Hour }); }
+    if t.minute > 59 { return Err(DateError::InvalidDateTime { component: DatePart::Minute }); }
+    Ok(())
+}
+fn weekday(y: u16, m: u8, d: u8) -> u8 {
+    let mut days = 0u32;
+    for year in 2000..y { days += if leap(year) { 366 } else { 365 }; }
+    for month in 1..m { days += month_days(y, month) as u32; }
+    ((6 + days + d as u32 - 1) % 7) as u8
+}
+```

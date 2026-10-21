@@ -1,0 +1,337 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier { pub up_to: Option<u64>, pub unit: u64, pub start: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price { Flat { unit: u64, start: u64 }, Tiers(Vec<Tier>) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band { pub index: usize, pub units: u64, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge { pub amount: u64, pub bands: Vec<Band> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode { Graduated, Volume }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill { pub charge: Charge, pub minimum_adjustment: u64, pub total: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayRange { pub start: u32, pub end: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rounding { Down, Up, HalfEven }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proration { pub active_days: u32, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Empty, TooMany, Bound { index: usize }, Unbounded { index: usize }, MissingFinal, Overflow { index: usize }, Month, Period, Credit { index: usize }, CreditOrder { index: usize } }
+
+fn validate_tiers(tiers: &[Tier]) -> Result<(), Error> {
+    if tiers.is_empty() {
+        return Err(Error::Empty);
+    }
+    if tiers.len() > 64 {
+        return Err(Error::TooMany);
+    }
+
+    let mut previous = 0u64;
+    for (index, tier) in tiers.iter().enumerate() {
+        match tier.up_to {
+            Some(bound) => {
+                if bound <= previous {
+                    return Err(Error::Bound { index });
+                }
+                previous = bound;
+            }
+            None => {
+                if index + 1 != tiers.len() {
+                    return Err(Error::Unbounded { index });
+                }
+            }
+        }
+    }
+    if tiers.last().and_then(|tier| tier.up_to).is_some() {
+        return Err(Error::MissingFinal);
+    }
+    Ok(())
+}
+
+fn checked_band(index: usize, units: u64, unit: u64, start: u64, total: u64) -> Result<Band, Error> {
+    let amount = units.checked_mul(unit)
+        .and_then(|product| product.checked_add(start))
+        .ok_or(Error::Overflow { index })?;
+    total.checked_add(amount).ok_or(Error::Overflow { index })?;
+    Ok(Band { index, units, amount })
+}
+
+fn graduated(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    match price {
+        Price::Flat { unit, start } => {
+            if quantity == 0 {
+                return Ok(Charge { amount: 0, bands: Vec::new() });
+            }
+            let band = checked_band(0, quantity, *unit, *start, 0)?;
+            Ok(Charge { amount: band.amount, bands: vec![band] })
+        }
+        Price::Tiers(tiers) => {
+            validate_tiers(tiers)?;
+            let mut remaining = quantity;
+            let mut previous = 0u64;
+            let mut total = 0u64;
+            let mut bands = Vec::new();
+
+            for (index, tier) in tiers.iter().enumerate() {
+                if remaining == 0 {
+                    break;
+                }
+                let units = match tier.up_to {
+                    Some(bound) => {
+                        let width = bound - previous;
+                        let allocated = remaining.min(width);
+                        previous = bound;
+                        allocated
+                    }
+                    None => remaining,
+                };
+                if units > 0 {
+                    let band = checked_band(index, units, tier.unit, tier.start, total)?;
+                    total += band.amount;
+                    remaining -= units;
+                    bands.push(band);
+                }
+            }
+            Ok(Charge { amount: total, bands })
+        }
+    }
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    graduated(quantity, price)
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = match (price, mode) {
+        (Price::Tiers(tiers), Mode::Volume) => {
+            validate_tiers(tiers)?;
+            if quantity == 0 {
+                Charge { amount: 0, bands: Vec::new() }
+            } else {
+                let (index, tier) = tiers.iter().enumerate().find(|(_, tier)| {
+                    tier.up_to.map_or(true, |bound| quantity <= bound)
+                }).expect("validated tiers always have a final unbounded tier");
+                let band = checked_band(index, quantity, tier.unit, tier.start, 0)?;
+                Charge { amount: band.amount, bands: vec![band] }
+            }
+        }
+        _ => graduated(quantity, price)?,
+    };
+
+    let minimum_adjustment = if quantity > 0 {
+        minimum.saturating_sub(charge.amount)
+    } else {
+        0
+    };
+    let total = charge.amount.checked_add(minimum_adjustment)
+        .ok_or(Error::Overflow { index: charge.bands.last().map_or(0, |band| band.index) })?;
+    Ok(Bill { charge, minimum_adjustment, total })
+}
+
+pub fn prorate(
+    fee: u64,
+    days: u32,
+    start: u32,
+    end: u32,
+    credits: &[DayRange],
+    rounding: Rounding,
+) -> Result<Proration, Error> {
+    if !matches!(days, 28 | 29 | 30 | 31) {
+        return Err(Error::Month);
+    }
+    if start > end || end > days {
+        return Err(Error::Period);
+    }
+
+    let mut previous_end = start;
+    let mut credited = 0u32;
+    for (index, credit) in credits.iter().enumerate() {
+        if credit.start < start || credit.start >= credit.end || credit.end > end {
+            return Err(Error::Credit { index });
+        }
+        if credit.start < previous_end {
+            return Err(Error::CreditOrder { index });
+        }
+        credited += credit.end - credit.start;
+        previous_end = credit.end;
+    }
+
+    let active_days = end - start - credited;
+    let numerator = u128::from(fee) * u128::from(active_days);
+    let denominator = u128::from(days);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let rounded = match rounding {
+        Rounding::Down => quotient,
+        Rounding::Up => quotient + u128::from(remainder != 0),
+        Rounding::HalfEven => {
+            let twice_remainder = remainder * 2;
+            if twice_remainder > denominator || (twice_remainder == denominator && quotient % 2 == 1) {
+                quotient + 1
+            } else {
+                quotient
+            }
+        }
+    };
+
+    Ok(Proration { active_days, amount: rounded as u64 })
+}
+```
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier { pub up_to: Option<u64>, pub unit: u64, pub start: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price { Flat { unit: u64, start: u64 }, Tiers(Vec<Tier>) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band { pub index: usize, pub units: u64, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge { pub amount: u64, pub bands: Vec<Band> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode { Graduated, Volume }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill { pub charge: Charge, pub minimum_adjustment: u64, pub total: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayRange { pub start: u32, pub end: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rounding { Down, Up, HalfEven }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proration { pub active_days: u32, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Empty, TooMany, Bound { index: usize }, Unbounded { index: usize }, MissingFinal, Overflow { index: usize }, Month, Period, Credit { index: usize }, CreditOrder { index: usize } }
+
+fn schedule_is_valid(tiers: &[Tier]) -> Result<(), Error> {
+    if tiers.len() == 0 { return Err(Error::Empty); }
+    if tiers.len() > 64 { return Err(Error::TooMany); }
+
+    let mut prior = None;
+    for (i, tier) in tiers.iter().enumerate() {
+        match tier.up_to {
+            Some(bound) => {
+                if bound <= prior.unwrap_or(0) {
+                    return Err(Error::Bound { index: i });
+                }
+                prior = Some(bound);
+            }
+            None if i != tiers.len() - 1 => return Err(Error::Unbounded { index: i }),
+            None => {}
+        }
+    }
+    if tiers[tiers.len() - 1].up_to.is_some() {
+        return Err(Error::MissingFinal);
+    }
+    Ok(())
+}
+
+fn price_one(index: usize, units: u64, unit: u64, start: u64) -> Result<u64, Error> {
+    units.checked_mul(unit)
+        .and_then(|v| v.checked_add(start))
+        .ok_or(Error::Overflow { index })
+}
+
+fn add_checked(current: u64, value: u64, index: usize) -> Result<u64, Error> {
+    current.checked_add(value).ok_or(Error::Overflow { index })
+}
+
+fn compute(quantity: u64, price: &Price, volume: bool) -> Result<Charge, Error> {
+    if let Price::Flat { unit, start } = price {
+        if quantity == 0 {
+            return Ok(Charge { amount: 0, bands: Vec::new() });
+        }
+        let amount = price_one(0, quantity, *unit, *start)?;
+        return Ok(Charge { amount, bands: vec![Band { index: 0, units: quantity, amount }] });
+    }
+
+    let tiers = match price { Price::Tiers(t) => t, _ => unreachable!() };
+    schedule_is_valid(tiers)?;
+    if quantity == 0 {
+        return Ok(Charge { amount: 0, bands: Vec::new() });
+    }
+
+    let mut bands = Vec::new();
+    let mut sum = 0u64;
+
+    if volume {
+        let chosen = tiers.iter().enumerate().find(|(_, t)| t.up_to.is_none_or(|bound| quantity <= bound))
+            .expect("schedule validated");
+        let amount = price_one(chosen.0, quantity, chosen.1.unit, chosen.1.start)?;
+        sum = add_checked(sum, amount, chosen.0)?;
+        bands.push(Band { index: chosen.0, units: quantity, amount });
+    } else {
+        let mut prior_bound = 0u64;
+        let mut left = quantity;
+        for (i, tier) in tiers.iter().enumerate() {
+            if left == 0 { break; }
+            let units = match tier.up_to {
+                Some(bound) => {
+                    let count = (bound - prior_bound).min(left);
+                    prior_bound = bound;
+                    count
+                }
+                None => left,
+            };
+            if units != 0 {
+                let amount = price_one(i, units, tier.unit, tier.start)?;
+                sum = add_checked(sum, amount, i)?;
+                left -= units;
+                bands.push(Band { index: i, units, amount });
+            }
+        }
+    }
+    Ok(Charge { amount: sum, bands })
+}
+
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error> {
+    compute(quantity, price, false)
+}
+
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error> {
+    let charge = compute(quantity, price, matches!(mode, Mode::Volume))?;
+    let minimum_adjustment = if quantity == 0 { 0 } else { minimum.saturating_sub(charge.amount) };
+    let total = charge.amount.checked_add(minimum_adjustment)
+        .ok_or(Error::Overflow { index: charge.bands.last().map_or(0, |b| b.index) })?;
+    Ok(Bill { charge, minimum_adjustment, total })
+}
+
+pub fn prorate(fee: u64, days: u32, start: u32, end: u32, credits: &[DayRange], rounding: Rounding) -> Result<Proration, Error> {
+    if days != 28 && days != 29 && days != 30 && days != 31 {
+        return Err(Error::Month);
+    }
+    if start > end || end > days {
+        return Err(Error::Period);
+    }
+    let mut last_end = start;
+    let mut excluded = 0u32;
+    for (i, range) in credits.iter().enumerate() {
+        if range.start < start || range.start >= range.end || range.end > end {
+            return Err(Error::Credit { index: i });
+        }
+        if range.start < last_end {
+            return Err(Error::CreditOrder { index: i });
+        }
+        excluded += range.end - range.start;
+        last_end = range.end;
+    }
+
+    let active_days = end - start - excluded;
+    let numerator = u128::from(fee) * u128::from(active_days);
+    let divisor = u128::from(days);
+    let floor = numerator / divisor;
+    let rem = numerator % divisor;
+    let result = match rounding {
+        Rounding::Down => floor,
+        Rounding::Up => floor + if rem == 0 { 0 } else { 1 },
+        Rounding::HalfEven => {
+            let doubled = rem * 2;
+            if doubled > divisor || (doubled == divisor && floor & 1 == 1) {
+                floor + 1
+            } else {
+                floor
+            }
+        }
+    };
+    Ok(Proration { active_days, amount: result as u64 })
+}
+```

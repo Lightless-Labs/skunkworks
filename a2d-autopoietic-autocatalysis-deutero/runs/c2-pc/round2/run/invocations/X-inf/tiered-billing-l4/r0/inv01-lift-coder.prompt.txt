@@ -1,0 +1,158 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Usage billing in integer minor units.
+
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+R2. Expose exactly the public types and functions listed below. All listed struct fields are public. All types derive Clone, Debug, PartialEq, Eq. Helper items may be private. Monetary amounts are integer minor units; do not use floating point.
+R3. quote computes flat or graduated usage charges for a u64 quantity. A flat price charges quantity * unit + start when quantity is positive, and zero otherwise.
+R4. A tier up_to is a cumulative inclusive upper quantity bound. Tier i covers units after the previous bound through its own bound; the previous bound for tier 0 is zero. None means unbounded.
+R5. A tier schedule must contain 1 through 64 tiers. Empty returns Error::Empty, and more than 64 returns Error::TooMany before examining any tier.
+R6. Scan tiers in input order. Each Some bound must be strictly greater than the previous finite bound (initially zero), otherwise Bound { index } with the zero-based input tier index.
+R7. None is legal only at the last index; otherwise return Unbounded { index } immediately while scanning. For the same index, inspect only the applicable Some/None rule.
+R8. After scanning all tiers, the last tier must have None; otherwise return MissingFinal. Thus an earlier Bound or Unbounded error takes precedence over MissingFinal.
+R9. Validate the entire schedule before any arithmetic, even at quantity zero or when an invalid tier would be unused. Flat prices require no structural validation.
+R10. For graduated pricing allocate quantity from lowest index upward, at most the width of each finite tier. Each tier with positive allocated units charges allocated_units * unit + start exactly once.
+R11. Unused tiers charge neither unit nor start; a quantity exactly at a finite bound never activates the following tier.
+R12. Return Charge.amount equal to the sum of charges and Charge.bands in increasing input index. Include exactly the positive-unit bands; each Band contains its input index, allocated units and complete charge including start.
+R13. A positive-unit band remains present even if its unit and start are both zero. Quantity zero returns amount zero and an empty bands vector after validation.
+R14. Flat charges use one Band at index 0 when quantity is positive, and no bands otherwise.
+R15. All u64 inputs, including u64::MAX, are allowed. Compute each product plus start and the running total without wrapping; return Overflow { index } at the first used band whose charge or addition makes the total exceed u64::MAX. An exact u64::MAX result succeeds.
+R16. Zero prices and nonmonotonic prices are allowed. Do not merge bands or reorder tiers by price. Errors return no partial result.
+R17. Retain every quote behavior from R1–R16; quote always uses graduated pricing. Also expose Mode, Bill and bill as listed.
+R18. bill accepts a pricing mode. Graduated produces exactly quote(quantity, price). Volume uses the same full schedule validation and error precedence as quote before selecting a tier.
+R19. For Volume with positive quantity, select the first tier whose Some bound is >= quantity, or the final None tier. Charge ALL quantity at its unit price plus its start once.
+R20. Volume returns exactly one Band with the selected original index, units equal to quantity, and the selected charge. It never adds charges from earlier tiers.
+R21. Volume with quantity zero returns zero and no bands, after full validation. Flat prices produce the same Charge under either mode.
+R22. For either mode the minimum applies only when quantity > 0: minimum_adjustment = max(minimum - charge.amount, 0). With quantity zero it is zero even if minimum > 0.
+R23. Bill.total = charge.amount + minimum_adjustment. The minimum never changes Charge or its bands. Nonzero usage with a zero charge may still incur the full minimum.
+R24. Compute the selected pricing arithmetic, including Overflow with its original tier index, before minimum adjustment. A minimum cannot rescue an overflowing calculation. Minimum and exact u64::MAX totals are valid.
+R25. Retain quote and bill behavior; additionally expose DayRange, Rounding, Proration and prorate as listed.
+R26. prorate computes a monthly fee for a service interval of day indices [start,end), excluding credits. days is the whole month length and must be 28, 29, 30 or 31; otherwise return Month before all other checks.
+R27. Require start <= end <= days, otherwise Period. An empty service interval is legal, including [days,days). Validate even if fee is zero.
+R28. Each credit is a nonempty half-open interval within [start,end): start <= credit.start < credit.end <= end. Scan in input order and return Credit { index } for the first invalid range.
+R29. For each valid credit range require credit.start >= the previous credit.end; otherwise CreditOrder { index }. For an index, range validity takes precedence over order. Adjacency is allowed; overlapping or unsorted ranges are rejected, never merged.
+R30. Validate every credit before producing a result, even when fee or remaining amount is zero. Empty service intervals permit no credits.
+R31. Proration.active_days = end - start - sum(credit.end - credit.start). No credits means no subtractions. Divide fee * active_days by the whole month length days, never by service length.
+R32. Rounding::Down returns the integer floor; Up returns the ceiling (no increment for exact division); HalfEven rounds to nearest, with exact halves rounded to the even integer. Round once after subtracting all credits.
+R33. Use exact arithmetic for all u64 fees, including u64::MAX. Proration.amount fits u64 because active_days <= days. No floating point or per-day rounding.
+R34. Retain all preceding APIs and add Meter, InvoiceLine, Invoice and invoice as listed. Invoice amounts are in the same integer minor units.
+R35. invoice first validates invoice_discount_bps <= 10000, otherwise InvoiceDiscount. This precedes even invalid meter names.
+R36. Then scan ALL meter names in input order, before any meter pricing or per-meter discount validation. A name must contain 1 through 32 UTF-8 bytes and contain no ASCII control characters (U+0000 through U+001F or U+007F), vertical bar or colon; otherwise InvalidName { index }. Whitespace and non-ASCII characters are otherwise allowed and preserved.
+R37. Names must be unique by exact case-sensitive string equality. At each input index check name validity then duplication against earlier names, returning DuplicateName { index } for the first duplicate. Do not normalize names.
+R38. After the name pass, calculate meters in input order. For each meter, first check discount_bps <= 10000 (Error::Discount), then bill, then prorate. Component errors are returned as Meter { index, source: Box<Error> }, using the input meter index. Later meter errors do not precede earlier calculations.
+R39. For a meter, base = bill.total + prorate.amount, checked before applying any discount. Overflow here is CombinedOverflow wrapped in Meter, even if a later discount would reduce it.
+R40. Meter discount = floor(base * discount_bps / 10000). InvoiceLine records name, usage = bill.charge.amount, minimum_adjustment, monthly = prorate.amount, discount, and total = base - discount. A minimum is applied before adding the monthly fee and before this discount.
+R41. After each computed meter, add its line.total to a u64 subtotal in input order, returning unwrapped InvoiceOverflow immediately if it exceeds u64::MAX, even if later invoice discounts or credit would reduce it. Zero totals remain as lines.
+R42. Sort successful Invoice.lines by ascending lexicographic UTF-8 bytes of name; do not use input order, case folding or numeric sorting. Error indices still use input order.
+R43. Invoice.discount = floor(subtotal * invoice_discount_bps / 10000), using the subtotal after meter discounts. Invoice.credit = min(requested credit, subtotal - Invoice.discount). Invoice.total = subtotal - discount - credit. Apply these in precisely that order.
+R44. An empty meter list succeeds with zero amounts and empty lines after global discount validation. Requested credit never creates a negative amount or a carry-forward balance.
+R45. Invoice.rendered contains one line for each sorted InvoiceLine in this exact format: "{name_utf8_byte_length}:{name}|{usage}|{minimum_adjustment}|{monthly}|{discount}|{total}\n". Integers use unsigned base-10 with no leading zeros or padding. Names are written literally.
+R46. Append exactly "TOTAL|{subtotal}|{discount}|{credit}|{total}\n", including for empty invoices. No headings, spaces beyond those in names, carriage returns or blank lines. The notation \n means one LF byte.
+R47. All discount products use exact arithmetic, including u64::MAX bases. A rate of 0 gives zero discount; 10000 gives the entire base. Full discounts never skip validations or overflow checks.
+
+Exact public API (declarations; implement the function bodies):
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tier { pub up_to: Option<u64>, pub unit: u64, pub start: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Price { Flat { unit: u64, start: u64 }, Tiers(Vec<Tier>) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Band { pub index: usize, pub units: u64, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Charge { pub amount: u64, pub bands: Vec<Band> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode { Graduated, Volume }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bill { pub charge: Charge, pub minimum_adjustment: u64, pub total: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayRange { pub start: u32, pub end: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rounding { Down, Up, HalfEven }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proration { pub active_days: u32, pub amount: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Meter {
+    pub name: String, pub quantity: u64, pub price: Price, pub mode: Mode,
+    pub minimum: u64, pub monthly_fee: u64, pub days: u32, pub start: u32,
+    pub end: u32, pub credits: Vec<DayRange>, pub rounding: Rounding,
+    pub discount_bps: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceLine {
+    pub name: String, pub usage: u64, pub minimum_adjustment: u64,
+    pub monthly: u64, pub discount: u64, pub total: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invoice {
+    pub lines: Vec<InvoiceLine>, pub subtotal: u64, pub discount: u64,
+    pub credit: u64, pub total: u64, pub rendered: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Empty, TooMany, Bound { index: usize }, Unbounded { index: usize }, MissingFinal, Overflow { index: usize }, Month, Period, Credit { index: usize }, CreditOrder { index: usize }, InvoiceDiscount, InvalidName { index: usize }, DuplicateName { index: usize }, Discount, CombinedOverflow, Meter { index: usize, source: Box<Error> }, InvoiceOverflow }
+pub fn quote(quantity: u64, price: &Price) -> Result<Charge, Error>;
+pub fn bill(quantity: u64, price: &Price, mode: Mode, minimum: u64) -> Result<Bill, Error>;
+pub fn prorate(fee: u64, days: u32, start: u32, end: u32, credits: &[DayRange], rounding: Rounding) -> Result<Proration, Error>;
+pub fn invoice(meters: &[Meter], invoice_discount_bps: u32, credit: u64) -> Result<Invoice, Error>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Inherited clauses (individual citations below)
+#[test]
+fn public_pricing() {
+// R3, R10
+{
+assert_eq!(quote(6, &Price::Tiers(vec![Tier { up_to: Some(4), unit: 3, start: 2 }, Tier { up_to: None, unit: 2, start: 5 }])).unwrap().amount,23);
+}
+// R19, R20
+{
+let b=bill(6, &Price::Tiers(vec![Tier { up_to: Some(4), unit: 3, start: 2 }, Tier { up_to: None, unit: 2, start: 5 }]), Mode::Volume, 0).unwrap(); assert_eq!(b.total,17); assert_eq!(b.charge.bands,vec![Band { index: 1, units: 6, amount: 17 }]);
+}
+// R18, R22, R23
+{
+let b=bill(2, &Price::Flat { unit: 3, start: 0 }, Mode::Graduated, 10).unwrap(); assert_eq!(b.total,10); assert_eq!(b.minimum_adjustment,4); assert_eq!(b.charge.amount,6);
+}
+}
+
+// R26, R31, R32
+#[test]
+fn public_proration() {
+assert_eq!(prorate(300, 30, 0, 15, &[DayRange { start: 2, end: 5 }], Rounding::Down).unwrap(), Proration { active_days:12, amount:120 });
+}
+
+// R34, R39, R40, R43, R45, R46
+#[test]
+fn public_invoice() {
+let i=invoice(&[Meter { name: ("cpu").to_string(), quantity: 3, price: Price::Flat { unit: 10, start: 0 }, mode: Mode::Graduated, minimum: 40, monthly_fee: 20, days: 30, start: 0, end: 30, credits: vec![], rounding: Rounding::Down, discount_bps: 1000 }], 2000, 5).unwrap(); assert_eq!(i.subtotal,54); assert_eq!(i.discount,10); assert_eq!(i.credit,5); assert_eq!(i.total,39); assert_eq!(i.rendered,"3:cpu|30|10|20|6|54\nTOTAL|54|10|5|39\n");
+}
+
+// R42
+#[test]
+fn public_sorted_lines() {
+let i=invoice(&[Meter { name: ("z").to_string(), quantity: 1, price: Price::Flat { unit: 10, start: 0 }, mode: Mode::Graduated, minimum: 0, monthly_fee: 0, days: 30, start: 0, end: 30, credits: vec![], rounding: Rounding::Down, discount_bps: 0 }, Meter { name: ("a").to_string(), quantity: 1, price: Price::Flat { unit: 10, start: 0 }, mode: Mode::Graduated, minimum: 0, monthly_fee: 0, days: 30, start: 0, end: 30, credits: vec![], rounding: Rounding::Down, discount_bps: 0 }], 0, 0).unwrap(); assert_eq!(i.lines.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),vec!["a","z"]);
+}
+```
+
+
+## Sampling instructions
+
+For this initial sampling call, return TWO complete Rust files.
+
+First write your best solution to the full task.
+
+Then write an alternative solution addressing the specific interpretation,
+state representation, or algorithmic decision in your first solution that
+you consider most likely to cause an undetected correctness defect.
+Both files must aim to satisfy every requirement. When the task explicitly
+settles an interpretation, follow it in both files; use a different
+implementation approach for the alternative instead.
+
+Each file must stand alone, with the complete required public API.
+Do not use placeholders, shared definitions, patches, or omitted sections.
+Put each file in its own ```rust block, primary first and alternative
+second. Output exactly those two blocks, without commentary.
