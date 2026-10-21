@@ -28,7 +28,7 @@
      After round 4: commit its artifacts and results.tsv rows, then `python3 -I docs/experiments/analysis/c2_phaseb.py analyze`. Join the blinded idea-category labels (packet built 10-21 before any round-4 outcome; `runs/c2-pc/idea-labels.json` once committed) and fill the report's phase-B Result.
      Round 4's informed candidate is **byte-identical** to round 1's uninformed one (sha 48339373…, Sol review effort medium → high), so round 4 re-tests that harness on another quarter.
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`; tooling merged at 09c80774f after Sol + fresh-Claude reviews and a fix pass; `python3 -I -m unittest discover -s tools/gym/tests`, 59 tests, ~50 min): **no gym model call (Sol or Luna) before BOTH confirmation-3 replicates have a non-aborted `generation_complete` (first attempt or relaunch), and none while confirmation-3 is scored.** Gate (a) enforces both; gate (b) checks that the frozen paths still equal fb5110e7.
-     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
+     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Gate (b) is strict, bytecode caches included (Sol review). The three old `tools/holdout/__pycache__` caches were moved to the session scratchpad. If a launch gives `launch-gate-closed` after the spend, look for a new `tools/holdout/__pycache__` first. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
      - `isolation_ok`, `codex_pinned` (14 s) and `codex_smoke`;
      - the fingerprint: 42 files, the codex and host hashes equal the registration, 5 s;
      - the full `isolation_check`, with every sealed path denied (9 s).
@@ -44,13 +44,13 @@
    - **Confirmation-3 is registered** at `fb5110e7285b37b8125ca6fb17c717fb871f3809`, with candidate E002 (look 2 was invalid). Read plan §0.15 and §0.16 for the review dispositions and the code_mode_host change.
    - **Spend:** queue L41 (`confirm3.py generate --rep 1`, from 00:05 UTC 10-24) and L42 (rep 2, from 00:05 UTC 10-25). Both retry deferrals.
      After both have generated:
-     1. `python3 -I nano/confirm3.py manifest --registered-at fb5110e7…`
+     1. `python3 -I -B nano/confirm3.py manifest --registered-at fb5110e7…`. Always use `-B` with confirm3 or tools/holdout: a cache under `tools/holdout` closes the gym's strict gate (b). The queue lines L41/L42 already use `-B`.
      2. Commit and push `runs/c2-confirm3/manifest-r*.json`.
-     3. `python3 -I nano/confirm3.py score --registered-at fb5110e7…`, which writes `decision.json`.
+     3. `python3 -I -B nano/confirm3.py score --registered-at fb5110e7…`, which writes `decision.json`.
      4. Only then unseal confirmation-2 (§0.8).
    - **During the generation windows (10-24 and 10-25 from 00:05), run no phase-B round and no other Luna/Sol job.** Do not upgrade codex: a fingerprint change voids the replicate.
    - **If a replicate's generation fails** (the qrun line exits non-zero and not deferred), follow the failure_policy:
-     - relaunch once with `--relaunch`, logged;
+     - relaunch once with `--relaunch`, logged, run as `PATH=~/.a2d-codex-pin/0.162.0/bin:$PATH python3 -I -B nano/confirm3.py generate --rep <n> --relaunch …`;
      - a first attempt that died with calls in flight ends IntegrityReview whatever happens next (fail closed);
      - leave the partial holdout ledger unread.
    - **Phase B:** rounds 1–3 are done, and all 6 proposals failed the screen (best +1 net task).

@@ -1993,3 +1993,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   It left harmless records under `~/.a2d-gym/authoring/gym-v3/_records/`; the classifier refused their deletion (HANDOFF).
 - **Still open:** a real `cargo build` into the gym target, the pilot accounting against a real ledger (check it on the first pilot's first lines), and `todos/gym-probe-profiles-leak.md`.
 - **Lesson:** `docs/solutions/best-practices/test-launch-gates-in-the-deployment-tree-2026-10-21.md`.
+
+## Ops — narrow Sol review of the gym post-review changes: *Not ready* → fixed (strict gate (b), median scale timing)  [2026-10-21 ~21:00 UTC; Sol high, copies only, 0 web searches]
+- **Scope:** the four post-review changes (34e75aa3a, 613a8f4fe, a17d03ad5, c60dd784a).
+- **Sol's verdict: *Not ready*.**
+  - **(1) gate (a), both replicates:** no findings. Sol checked 625 ledger combinations against `confirm3.complete`: deferrals, missing first-attempt ledgers and aborted relaunches.
+  - **(4) probe profile cleanup:** no findings.
+  - **Blocker on (3):** ignoring `__pycache__/*.pyc` lets a crafted timestamp or unchecked-hash `.pyc` substitute code for an *unchanged* tracked source. Sol reproduced it in memory.
+  - **Two should-fix findings on (2):** fastest-of-four accepts a reference with runs of 6, 6 and 0.9 s against a 1.2 s margin, and failed retries were discarded.
+- **Fixes:**
+  - **8e7a0bb36:** gate (b) is strict again, caches included. The three `tools/holdout/__pycache__` caches were moved to the session scratchpad, not deleted.
+  - **The producer is off:** `confirm3.py generate` imports `tools/holdout/c3lib`, so L41 and L42 now run `python3 -I -B` and export `PYTHONDONTWRITEBYTECODE=1`. Backups of the previous scripts are in the scratchpad (`qbak/`). `zsh -n` passes. Manual confirm3 runs use `-B` (HANDOFF).
+  - **dd4b253e9:** the scale measure is the median of three timed runs after a warm-up run, and all four must pass.
+- **Lesson** (solution doc corrected): do not loosen an integrity check to tolerate a byproduct. Switch off the byproduct's producer, and send even a "trivial" post-review loosening to review.
