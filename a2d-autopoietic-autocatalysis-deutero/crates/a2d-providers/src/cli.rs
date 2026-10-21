@@ -1057,7 +1057,8 @@ mod tests {
     /// collab_tool_call, error. On every lane in A2D_CONTROL_LANES (default: Luna low = coder,
     /// Sol medium = E002's judge), with one capability switched back on, a call asked to use it
     /// must SUCCEED and its transcript must contain that item type, counted by
-    /// `codex_tool_calls`; MCP needs `code_mode_host` back on (it carries every MCP tool).
+    /// `codex_tool_calls`; each positive kind also switches `code_mode_host` back on (it hosts MCP
+    /// and shell execution; plan §0.16).
     /// `notice`: the shipped call's one pre-turn host-off `error` item must be present and NOT
     /// counted (the exemption, plan §0.16); other `error` items are counted (unit test).
     /// `todo_list` could not be triggered in exec mode even with every feature on (live,
@@ -1072,16 +1073,16 @@ mod tests {
             .unwrap_or_else(|_| "codex/gpt-6-luna:low,codex/gpt-6.1-sol:medium".to_string());
         // (kind, features switched back on, extra args, expected item, prompt)
         let kinds: Vec<(&str, Vec<&str>, Vec<String>, &str, &str)> = vec![
-            ("shell", vec!["shell_tool", "unified_exec"], vec![], "command_execution",
+            ("shell", vec!["shell_tool", "unified_exec", "code_mode_host"], vec![], "command_execution",
              "Run the shell command `echo probe-ok` and then reply with its output."),
-            ("web", vec![], vec!["-c".into(), "web_search=\"live\"".into()], "web_search",
+            ("web", vec!["code_mode_host"], vec!["-c".into(), "web_search=\"live\"".into()], "web_search",
              "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
-            ("file", vec!["shell_tool", "unified_exec"], vec!["--sandbox".into(), "workspace-write".into()], "file_change",
+            ("file", vec!["shell_tool", "unified_exec", "code_mode_host"], vec!["--sandbox".into(), "workspace-write".into()], "file_change",
              "Create a file named probe.txt containing the single line ok, using your file-editing (apply_patch) tool, then reply done."),
             ("mcp", vec!["code_mode_host"], vec!["-c".into(), "mcp_servers.probe.command=\"python3\"".into(),
                                   "-c".into(), format!("mcp_servers.probe.args=[\"-I\", \"{mcp}\"]")], "mcp_tool_call",
              "Call the MCP tool `echo` of the `probe` server with text probe-ok, then reply with its output."),
-            ("collab", vec!["multi_agent"], vec![], "collab_tool_call",
+            ("collab", vec!["multi_agent", "code_mode_host"], vec![], "collab_tool_call",
              "This is a test of your multi-agent tool. You must not answer it yourself: use your sub-agent \
               (spawn) tool to start one sub-agent and ask it to reply with the single word DELEGATED, wait for it, \
               then reply with exactly what it returned."),
