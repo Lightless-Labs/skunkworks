@@ -38,7 +38,7 @@ from gymlib import (AUTHORING_FILES, GYM, RECORDS, ROOT, RUNS, SUITE, TASK_RE, D
                     LaunchGateClosed, StopRequested, emit, gate_or_exit, gateway, isolation_check, load_json,
                     prereqs_ok, run_codex, safe_copy, safe_read_text, safe_write_text, save_json, stop_requested,
                     suspicious_commands, tree_hashes)
-from gymvendor import test_names  # noqa: E402
+from gymvendor import lines, test_names  # noqa: E402
 
 MAX_JOBS = 2
 FILES = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
@@ -58,14 +58,14 @@ def failing_tests(hidden_output, passed):
     (it did not compile); [] for a passed task."""
     if passed:
         return []
-    names = sorted({_bare(m.group(1)) for m in map(FAILED.match, hidden_output.splitlines()) if m})
+    names = sorted({_bare(m.group(1)) for m in map(FAILED.match, lines(hidden_output)) if m})
     if names:
         return names
     return ["*"]
 
 
 def ran_tests(hidden_output):
-    return any(TEST_LINE.match(x) for x in hidden_output.splitlines())
+    return any(TEST_LINE.match(x) for x in lines(hidden_output))
 
 
 def due(audit, adj, suite):

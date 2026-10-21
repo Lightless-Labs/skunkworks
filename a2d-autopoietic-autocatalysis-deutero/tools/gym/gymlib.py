@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymvendor import generation_complete_in  # noqa: E402
+from gymvendor import CODEX_HOST_OFF_NOTICE, generation_complete_in, lines, strict_json  # noqa: E402
 
 DEFAULT_ROOT = (Path.home() / ".a2d-gym").resolve()
 ROOT = Path(os.environ.get("GYM_ROOT", str(DEFAULT_ROOT))).resolve()
@@ -239,7 +239,7 @@ def opaque_id(i):
 
 
 def read_ids(path, expected=None):
-    ids = [x.strip() for x in safe_read_text(path).splitlines() if x.strip()]
+    ids = [x.strip() for x in lines(safe_read_text(path)) if x.strip()]
     if not ids or not all(ID_RE.match(i) for i in ids) or len(set(ids)) != len(ids):
         raise ValueError("bad id list")
     if expected is not None and len(ids) != expected:
@@ -416,7 +416,7 @@ def profile(workdir, tag):
                "/usr/bin/batch", "/usr/bin/pbcopy", "/usr/bin/pbpaste", "/usr/bin/ssh", "/usr/bin/ssh-add",
                "/usr/bin/scp", "/usr/bin/sftp", "/usr/bin/sudo", "/usr/bin/su", "/usr/bin/security",
                "/usr/bin/defaults", "/usr/bin/screen", "/usr/bin/tmux"]
-    lines = [
+    rules = [
         "(version 1)",
         "(allow default)",
         "(deny appleevent-send)",
@@ -447,9 +447,9 @@ def profile(workdir, tag):
     ]
     user_tmp = _user_temp_dir()
     if user_tmp:
-        lines.append(f'(allow file-read* file-write* (regex #"^{_rx(user_tmp)}/xcrun_db(-[A-Za-z0-9]+)?$"))')
-    lines.append(_protect_rules())          # last: no allow rule above can reopen the holdout dir
-    return "\n".join(lines) + "\n"
+        rules.append(f'(allow file-read* file-write* (regex #"^{_rx(user_tmp)}/xcrun_db(-[A-Za-z0-9]+)?$"))')
+    rules.append(_protect_rules())          # last: no allow rule above can reopen the holdout dir
+    return "\n".join(rules) + "\n"
 
 
 def _compile_denied():
@@ -806,11 +806,11 @@ def _proc_start(pid):
 
 def _recorded_groups():
     try:
-        lines = safe_read_text(RECORDS / "pids.txt").splitlines()
+        rows = lines(safe_read_text(RECORDS / "pids.txt"))
     except FileNotFoundError:
         return []
     out = []
-    for line in lines:
+    for line in rows:
         if line.strip():
             pgid, start = line.split()
             out.append((int(pgid), int(start)))
@@ -1022,17 +1022,22 @@ def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200)
 
 
 def count_other_events(jsonl):
-    """Count events outside the allowlist; a missing or empty transcript counts as 1."""
+    """Count events outside the allowlist, plus 1 when the turn never completed (a successful
+    job needs `turn.completed`); a missing or empty transcript counts as 1. Lines are split by
+    gymvendor.lines() (never splitlines(): U+2028 and friends stay inside JSON strings) and parsed
+    strictly. The one exempt event is codex's host-off notice, byte-identical to
+    CODEX_HOST_OFF_NOTICE (nano/confirm3.py, crates/a2d-providers/src/cli.rs), as the only error
+    event and before turn.started."""
     try:
-        lines = [x for x in safe_read_text(jsonl).splitlines() if x.strip()]
+        events = [x for x in lines(safe_read_text(jsonl)) if x.strip()]
     except OSError:
         return 1
-    if not lines:
+    if not events:
         return 1
-    other = 0
-    for line in lines:
+    other, completed, started, notice = 0, False, False, False
+    for line in events:
         try:
-            e = json.loads(line)
+            e = strict_json(line)
         except ValueError:
             other += 1
             continue
@@ -1040,11 +1045,17 @@ def count_other_events(jsonl):
         if t not in ALLOWED_TOP:
             other += 1
             continue
+        completed = completed or t == "turn.completed"
+        started = started or t == "turn.started"
         if t.startswith("item."):
             item = e.get("item")
+            if (t == "item.completed" and isinstance(item, dict) and item.get("type") == "error"
+                    and item.get("message") == CODEX_HOST_OFF_NOTICE and not started and not notice):
+                notice = True
+                continue
             if not isinstance(item, dict) or item.get("type") not in ALLOWED_ITEMS:
                 other += 1
-    return other
+    return other + (0 if completed else 1)
 
 
 def exit_code(record):
@@ -1391,9 +1402,9 @@ DATA_SINKS = {"cat", "tee"}
 
 
 def _strip_data_heredocs(inner):
-    lines, out, i = inner.split("\n"), [], 0
-    while i < len(lines):
-        line = lines[i]
+    rows, out, i = inner.split("\n"), [], 0
+    while i < len(rows):
+        line = rows[i]
         out.append(line)
         i += 1
         m = HEREDOC.search(line)
@@ -1403,10 +1414,10 @@ def _strip_data_heredocs(inner):
         if not words or os.path.basename(words[0].strip("\"'(")) not in DATA_SINKS:
             continue
         end, tabs = m.group(3), m.group(1) == "-"
-        while i < len(lines) and (lines[i].lstrip("\t") if tabs else lines[i]) != end:
+        while i < len(rows) and (rows[i].lstrip("\t") if tabs else rows[i]) != end:
             i += 1
-        if i < len(lines):
-            out.append(lines[i])
+        if i < len(rows):
+            out.append(rows[i])
             i += 1
     return "\n".join(out)
 
@@ -1440,16 +1451,18 @@ def _segments(inner):
 def suspicious_commands(record, workdir):
     """Count-only scan of a job's command strings. Missing transcript counts 1."""
     try:
-        lines = safe_read_text(RECORDS / record / "codex.jsonl").splitlines()
+        events = lines(safe_read_text(RECORDS / record / "codex.jsonl"))
     except OSError:
         return 1
     w, tc = str(Path(workdir).resolve()), str(TOOLCHAIN.resolve())
     home = str(Path.home())
     tcs = [tc] + ([tc.replace(home, h, 1) for h in ("${HOME}", "$HOME", "~")] if tc.startswith(home + "/") else [])
     n = 0
-    for line in lines:
+    for line in events:
+        if not line.strip():
+            continue
         try:
-            e = json.loads(line)
+            e = strict_json(line)
         except ValueError:
             continue
         item = e.get("item") if isinstance(e, dict) else None

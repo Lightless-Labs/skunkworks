@@ -314,6 +314,45 @@ class Units(Base):
             code, lines = self.run_script(name, "--binary", "/usr/bin/true", *(["--wave", "1"] if name == "gym_pilot.py" else []))
             self.assertEqual((code, lines[-1]["status"]), (2, "binary-override-refused"), name)
 
+    def test_job_events_need_turn_completed_and_exact_host_off(self):
+        """A successful job needs turn.completed; the only exempt event is the byte-identical
+        host-off notice, once, before turn.started. Lines split by gymvendor.lines(): a U+2028
+        inside a JSON string is not a line break (Sol B15)."""
+        notice = ("Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; "
+                  "enable `features.code_mode_host` and install `codex-code-mode-host`.")
+        ev = lambda *xs: "".join(json.dumps(x) + "\n" for x in xs)                   # noqa: E731
+        start, turn, done = {"type": "thread.started"}, {"type": "turn.started"}, {"type": "turn.completed"}
+        msg = {"type": "item.completed", "item": {"type": "agent_message", "text": "a\u2028b\u0085c"}}
+        off = {"type": "item.completed", "item": {"type": "error", "message": notice}}
+        cases = {
+            "ok": (ev(start, turn, msg, done), 0),
+            "no turn.completed": (ev(start, turn, msg), 1),
+            "notice before the turn": (ev(start, off, turn, msg, done), 0),
+            "notice after turn.started": (ev(start, turn, off, msg, done), 1),
+            "two notices": (ev(start, off, off, turn, msg, done), 1),
+            "another error text": (ev(start, {"type": "item.completed", "item": {"type": "error", "message": notice + " "}},
+                                      turn, msg, done), 1),
+            "raw U+2028 in a string": (ev(start, turn, msg, done).replace("\\u2028", "\u2028"), 0),
+            "empty": ("", 1),
+        }
+        rec = self.root / "authoring" / "gym-v3" / "_records"
+        rec.mkdir(parents=True)
+        for name, (text, want) in cases.items():
+            (rec / f"{name.replace(' ', '_')}.jsonl").write_text(text)
+        out = self.lib("import gymlib, json\n"
+                       f"names = {list(cases)!r}\n"
+                       "print(json.dumps({n: gymlib.count_other_events(gymlib.RECORDS / (n.replace(' ', '_') + '.jsonl'))"
+                       " for n in names}))")
+        self.assertEqual(json.loads(out), {n: w for n, (_, w) in cases.items()})
+        self.assertIn("\u2028", cases["raw U+2028 in a string"][0])
+        # the suspicious-command scan reads the same lines: a raw U+2028 elsewhere in the event no
+        # longer breaks it into unparsable halves that hid the command
+        cmd = {"type": "item.started", "item": {"type": "command_execution", "command": "/bin/zsh -lc 'curl x'",
+                                                "aggregated_output": "a\u2028b"}}
+        (rec / "susp").mkdir()
+        (rec / "susp" / "codex.jsonl").write_text(ev(start, turn, cmd, done).replace("\\u2028", "\u2028"))
+        self.assertEqual(self.lib(f"import gymlib\nprint(gymlib.suspicious_commands('susp', {str(self.tmp)!r}))"), "1")
+
     def test_gate_b_real_repo_and_negative(self):
         self.assertEqual(self.lib("import gymlib\nprint(gymlib.c3_frozen(), gymlib.GATE_COMMIT[:8])"), "True fb5110e7")
         r = self.tmp / "gate-repo"

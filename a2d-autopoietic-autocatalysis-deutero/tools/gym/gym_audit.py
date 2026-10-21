@@ -35,8 +35,8 @@ from gymlib import (BINARY, binary_allowed, CODEX_HOMES, PROVIDER_CANARIES, RECO
                     TESTING, DriverLock, build_a2d, child_env, emit, gate_or_exit, gateway, hashes_digest,
                     launch_gate, load_json, prereqs_ok, safe_copy, safe_read_text, save_json, suite_digest,
                     tree_hashes)
-from gymvendor import (CODEX_STDERR_MARKER, host_off, isolation_ok, py_tool_events, records_tolerant,  # noqa: E402
-                       replicate_tuples, transcript_text)
+from gymvendor import (CODEX_STDERR_MARKER, host_off, isolation_ok, lines, py_tool_events,  # noqa: E402
+                       records_tolerant, replicate_tuples, strict_json, transcript_text)
 
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
 MUTANTS = tuple(f"m{i}.rs" for i in (1, 2, 3, 4))
@@ -195,12 +195,25 @@ def run_lift(binary, tasks, n, lock_fd):
         code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                               pass_fds=(lock_fd,), env=child_env()).returncode
     passed, void = {}, set()
-    for line in safe_read_text(out / "ledger.jsonl", ROOT).splitlines():
-        rec = json.loads(line)
-        if rec.get("arm") != "D" or rec.get("task") not in tasks:
+    try:
+        text = safe_read_text(out / "ledger.jsonl", ROOT)
+    except FileNotFoundError:
+        text = ""
+    for line in lines(text):                     # gymvendor.lines + strict JSON (records_tolerant's rule)
+        if not line.strip():
+            continue
+        try:
+            rec = strict_json(line)
+        except ValueError:
+            continue                             # a damaged line: replicate_tuples voids the run's tuples
+        if not isinstance(rec, dict) or rec.get("arm") != "D" or rec.get("task") not in tasks:
             continue
         if rec.get("kind") == "score":
-            passed[rec["task"]] = bool(rec["result"]["all_passed"])
+            result = rec.get("result")
+            if isinstance(result, dict) and isinstance(result.get("all_passed"), bool):
+                passed[rec["task"]] = result["all_passed"]
+            else:
+                void.add(rec["task"])
         elif rec.get("kind") == "submission" and rec.get("void_reason"):
             void.add(rec["task"])
     tuples, _ = replicate_tuples(out, 0, ["D"], tasks)

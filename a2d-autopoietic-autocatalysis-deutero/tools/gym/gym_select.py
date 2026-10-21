@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gymvendor import lines  # noqa: E402
 from gymlib import (AUTHORING_FILES, CLASSES, GYM, ID_RE, QUOTA_PER_CLASS, RECORDS, SPARES_PER_CLASS,  # noqa: E402
                     DriverLock, LaunchGateClosed, PriorCorpus, StopRequested, emit, gate_or_exit, gateway,
                     isolation_check, load_json, opaque_id, prereqs_ok, run_codex, safe_copy, safe_read_text,
@@ -44,7 +45,7 @@ def read_classes(fam_dir):
     """{id: class} from CLASSES.tsv: exactly the ids, known classes, PER_CLASS of each; else None."""
     out = {}
     try:
-        for line in safe_read_text(fam_dir / "CLASSES.tsv", GYM).splitlines():
+        for line in lines(safe_read_text(fam_dir / "CLASSES.tsv", GYM)):
             if not line.strip():
                 continue
             parts = line.strip().split("\t")
@@ -66,7 +67,7 @@ def briefs_complete(fam_dir):
         for i in IDS:
             if not safe_read_text(fam_dir / i / "FAMILY.md", GYM).strip():
                 return False
-        names = [x for x in safe_read_text(fam_dir / "NAMES.tsv", GYM).splitlines() if x.strip()]
+        names = [x for x in lines(safe_read_text(fam_dir / "NAMES.tsv", GYM)) if x.strip()]
         return len(names) == N_TOTAL and read_classes(fam_dir) is not None
     except (OSError, PermissionError):
         return False
@@ -136,7 +137,7 @@ def check(inventory):
     other += suspicious_commands("namecheck", w)
     verdicts = {}
     try:
-        for line in safe_read_text(w / "VERDICTS.tsv", GYM).splitlines():
+        for line in lines(safe_read_text(w / "VERDICTS.tsv", GYM)):
             if not line.strip():
                 continue
             parts = line.strip().split("\t")

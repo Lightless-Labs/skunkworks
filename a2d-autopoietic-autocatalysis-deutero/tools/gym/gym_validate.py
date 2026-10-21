@@ -83,7 +83,7 @@ def split_inner_attributes(code):
 def parse_results(output):
     """(passed, failed, secs) from the last `test result:` line (sandbox.rs); secs is libtest's
     own `finished in <x>s` (the tests' run time, without process start-up), or None."""
-    for line in reversed(output.splitlines()):
+    for line in reversed(rust_lines(output)):
         if line.startswith("test result:"):
             passed = failed = 0
             secs = None

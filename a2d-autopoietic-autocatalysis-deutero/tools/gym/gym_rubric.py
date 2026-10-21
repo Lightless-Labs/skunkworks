@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymvendor import lines, test_names  # noqa: E402
+from gymvendor import lines, strict_json, test_names  # noqa: E402
 
 CLASSES = ("depth", "state", "scale", "surface", "edges")
 CLAUSE = re.compile(r"^[ \t]*R(\d+)\.[ \t]", re.M)
@@ -169,7 +169,7 @@ def parse_verdicts(text, expected):
         if not line.strip():
             continue
         try:
-            e = json.loads(line)
+            e = strict_json(line)
         except ValueError:
             return None
         if not isinstance(e, dict) or set(e) != VERDICT_KEYS or not all(isinstance(e[k], str) for k in VERDICT_KEYS):
