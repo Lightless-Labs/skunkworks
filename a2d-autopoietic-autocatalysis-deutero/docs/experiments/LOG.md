@@ -1860,3 +1860,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Risk for confirmation-3:** its X (E002 judge) and D (repair) prompts also carry model code, about 340 such prompts over 2 replicates. That gives roughly a 10–15% chance of a coincidental hit, which would be IntegrityReview under §0.4.
     - §0.10 lets the registration review only tighten §0.4, so the rule stays and the risk is disclosed in the registration.
     - Next cycle: a provenance-aware scanner that ignores names first introduced by a model response.
+- **Provider merged into main** (c14956a0, 02:20 UTC 10-21): `c2-web-provider` at ecbb9611, i.e. the reviewed provider plus the cwd-collision fix plus the committed controls.
+  - Built with `cargo build --locked --bin a2d`. `a2d-providers` 29 passed (3 live ignored); `a2d-lift` 68 passed.
+  - Timing: HANDOFF had said "after L37". That rule kept the provider fixed within the batch, but the batch closed with E007's promotion, and L31–L37 are now provably no-ops. Look 2 had finished at 02:06 on the registered controller.
+  - `PROVIDER_COMMIT` stays bc6922f7 (in main's history).
+  - From here on, dev runs (phase B) use the `--json` provider: web search off, an isolated CODEX_HOME, the allowlist detector.
