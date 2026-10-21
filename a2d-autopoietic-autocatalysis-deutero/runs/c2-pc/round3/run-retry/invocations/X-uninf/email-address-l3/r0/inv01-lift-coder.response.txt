@@ -1,0 +1,413 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn is_printable(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
+}
+
+fn is_atom_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+fn error_at_end(input: &str) -> usize {
+    input.len()
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let raw = input.as_bytes();
+    if raw.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    if let Some(at) = raw.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let mut kept = Vec::<u8>::with_capacity(raw.len());
+    let mut positions = Vec::<usize>::with_capacity(raw.len());
+    let mut runs = Vec::<usize>::new();
+    let mut run_end = Vec::<usize>::new();
+
+    let mut i = 0usize;
+    let mut quote_protected = false;
+    let mut quote_open = 0usize;
+
+    while i < raw.len() {
+        if quote_protected {
+            let b = raw[i];
+            kept.push(b);
+            positions.push(i);
+            if b == b'\\' {
+                i += 1;
+                if i < raw.len() {
+                    kept.push(raw[i]);
+                    positions.push(i);
+                    i += 1;
+                }
+                continue;
+            }
+            if b == b'"' {
+                quote_protected = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if kept.is_empty() && raw[i] == b'"' {
+            quote_protected = true;
+            quote_open = i;
+            kept.push(raw[i]);
+            positions.push(i);
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        let mut is_cfws = false;
+
+        if is_hws(raw[i]) {
+            is_cfws = true;
+            while i < raw.len() && is_hws(raw[i]) {
+                i += 1;
+            }
+        } else if raw[i] == b'\r' || raw[i] == b'\n' {
+            is_cfws = true;
+            if raw[i] != b'\r'
+                || i + 2 >= raw.len()
+                || raw[i + 1] != b'\n'
+                || !is_hws(raw[i + 2])
+            {
+                return Err(EmailError::BadFold { at: i });
+            }
+            i += 2;
+            while i < raw.len() && is_hws(raw[i]) {
+                i += 1;
+            }
+        } else if raw[i] == b'(' {
+            is_cfws = true;
+            let outer = i;
+            let mut depth = 0usize;
+            while i < raw.len() {
+                let b = raw[i];
+                if b == b'\\' {
+                    if i + 1 >= raw.len() || !is_printable(raw[i + 1]) {
+                        return Err(EmailError::CommentEscape { at: i });
+                    }
+                    i += 2;
+                    continue;
+                }
+                if b == b'\r' || b == b'\n' {
+                    if b != b'\r'
+                        || i + 2 >= raw.len()
+                        || raw[i + 1] != b'\n'
+                        || !is_hws(raw[i + 2])
+                    {
+                        return Err(EmailError::BadFold { at: i });
+                    }
+                    i += 2;
+                    while i < raw.len() && is_hws(raw[i]) {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if b == b'(' {
+                    depth += 1;
+                    if depth > 3 {
+                        return Err(EmailError::CommentDepth { at: i });
+                    }
+                    i += 1;
+                    continue;
+                }
+                if b == b')' {
+                    depth -= 1;
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                if b == b'\t' || is_printable(b) {
+                    i += 1;
+                    continue;
+                }
+                return Err(EmailError::CommentChar { at: i });
+            }
+            if depth != 0 {
+                return Err(EmailError::UnclosedComment { at: outer });
+            }
+        } else if raw[i] == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+
+        if is_cfws {
+            runs.push(start);
+            run_end.push(i);
+            continue;
+        }
+
+        kept.push(raw[i]);
+        positions.push(i);
+        if kept.len() == 1 && raw[i] == b'"' {
+            quote_protected = true;
+            quote_open = i;
+        }
+        i += 1;
+    }
+
+    let _ = quote_open;
+
+    for r in 0..runs.len() {
+        let left = r == 0 || (runs[r] > 0 && raw[runs[r] - 1] == b'@');
+        let right = r + 1 == runs.len()
+            || (run_end[r] < raw.len() && raw[run_end[r]] == b'@');
+        if !left && !right {
+            return Err(EmailError::CfwsBoundary { at: runs[r] });
+        }
+    }
+
+    if kept.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quote_close = None;
+    if kept[0] == b'"' {
+        let mut j = 1usize;
+        while j < kept.len() {
+            if kept[j] == b'\\' {
+                j += 2;
+            } else if kept[j] == b'"' {
+                quote_close = Some(j);
+                break;
+            } else {
+                j += 1;
+            }
+        }
+        if quote_close.is_none() {
+            return Err(EmailError::UnclosedQuote { at: positions[0] });
+        }
+    }
+
+    let mut separators = Vec::new();
+    let mut j = 0usize;
+    while j < kept.len() {
+        if let Some(close) = quote_close {
+            if j <= close {
+                j += 1;
+                continue;
+            }
+        }
+        if kept[j] == b'@' {
+            separators.push(j);
+        }
+        j += 1;
+    }
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() >= 2 {
+        return Err(EmailError::MultipleAt {
+            at: positions[separators[1]],
+        });
+    }
+
+    let sep = separators[0];
+    let sep_pos = positions[sep];
+    if sep == 0 {
+        return Err(EmailError::EmptyLocal { at: sep_pos });
+    }
+
+    let mut local = String::new();
+    let quoted = kept[0] == b'"';
+    if !quoted {
+        if sep > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: positions[64],
+            });
+        }
+        for k in 0..sep {
+            let b = kept[k];
+            if b == b'.' {
+                if k == 0 || k + 1 == sep || kept[k - 1] == b'.' {
+                    return Err(EmailError::LocalDot { at: positions[k] });
+                }
+            } else if !is_atom_byte(b) {
+                return Err(EmailError::LocalChar { at: positions[k] });
+            }
+        }
+        local.push_str(std::str::from_utf8(&kept[..sep]).unwrap());
+    } else {
+        let close = quote_close.unwrap();
+        if close >= sep {
+            return Err(EmailError::UnclosedQuote { at: positions[0] });
+        }
+        if close + 1 != sep {
+            return Err(EmailError::TrailingLocal {
+                at: positions[close + 1],
+            });
+        }
+        let mut decoded = Vec::<u8>::new();
+        let mut origins = Vec::<usize>::new();
+        let mut k = 1usize;
+        while k < close {
+            let b = kept[k];
+            if b == b'\\' {
+                if k + 1 >= close {
+                    return Err(EmailError::BadEscape { at: positions[k] });
+                }
+                let next = kept[k + 1];
+                if next != b'"' && next != b'\\' && next != b'@' {
+                    return Err(EmailError::BadEscape { at: positions[k] });
+                }
+                decoded.push(next);
+                origins.push(positions[k]);
+                k += 2;
+            } else {
+                if !is_printable(b) {
+                    return Err(EmailError::QuotedChar { at: positions[k] });
+                }
+                decoded.push(b);
+                origins.push(positions[k]);
+                k += 1;
+            }
+        }
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: positions[close],
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong { at: origins[64] });
+        }
+        local = String::from_utf8(decoded).unwrap();
+    }
+
+    let domain_start_idx = sep + 1;
+    let domain_start_pos = if domain_start_idx < kept.len() {
+        positions[domain_start_idx]
+    } else {
+        error_at_end(input)
+    };
+    let mut domain_end = kept.len();
+    let mut root_dot = None;
+    if domain_end > domain_start_idx && kept[domain_end - 1] == b'.' {
+        root_dot = Some(domain_end - 1);
+        domain_end -= 1;
+    }
+    if domain_start_idx == domain_end {
+        let at = if let Some(root) = root_dot {
+            positions[domain_start_idx.min(root)]
+        } else {
+            domain_start_pos
+        };
+        return Err(EmailError::EmptyDomain { at });
+    }
+    if domain_end - domain_start_idx > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: positions[domain_start_idx + 253],
+        });
+    }
+
+    let mut labels = Vec::<(usize, usize)>::new();
+    let mut label_start = domain_start_idx;
+    for k in domain_start_idx..domain_end {
+        if kept[k] == b'.' {
+            if label_start == k {
+                return Err(EmailError::EmptyLabel { at: positions[k] });
+            }
+            labels.push((label_start, k));
+            label_start = k + 1;
+        }
+    }
+    if label_start == domain_end {
+        let at = root_dot.map(|x| positions[x]).unwrap_or_else(|| error_at_end(input));
+        return Err(EmailError::EmptyLabel { at });
+    }
+    labels.push((label_start, domain_end));
+
+    for &(start, end) in &labels {
+        if end - start > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: positions[start + 63],
+            });
+        }
+        if kept[start] == b'-' {
+            return Err(EmailError::LabelHyphen { at: positions[start] });
+        }
+        if kept[end - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: positions[end - 1],
+            });
+        }
+        for k in start..end {
+            if !kept[k].is_ascii_alphanumeric() && kept[k] != b'-' {
+                return Err(EmailError::DomainChar { at: positions[k] });
+            }
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot {
+            at: domain_start_pos,
+        });
+    }
+    let (last_start, last_end) = *labels.last().unwrap();
+    if kept[last_start..last_end]
+        .iter()
+        .all(|b| b.is_ascii_digit())
+    {
+        return Err(EmailError::NumericTld {
+            at: positions[last_start],
+        });
+    }
+
+    let lower_domain = kept[domain_start_idx..domain_end]
+        .iter()
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect::<String>();
+
+    Ok(Address {
+        local,
+        domain: lower_domain,
+        quoted,
+    })
+}
+```

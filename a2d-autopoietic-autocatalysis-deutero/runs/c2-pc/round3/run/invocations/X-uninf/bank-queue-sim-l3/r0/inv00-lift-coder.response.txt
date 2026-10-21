@@ -1,0 +1,240 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Resume {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Preempt {
+        remaining: u64,
+        by: u32,
+    },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Job {
+    id: u32,
+    arrival: u64,
+    remaining: u64,
+    priority: u8,
+    started: bool,
+    pause_time: Option<u64>,
+}
+
+#[derive(Clone)]
+struct Running {
+    job: Job,
+    work_at: u64,
+    finish: u64,
+}
+
+fn waiter_cmp(a: &Job, b: &Job) -> std::cmp::Ordering {
+    a.priority.cmp(&b.priority).then_with(|| match (a.pause_time, b.pause_time) {
+        (Some(at), Some(bt)) => at.cmp(&bt).then_with(|| a.id.cmp(&b.id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a
+            .arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id)),
+    })
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::HashSet;
+
+    let mut ids = HashSet::new();
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !ids.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    let mut arrivals = customers.to_vec();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut trace = Vec::new();
+    let mut waiting: Vec<Job> = Vec::new();
+    let mut running: Option<Running> = None;
+    let mut last_dispatched: Option<u32> = None;
+    let mut next_arrival = 0usize;
+    let mut now = 0u64;
+
+    while next_arrival < arrivals.len() || running.is_some() || !waiting.is_empty() {
+        let next_time = {
+            let arrival_time = arrivals.get(next_arrival).map(|c| c.arrival);
+            let finish_time = running.as_ref().map(|r| r.finish);
+            let work_time = running
+                .as_ref()
+                .filter(|r| r.work_at > now)
+                .map(|r| r.work_at);
+            [arrival_time, finish_time, work_time]
+                .into_iter()
+                .flatten()
+                .filter(|&t| t >= now)
+                .min()
+        };
+
+        if let Some(t) = next_time {
+            now = t;
+        }
+
+        if running.as_ref().is_some_and(|r| r.finish == now) {
+            let done = running.take().unwrap();
+            trace.push(Event {
+                time: now,
+                customer: done.job.id,
+                kind: Kind::Finish,
+            });
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == now {
+            let customer = &arrivals[next_arrival];
+            trace.push(Event {
+                time: now,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(Job {
+                id: customer.id,
+                arrival: customer.arrival,
+                remaining: customer.service,
+                priority: customer.priority,
+                started: false,
+                pause_time: None,
+            });
+            next_arrival += 1;
+        }
+
+        if let Some(active) = running.as_ref() {
+            if now >= active.work_at {
+                let best = waiting
+                    .iter()
+                    .min_by(|a, b| waiter_cmp(a, b));
+                if best.is_some_and(|job| job.priority < active.job.priority) {
+                    let by = best.unwrap().id;
+                    let mut paused = running.take().unwrap();
+                    paused.job.remaining = paused.finish - now;
+                    paused.job.pause_time = Some(now);
+                    trace.push(Event {
+                        time: now,
+                        customer: paused.job.id,
+                        kind: Kind::Preempt {
+                            remaining: paused.job.remaining,
+                            by,
+                        },
+                    });
+                    waiting.push(paused.job);
+                }
+            }
+        }
+
+        while running.is_none() && !waiting.is_empty() {
+            let best_index = (0..waiting.len())
+                .min_by(|&a, &b| waiter_cmp(&waiting[a], &waiting[b]))
+                .unwrap();
+            let mut job = waiting.remove(best_index);
+            let switching = last_dispatched
+                .is_some_and(|previous| previous != job.id);
+            let cost = if switching { switch_cost } else { 0 };
+            let work_at = now.checked_add(cost).ok_or(Error::TimeOverflow {
+                customer: job.id,
+                time: now,
+            })?;
+            let finish = work_at.checked_add(job.remaining).ok_or(Error::TimeOverflow {
+                customer: job.id,
+                time: now,
+            })?;
+
+            let kind = if job.started {
+                Kind::Resume {
+                    remaining: job.remaining,
+                    work_at,
+                    finish,
+                }
+            } else {
+                Kind::Start {
+                    remaining: job.remaining,
+                    work_at,
+                    finish,
+                }
+            };
+            job.started = true;
+            last_dispatched = Some(job.id);
+            trace.push(Event {
+                time: now,
+                customer: job.id,
+                kind,
+            });
+
+            if finish == now {
+                trace.push(Event {
+                    time: now,
+                    customer: job.id,
+                    kind: Kind::Finish,
+                });
+            } else {
+                running = Some(Running {
+                    job,
+                    work_at,
+                    finish,
+                });
+            }
+        }
+
+        if next_time.is_none() {
+            break;
+        }
+    }
+
+    Ok(trace)
+}
+```

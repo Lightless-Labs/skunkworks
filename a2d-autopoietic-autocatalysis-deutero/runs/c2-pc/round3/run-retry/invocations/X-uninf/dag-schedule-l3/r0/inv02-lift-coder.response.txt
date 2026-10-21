@@ -1,0 +1,336 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+    pub release: u64,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub start: u64,
+    pub finish: u64,
+    pub worker: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventKind {
+    Start,
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub task: usize,
+    pub worker: usize,
+    pub kind: EventKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub makespan: u64,
+    pub events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stage {
+    Tail,
+    Finish,
+    Turnaround,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Workers {
+        count: usize,
+    },
+    Overflow {
+        task: usize,
+        stage: Stage,
+    },
+}
+
+pub fn schedule(tasks: &[Task], workers: usize, turnaround: u64) -> Result<Schedule, Error> {
+    let n = tasks.len();
+
+    // Validate every dependency entry before checking workers or doing any
+    // scheduling work.
+    for (task_id, task) in tasks.iter().enumerate() {
+        let mut seen = vec![false; n];
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if seen[value] {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            seen[value] = true;
+        }
+    }
+
+    if !(1..=64).contains(&workers) {
+        return Err(Error::Workers { count: workers });
+    }
+
+    // Build successor lists and indegrees. Dependency list order does not
+    // affect Kahn's traversal, so successor lists are sorted by task ID.
+    let mut successors = vec![Vec::<usize>::new(); n];
+    let mut indegree = vec![0usize; n];
+    for (task_id, task) in tasks.iter().enumerate() {
+        indegree[task_id] = task.deps.len();
+        for &dep in &task.deps {
+            successors[dep].push(task_id);
+        }
+    }
+    for list in &mut successors {
+        list.sort_unstable();
+    }
+
+    // Kahn traversal, always removing the smallest currently available ID.
+    let mut available = std::collections::BTreeSet::new();
+    for id in 0..n {
+        if indegree[id] == 0 {
+            available.insert(id);
+        }
+    }
+    let mut order = Vec::with_capacity(n);
+    while let Some(id) = available.pop_first() {
+        order.push(id);
+        for &child in &successors[id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.insert(child);
+            }
+        }
+    }
+
+    if order.len() != n {
+        let mut removed = vec![false; n];
+        for &id in &order {
+            removed[id] = true;
+        }
+        return Err(Error::Cycle {
+            blocked: (0..n).filter(|&id| !removed[id]).collect(),
+        });
+    }
+
+    // Compute bottom levels in reverse Kahn order.
+    let mut tails = vec![0u64; n];
+    for &id in order.iter().rev() {
+        let max_child_tail = successors[id]
+            .iter()
+            .map(|&child| tails[child])
+            .max()
+            .unwrap_or(0);
+        tails[id] = tasks[id]
+            .duration
+            .checked_add(max_child_tail)
+            .ok_or(Error::Overflow {
+                task: id,
+                stage: Stage::Tail,
+            })?;
+    }
+
+    #[derive(Clone, Copy)]
+    struct Running {
+        task: usize,
+        worker: usize,
+        finish: u64,
+    }
+
+    let mut runs: Vec<Option<Run>> = vec![None; n];
+    let mut started = vec![false; n];
+    let mut completed = vec![false; n];
+    let mut completed_count = 0usize;
+    let mut worker_available_at = vec![0u64; workers];
+    let mut running = Vec::<Running>::new();
+    let mut events = Vec::with_capacity(n.saturating_mul(2));
+    let mut now = 0u64;
+    let mut makespan = 0u64;
+
+    while completed_count < n {
+        // Complete all positive-duration jobs finishing now, in task ID order.
+        let mut finishing: Vec<Running> = running
+            .iter()
+            .copied()
+            .filter(|r| r.finish == now)
+            .collect();
+        finishing.sort_by_key(|r| r.task);
+        for r in finishing {
+            if let Some(pos) = running
+                .iter()
+                .position(|x| x.task == r.task && x.worker == r.worker)
+            {
+                running.remove(pos);
+            }
+            completed[r.task] = true;
+            completed_count += 1;
+            makespan = makespan.max(now);
+            events.push(Event {
+                time: now,
+                task: r.task,
+                worker: r.worker,
+                kind: EventKind::Finish,
+            });
+        }
+
+        loop {
+            // Lowest numbered worker available at this instant.
+            let worker = (0..workers).find(|&w| worker_available_at[w] <= now);
+            let Some(worker) = worker else {
+                break;
+            };
+
+            // Pick the best currently eligible task.
+            let mut best: Option<usize> = None;
+            for id in 0..n {
+                if started[id] || tasks[id].release > now {
+                    continue;
+                }
+                if !tasks[id].deps.iter().all(|&dep| completed[dep]) {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some(old) => {
+                        tails[id] > tails[old]
+                            || (tails[id] == tails[old]
+                                && (tasks[id].priority > tasks[old].priority
+                                    || (tasks[id].priority == tasks[old].priority && id < old)))
+                    }
+                };
+                if better {
+                    best = Some(id);
+                }
+            }
+            let Some(task_id) = best else {
+                break;
+            };
+
+            let finish = now.checked_add(tasks[task_id].duration).ok_or(Error::Overflow {
+                task: task_id,
+                stage: Stage::Finish,
+            })?;
+            let available_at =
+                finish
+                    .checked_add(turnaround)
+                    .ok_or(Error::Overflow {
+                        task: task_id,
+                        stage: Stage::Turnaround,
+                    })?;
+
+            started[task_id] = true;
+            worker_available_at[worker] = available_at;
+            runs[task_id] = Some(Run {
+                start: now,
+                finish,
+                worker,
+            });
+            events.push(Event {
+                time: now,
+                task: task_id,
+                worker,
+                kind: EventKind::Start,
+            });
+
+            if finish == now {
+                // Immediate completion for a zero-duration task.
+                completed[task_id] = true;
+                completed_count += 1;
+                makespan = makespan.max(now);
+                events.push(Event {
+                    time: now,
+                    task: task_id,
+                    worker,
+                    kind: EventKind::Finish,
+                });
+            } else {
+                running.push(Running {
+                    task: task_id,
+                    worker,
+                    finish,
+                });
+            }
+        }
+
+        if completed_count == n {
+            break;
+        }
+
+        // Advance to the next strictly later event that can change eligibility
+        // or worker availability.
+        let mut next = u64::MAX;
+        let mut found = false;
+        for r in &running {
+            if r.finish > now {
+                next = next.min(r.finish);
+                found = true;
+            }
+        }
+        for id in 0..n {
+            if !started[id] && tasks[id].release > now {
+                next = next.min(tasks[id].release);
+                found = true;
+            }
+        }
+        for &available_at in &worker_available_at {
+            if available_at > now {
+                next = next.min(available_at);
+                found = true;
+            }
+        }
+
+        if !found {
+            // With an acyclic graph and valid event progression this cannot
+            // occur, but avoid panicking if an invariant is ever violated.
+            break;
+        }
+        now = next;
+    }
+
+    let runs = runs
+        .into_iter()
+        .map(|run| run.expect("every task completes"))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        makespan,
+        events,
+    })
+}
+```

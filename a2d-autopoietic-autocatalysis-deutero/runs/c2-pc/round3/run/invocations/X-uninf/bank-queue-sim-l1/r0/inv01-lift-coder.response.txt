@@ -1,0 +1,163 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut seen = HashSet::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| b.arrival.cmp(&a.arrival).then_with(|| a.id.cmp(&b.id)));
+
+    let mut events = Vec::with_capacity(customers.len() * 3);
+    let mut queue: VecDeque<&Customer> = VecDeque::new();
+    let mut next_arrival = 0usize;
+    let mut running: Option<(&Customer, u64)> = None;
+    let mut previous_finish: Option<u64> = None;
+
+    while next_arrival < arrivals.len() || !queue.is_empty() || running.is_some() {
+        let next_arrival_time = arrivals.get(next_arrival).map(|c| c.arrival);
+        let next_finish_time = running.map(|(_, finish)| finish);
+
+        let time = match (next_arrival_time, next_finish_time) {
+            (Some(a), Some(f)) => a.min(f),
+            (Some(a), None) => a,
+            (None, Some(f)) => f,
+            (None, None) => break,
+        };
+
+        if next_finish_time == Some(time) {
+            let (customer, _) = running.take().unwrap();
+            events.push(Event {
+                time,
+                customer: customer.id,
+                kind: Kind::Finish,
+            });
+            previous_finish = Some(time);
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == time {
+            let customer = arrivals[next_arrival];
+            events.push(Event {
+                time,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            queue.push_back(customer);
+            next_arrival += 1;
+        }
+
+        if running.is_none() {
+            if let Some(customer) = queue.pop_front() {
+                let wake = previous_finish.map_or(true, |finish| time > finish);
+                let base_finish = time.checked_add(customer.service).ok_or(
+                    Error::TimeOverflow {
+                        customer: customer.id,
+                        time,
+                    },
+                )?;
+                let finish = base_finish
+                    .checked_add(if wake { wake_cost } else { 0 })
+                    .ok_or(Error::TimeOverflow {
+                        customer: customer.id,
+                        time,
+                    })?;
+
+                events.push(Event {
+                    time,
+                    customer: customer.id,
+                    kind: Kind::Start { finish, wake },
+                });
+
+                if finish == time {
+                    events.push(Event {
+                        time,
+                        customer: customer.id,
+                        kind: Kind::Finish,
+                    });
+                    previous_finish = Some(time);
+                } else {
+                    running = Some((customer, finish));
+                }
+
+                while running.is_none() && !queue.is_empty() {
+                    let customer = queue.pop_front().unwrap();
+                    let wake = previous_finish.map_or(true, |finish| time > finish);
+                    let base_finish = time.checked_add(customer.service).ok_or(
+                        Error::TimeOverflow {
+                            customer: customer.id,
+                            time,
+                        },
+                    )?;
+                    let finish = base_finish
+                        .checked_add(if wake { wake_cost } else { 0 })
+                        .ok_or(Error::TimeOverflow {
+                            customer: customer.id,
+                            time,
+                        })?;
+
+                    events.push(Event {
+                        time,
+                        customer: customer.id,
+                        kind: Kind::Start { finish, wake },
+                    });
+
+                    if finish == time {
+                        events.push(Event {
+                            time,
+                            customer: customer.id,
+                            kind: Kind::Finish,
+                        });
+                        previous_finish = Some(time);
+                    } else {
+                        running = Some((customer, finish));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+```

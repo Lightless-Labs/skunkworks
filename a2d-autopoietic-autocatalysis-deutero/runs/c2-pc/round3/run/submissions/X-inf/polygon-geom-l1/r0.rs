@@ -1,0 +1,153 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    const MAX_VERTICES: usize = 4096;
+    const COORD_LIMIT: i64 = 1_000_000_000;
+
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if !(-COORD_LIMIT..=COORD_LIMIT).contains(&point.x)
+            || !(-COORD_LIMIT..=COORD_LIMIT).contains(&point.y)
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points.first() == points.last() {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let vertices = &points[..effective_len];
+    let mut signed_area2 = 0_i128;
+
+    for i in 0..effective_len {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % effective_len];
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+    }
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0_u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % effective_len];
+        let dx = i128::from(b.x) - i128::from(a.x);
+        let dy = i128::from(b.y) - i128::from(a.y);
+        let d2 = (dx * dx + dy * dy) as u128;
+
+        // Find floor(sqrt(d2 * 1_000_000)), then round to nearest,
+        // with exact half ties upward.
+        let scaled_d2 = d2 * 1_000_000;
+        let floor_root = integer_sqrt(scaled_d2);
+        let midpoint_test = 4 * scaled_d2;
+        let threshold = 4 * floor_root * floor_root + 4 * floor_root + 1;
+        let rounded = floor_root + u128::from(midpoint_test >= threshold);
+        let rounded = rounded as u64;
+
+        edge_milli.push(rounded);
+        perimeter_milli += rounded;
+
+        let replace_longest = match longest_edge {
+            None => true,
+            Some(best_index) => {
+                let best_length = edge_milli[best_index];
+                if rounded != best_length {
+                    rounded > best_length
+                } else {
+                    let pair = ordered_pair(a, b);
+                    let best_a = vertices[best_index];
+                    let best_b = vertices[(best_index + 1) % effective_len];
+                    let best_pair = ordered_pair(best_a, best_b);
+                    pair < best_pair || (pair == best_pair && i < best_index)
+                }
+            }
+        };
+
+        if replace_longest {
+            longest_edge = Some(i);
+        }
+    }
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn ordered_pair(a: Point, b: Point) -> (Point, Point) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn integer_sqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+
+    let mut low = 1_u128;
+    let mut high = n / 2 + 1;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        if mid <= n / mid {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    high
+}

@@ -1,0 +1,638 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. Provide exactly the following public data types and function signatures (function bodies are yours to implement). The shown derives are required; all listed fields and API items are public. Helper items may be private.
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError>;
+```
+
+R3. All at fields are zero-based BYTE offsets in the original input, never character counts. After any stripping, the position of a retained byte is its original position. Whenever an error refers to a position at the end of the cleaned input with no byte there, use input.len(). A removed terminal domain dot still supplies its original position for errors at that position.
+
+R4. Check raw empty input first: EmptyInput. Then reject the first byte >= 128 with NonAscii { at }, before ANY syntax checks, including comments or quotes. Do not trim or accept Unicode.
+
+R5. Next perform the CFWS cleanup defined below over the whole input. Report its first lexical error in left-to-right scanning order before checking any boundary or address syntax. Then check CFWS boundaries left-to-right, then return EmptyInput if cleanup retained no bytes. After cleanup follow the address stages below. Thus malformed comments/folds in the domain can outrank invalid local syntax.
+
+R6. If the first cleaned byte is a double quote, find its first unescaped closing double quote by scanning from the next byte: a backslash skips itself and the next byte, regardless of whether that escape will be legal. No closing quote yields UnclosedQuote at the opening quote, before checking @ separators. A trailing backslash also leaves the quote unclosed. Only this prefix protects @ signs; quotes elsewhere do not open protected regions.
+
+R7. Find @ separators outside the complete quoted prefix (ignore every byte through its closing quote). No separator yields MissingAt. Two or more yield MultipleAt at the SECOND separator, before local or domain validation. Exactly one divides local and domain. An empty local yields EmptyLocal at that separator, before any domain checks.
+
+R8. For an unquoted local, check length before its contents. More than 64 bytes yields LocalTooLong at its 65th byte. Otherwise validate left-to-right. The only permitted non-dot bytes are ASCII letters/digits and the bytes in the Rust byte string b"!#$%&'*+-/=?^_`{|}~". This includes no whitespace. Any other byte yields LocalChar at that byte.
+
+R9. For an unquoted local a dot may not be first, last, or immediately preceded by another dot. When scanning left-to-right, a dot violating any of those conditions yields LocalDot at that dot. Adjacency is detected at the SECOND dot, but an earlier invalid byte (including a leading dot) wins. Preserve the exact local spelling and case in Address.local and set Address.quoted to false.
+
+R10. For a local beginning with a quote, the closing quote must be the final local byte. Otherwise return TrailingLocal at the first byte after that closing quote, before decoding its contents. Decode the interior left-to-right; ordinary bytes must be printable ASCII 0x20..=0x7e. Any other ordinary byte, including TAB/CR/LF/DEL, yields QuotedChar at that byte. Ordinary @, spaces, dots and parentheses are allowed and retained.
+
+R11. Inside the quoted interior the ONLY permitted backslash escapes are \" (double quote), \\ (backslash), and \@ (at-sign). Decode each to its second byte; an unsupported escape yields BadEscape at its backslash. These content/escape errors precede decoded length/emptiness checks. An escaped byte is considered to originate at the BACKSLASH for all later position reporting.
+
+R12. After quoted decoding, zero decoded bytes yields EmptyLocal at the closing quote. More than 64 decoded bytes yields LocalTooLong at the origin of the 65th decoded byte, even if its source was an escape. Otherwise Address.local contains the decoded interior and Address.quoted is true; dot-atom restrictions do not apply to it.
+
+R13. Validate the domain only after the local succeeds. Remove exactly ONE final dot from the raw cleaned domain if present. This is a root marker, not an empty label. A domain empty after removal yields EmptyDomain at the domain start (position after @; input.len() if no retained byte is there). Do not remove any other dots.
+
+R14. The domain AFTER removal of that root marker must have at most 253 bytes. Otherwise return DomainTooLong at its 254th byte, before any label checks. The removed dot does not count towards length.
+
+R15. Split the domain on dots, preserving empty labels; process labels left-to-right. An empty label yields EmptyLabel at its start: the leading dot for a leading empty label, the second dot for an interior empty label, or the removed root dot for an empty last label after root removal.
+
+R16. For each nonempty label, length > 63 bytes yields LabelTooLong at its 64th byte before any character or hyphen checks. Earlier labels are validated completely before later labels.
+
+R17. For each label of valid length, check a leading hyphen first (LabelHyphen at its first byte), then a trailing hyphen (LabelHyphen at its last byte), THEN scan for character errors. Thus a label starting and ending with hyphen reports the leading one, even if another bad character exists inside.
+
+R18. Label content may contain only ASCII letters, digits, and hyphens; the first disallowed byte yields DomainChar at its byte. Underscores, brackets, spaces, quotes, domain literals, and IP literals in brackets are unsupported.
+
+R19. After all labels succeed, require at least TWO labels; otherwise DomainNeedsDot at the domain start. This precedes the final-label numeric check. There are no exceptions for localhost.
+
+R20. After the label-count check, if every byte of the last label is an ASCII digit return NumericTld at that label's start. Mixed letters/digits and hyphens in the final label are permitted. Otherwise return Address with domain ASCII-lowercased and without the root marker; local case is preserved.
+
+R21. Overall address error precedence is exactly: raw empty, non-ASCII, cleanup lexical, cleanup boundary, cleaned empty, quoted prefix closing search, separator count, empty local, local validation, empty domain, total domain length, each label in order (empty, length, leading hyphen, trailing hyphen, character), label count, numeric last label. There is no total address length limit beyond the local/domain limits. No DNS lookup, IDNA conversion or Unicode processing.
+
+R22. CFWS consists of outside-quote SPACE, TAB, valid folding whitespace, and comments. Remove it entirely; do not insert spaces. Maximal adjacent runs of these constructs are one CFWS run, even when mixing comments and whitespace. Preserve an original-byte position map for retained bytes.
+
+R23. A valid fold is exactly CR LF followed by at least one SPACE or TAB; consume CR LF and the whole following horizontal-whitespace run. At any unprotected CR or LF, if this pattern is absent return BadFold at that CR or LF. A bare LF is never a fold; CRLF without following horizontal whitespace is invalid. These fold rules apply both outside quotes and inside comments.
+
+R24. Outside the protected quoted local prefix, ( starts a comment. Comments nest, with maximum simultaneous depth THREE; an opening parenthesis increasing depth to FOUR yields CommentDepth at that parenthesis. An unescaped ) closes the current comment. EOF with any depth open yields UnclosedComment at the OUTERMOST opening parenthesis. A ) outside comments and the protected quote yields UnexpectedClose at that byte.
+
+R25. In comments a backslash must be followed by one printable ASCII byte 0x20..=0x7e. It consumes the pair as literal comment content; escaped parentheses do not change depth. A missing second byte or a second byte outside that range yields CommentEscape at the backslash, before EOF/unclosed handling. Any other comment byte must be printable ASCII, TAB, a delimiter, or part of a valid fold; otherwise CommentChar at that byte. Double quotes and @ inside comments are ordinary content.
+
+R26. Quote protection during cleanup starts ONLY at a double quote that is the first retained byte. In that prefix copy every byte unchanged through the first unescaped closing quote; a backslash copies itself and the next byte unchanged if present. Do not treat parentheses or whitespace as CFWS inside it, and do not validate quoted escapes/content during cleanup. Later quotes never open protection. If EOF arrives inside it, cleanup itself succeeds; the closing-search stage returns UnclosedQuote (unless an earlier cleanup boundary fails).
+
+R27. After the entire lexical cleanup succeeds, inspect CFWS runs in original order. Each run is legal ONLY if it is at the beginning/end of the cleaned sequence OR immediately adjacent to a retained @ on either side. Otherwise CfwsBoundary at the FIRST original byte of the run, even if removal would leave an otherwise valid address. Inside-comment whitespace belongs to its containing run; quoted whitespace is retained and creates no run.
+
+R28. Consequences: leading/trailing CFWS and CFWS on either side of the separator are allowed; CFWS between local atom characters, at a domain dot, or between a closing local quote and a non-@ trailing local byte is forbidden. CFWS-only input gives EmptyInput after successful cleanup, while malformed CFWS-only input gives its lexical error. Original offset mapping applies to ALL address errors after cleanup.
+
+R29. Comments and folds may be arbitrarily long; only nested comment depth is limited. Validation is deterministic and must handle at least 20,000 input bytes without panics or exponential work. Use ASCII rules even when comments would otherwise be discarded.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Clauses: R9.
+#[test]
+fn public_atom_address() {
+    assert_eq!(parse_email("Ada.Lovelace@Mail.Example"), Ok(Address { local: "Ada.Lovelace".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R12.
+#[test]
+fn public_quoted_local() {
+    assert_eq!(parse_email("\"Ada Lovelace\\@home\"@Example.COM"), Ok(Address { local: "Ada Lovelace@home".into(), domain: "example.com".into(), quoted: true }));
+}
+// Clauses: R22.
+#[test]
+fn public_comments_and_fold() {
+    assert_eq!(parse_email("(name) User (note) @\r\n\tMail.Example (end)"), Ok(Address { local: "User".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R27.
+#[test]
+fn public_boundary_error() {
+    assert_eq!(parse_email("first last@mail.example"), Err(EmailError::CfwsBoundary { at: 5 }));
+}
+```
+
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+#[derive(Clone, Copy)]
+struct Run {
+    start: usize,
+    end: usize,
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn is_fold(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) != Some(&b'\r') || bytes.get(i + 1) != Some(&b'\n') {
+        return None;
+    }
+    let mut j = i + 2;
+    if !bytes.get(j).copied().map(is_hws).unwrap_or(false) {
+        return None;
+    }
+    while bytes.get(j).copied().map(is_hws).unwrap_or(false) {
+        j += 1;
+    }
+    Some(j)
+}
+
+fn cleanup(input: &[u8]) -> Result<(Vec<u8>, Vec<usize>, Vec<Run>), EmailError> {
+    let mut clean = Vec::with_capacity(input.len());
+    let mut positions = Vec::with_capacity(input.len());
+    let mut runs = Vec::new();
+    let mut i = 0;
+    let mut quote_protected = false;
+    let mut quote_closed = false;
+
+    while i < input.len() {
+        if quote_protected && !quote_closed {
+            let b = input[i];
+            clean.push(b);
+            positions.push(i);
+            i += 1;
+            if b == b'\\' {
+                if i < input.len() {
+                    clean.push(input[i]);
+                    positions.push(i);
+                    i += 1;
+                }
+            } else if b == b'"' {
+                quote_closed = true;
+            }
+            continue;
+        }
+
+        if !quote_protected && clean.is_empty() && input[i] == b'"' {
+            quote_protected = true;
+            clean.push(input[i]);
+            positions.push(i);
+            i += 1;
+            continue;
+        }
+
+        let b = input[i];
+        if b == b'(' {
+            let run_start = i;
+            let outer = i;
+            let mut depth = 0usize;
+            while i < input.len() {
+                let c = input[i];
+                if c == b'\\' {
+                    let slash = i;
+                    if i + 1 >= input.len()
+                        || !(0x20..=0x7e).contains(&input[i + 1])
+                    {
+                        return Err(EmailError::CommentEscape { at: slash });
+                    }
+                    i += 2;
+                    continue;
+                }
+                if c == b'\r' || c == b'\n' {
+                    if let Some(end) = is_fold(input, i) {
+                        i = end;
+                        continue;
+                    }
+                    return Err(EmailError::BadFold { at: i });
+                }
+                if c == b'(' {
+                    depth += 1;
+                    if depth > 3 {
+                        return Err(EmailError::CommentDepth { at: i });
+                    }
+                    i += 1;
+                    continue;
+                }
+                if c == b')' {
+                    depth -= 1;
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                if c == b'\t' || (0x20..=0x7e).contains(&c) {
+                    i += 1;
+                    continue;
+                }
+                return Err(EmailError::CommentChar { at: i });
+            }
+            if depth != 0 {
+                return Err(EmailError::UnclosedComment { at: outer });
+            }
+            while i < input.len() {
+                let c = input[i];
+                if is_hws(c) {
+                    i += 1;
+                    continue;
+                }
+                if let Some(end) = is_fold(input, i) {
+                    i = end;
+                    continue;
+                }
+                if c == b'(' {
+                    // Adjacent comments are part of the same CFWS run.
+                    // Scan them in the outer loop, preserving one run.
+                    break;
+                }
+                break;
+            }
+            runs.push(Run { start: run_start, end: i });
+            continue;
+        }
+
+        if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+        if b == b'\r' || b == b'\n' {
+            let Some(end) = is_fold(input, i) else {
+                return Err(EmailError::BadFold { at: i });
+            };
+            let start = i;
+            i = end;
+            while i < input.len() {
+                if is_hws(input[i]) {
+                    i += 1;
+                } else if let Some(end) = is_fold(input, i) {
+                    i = end;
+                } else if input[i] == b'(' {
+                    // The following comment is absorbed on the next pass.
+                    break;
+                } else {
+                    break;
+                }
+            }
+            runs.push(Run { start, end: i });
+            continue;
+        }
+        if is_hws(b) {
+            let start = i;
+            while i < input.len() {
+                if is_hws(input[i]) {
+                    i += 1;
+                } else if let Some(end) = is_fold(input, i) {
+                    i = end;
+                } else {
+                    break;
+                }
+            }
+            runs.push(Run { start, end: i });
+            continue;
+        }
+
+        clean.push(b);
+        positions.push(i);
+        i += 1;
+
+        if quote_protected && quote_closed {
+            // Protection is limited to the initial quoted local.
+            quote_protected = false;
+        }
+    }
+
+    // Merge adjacent CFWS constructs into maximal runs.
+    runs.sort_by_key(|r| r.start);
+    let mut merged: Vec<Run> = Vec::new();
+    for run in runs {
+        if let Some(last) = merged.last_mut() {
+            if run.start <= last.end {
+                last.end = last.end.max(run.end);
+                continue;
+            }
+        }
+        merged.push(run);
+    }
+    Ok((clean, positions, merged))
+}
+
+fn original_pos(positions: &[usize], idx: usize, input_len: usize) -> usize {
+    positions.get(idx).copied().unwrap_or(input_len)
+}
+
+fn is_local_atom(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    if let Some(i) = bytes.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at: i });
+    }
+
+    let (clean, positions, runs) = cleanup(bytes)?;
+    for run in &runs {
+        let left_edge = run.start == 0;
+        let right_edge = run.end == bytes.len();
+        let left_at = positions.last().copied().map(|p| p < run.start);
+        let right_at = positions.iter().copied().find(|&p| p >= run.end);
+        let legal_left = left_edge
+            || left_at
+                .map(|_| {
+                    clean
+                        .iter()
+                        .enumerate()
+                        .find(|(idx, _)| positions[*idx] >= run.start)
+                        .and_then(|(idx, _)| idx.checked_sub(1).map(|j| clean[j]))
+                        == Some(b'@')
+                })
+                .unwrap_or(false);
+        let legal_right = right_edge
+            || right_at
+                .and_then(|p| positions.iter().position(|&x| x == p))
+                .map(|idx| clean[idx] == b'@')
+                .unwrap_or(false);
+        if !legal_left && !legal_right {
+            return Err(EmailError::CfwsBoundary { at: run.start });
+        }
+    }
+
+    if clean.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quoted_end = None;
+    if clean[0] == b'"' {
+        let mut i = 1;
+        while i < clean.len() {
+            if clean[i] == b'\\' {
+                i += 2;
+            } else if clean[i] == b'"' {
+                quoted_end = Some(i);
+                break;
+            } else {
+                i += 1;
+            }
+        }
+        if quoted_end.is_none() {
+            return Err(EmailError::UnclosedQuote {
+                at: original_pos(&positions, 0, bytes.len()),
+            });
+        }
+    }
+
+    let mut ats = Vec::new();
+    let mut i = 0;
+    while i < clean.len() {
+        if let Some(end) = quoted_end {
+            if i <= end {
+                i = end + 1;
+                continue;
+            }
+        }
+        if clean[i] == b'@' {
+            ats.push(i);
+        }
+        i += 1;
+    }
+    if ats.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if ats.len() > 1 {
+        return Err(EmailError::MultipleAt {
+            at: original_pos(&positions, ats[1], bytes.len()),
+        });
+    }
+
+    let at_idx = ats[0];
+    if at_idx == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: original_pos(&positions, at_idx, bytes.len()),
+        });
+    }
+
+    let mut local = String::new();
+    let quoted = clean[0] == b'"';
+    if !quoted {
+        if at_idx > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: original_pos(&positions, 64, bytes.len()),
+            });
+        }
+        for i in 0..at_idx {
+            let b = clean[i];
+            if b == b'.' {
+                if i == 0 || i + 1 == at_idx || clean[i - 1] == b'.' {
+                    return Err(EmailError::LocalDot {
+                        at: original_pos(&positions, i, bytes.len()),
+                    });
+                }
+            } else if !is_local_atom(b) {
+                return Err(EmailError::LocalChar {
+                    at: original_pos(&positions, i, bytes.len()),
+                });
+            }
+        }
+        local.push_str(std::str::from_utf8(&clean[..at_idx]).unwrap());
+    } else {
+        let end = quoted_end.unwrap();
+        if end + 1 != at_idx {
+            return Err(EmailError::TrailingLocal {
+                at: original_pos(&positions, end + 1, bytes.len()),
+            });
+        }
+        let mut decoded = Vec::new();
+        let mut origins = Vec::new();
+        let mut i = 1;
+        while i < end {
+            let b = clean[i];
+            if b == b'\\' {
+                if i + 1 >= end || !matches!(clean[i + 1], b'"' | b'\\' | b'@') {
+                    return Err(EmailError::BadEscape {
+                        at: original_pos(&positions, i, bytes.len()),
+                    });
+                }
+                decoded.push(clean[i + 1]);
+                origins.push(positions[i]);
+                i += 2;
+            } else {
+                if !(0x20..=0x7e).contains(&b) {
+                    return Err(EmailError::QuotedChar {
+                        at: original_pos(&positions, i, bytes.len()),
+                    });
+                }
+                decoded.push(b);
+                origins.push(positions[i]);
+                i += 1;
+            }
+        }
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: original_pos(&positions, end, bytes.len()),
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong { at: origins[64] });
+        }
+        local = String::from_utf8(decoded).unwrap();
+    }
+
+    let domain_start_idx = at_idx + 1;
+    let domain_start = original_pos(&positions, domain_start_idx, bytes.len());
+    if domain_start_idx >= clean.len() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+
+    let mut domain_end = clean.len();
+    let root_pos;
+    if clean[domain_end - 1] == b'.' {
+        root_pos = Some(positions[domain_end - 1]);
+        domain_end -= 1;
+    } else {
+        root_pos = None;
+    }
+    if domain_start_idx >= domain_end {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+    let domain_len = domain_end - domain_start_idx;
+    if domain_len > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: original_pos(&positions, domain_start_idx + 253, bytes.len()),
+        });
+    }
+
+    let mut label_starts = Vec::new();
+    let mut label_ends = Vec::new();
+    let mut start = domain_start_idx;
+    for i in domain_start_idx..=domain_end {
+        if i == domain_end || clean[i] == b'.' {
+            if start == i {
+                let pos = if i == domain_end {
+                    root_pos.unwrap_or_else(|| original_pos(&positions, i, bytes.len()))
+                } else {
+                    original_pos(&positions, i, bytes.len())
+                };
+                return Err(EmailError::EmptyLabel { at: pos });
+            }
+            let len = i - start;
+            if len > 63 {
+                return Err(EmailError::LabelTooLong {
+                    at: original_pos(&positions, start + 63, bytes.len()),
+                });
+            }
+            if clean[start] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: original_pos(&positions, start, bytes.len()),
+                });
+            }
+            if clean[i - 1] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: original_pos(&positions, i - 1, bytes.len()),
+                });
+            }
+            for j in start..i {
+                if !clean[j].is_ascii_alphanumeric() && clean[j] != b'-' {
+                    return Err(EmailError::DomainChar {
+                        at: original_pos(&positions, j, bytes.len()),
+                    });
+                }
+            }
+            label_starts.push(start);
+            label_ends.push(i);
+            start = i + 1;
+        }
+    }
+
+    if label_starts.len() < 2 {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+    let last_start = *label_starts.last().unwrap();
+    let last_end = *label_ends.last().unwrap();
+    if clean[last_start..last_end].iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: original_pos(&positions, last_start, bytes.len()),
+        });
+    }
+
+    let domain = clean[domain_start_idx..domain_end]
+        .iter()
+        .map(|&b| b.to_ascii_lowercase() as char)
+        .collect();
+    Ok(Address {
+        local,
+        domain,
+        quoted,
+    })
+}
+```
+
+## Public test results
+
+
+running 4 tests
+test a2d_public_8f498e6561a857c5::public_atom_address ... ok
+test a2d_public_8f498e6561a857c5::public_comments_and_fold ... ok
+test a2d_public_8f498e6561a857c5::public_quoted_local ... ok
+test a2d_public_8f498e6561a857c5::public_boundary_error ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+
+
+## Reviewer findings about this file
+
+1. R27–R28: CFWS immediately after a retained @ is incorrectly rejected unless it is trailing or also followed by @. For example, `a@ example.com` returns CfwsBoundary at byte 2 instead of succeeding. The left-neighbor check uses positions.last(), which examines the final retained byte rather than the byte immediately preceding the run. Check the actual preceding retained byte when deciding whether a CFWS run is adjacent to @.
+
+Check these findings against the original requirements. Correct supported defects while preserving required behavior and the public API. Avoid unrelated rewrites.
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

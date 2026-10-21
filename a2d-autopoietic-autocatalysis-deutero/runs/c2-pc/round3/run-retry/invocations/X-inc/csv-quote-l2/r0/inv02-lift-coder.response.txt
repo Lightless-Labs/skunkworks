@@ -1,0 +1,309 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+    InvalidConfig { component: ConfigPart },
+    DuplicateHeader { name: String, first: usize, second: usize },
+    HeaderWidth { record: usize, expected: usize, actual: usize },
+    ReaderFinished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPart {
+    Delimiter,
+    Quote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy {
+    Reject,
+    KeepFirst,
+    KeepLast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub headers: bool,
+    pub duplicates: DuplicatePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub header: Option<Vec<String>>,
+    pub rows: Vec<Vec<String>>,
+    pub duplicates: DuplicatePolicy,
+}
+
+impl Table {
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        let header = self.header.as_ref()?;
+        match self.duplicates {
+            DuplicatePolicy::KeepLast => header.iter().rposition(|column| column == name),
+            DuplicatePolicy::Reject | DuplicatePolicy::KeepFirst => {
+                header.iter().position(|column| column == name)
+            }
+        }
+    }
+}
+
+pub struct StreamReader {
+    config: Config,
+    input: String,
+    result: Option<Result<Table, CsvError>>,
+}
+
+fn validate_config(config: Config) -> Result<(), CsvError> {
+    if !(0x21..=0x7e).contains(&config.delimiter) {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Delimiter,
+        });
+    }
+    if !(0x21..=0x7e).contains(&config.quote) {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Quote,
+        });
+    }
+    if config.delimiter == config.quote {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Quote,
+        });
+    }
+    Ok(())
+}
+
+fn parse_with(input: &str, delimiter: u8, quote: u8) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let start = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        3
+    } else {
+        0
+    };
+
+    let mut records = Vec::new();
+    if start == bytes.len() {
+        return Ok(records);
+    }
+
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut index = start;
+    let mut record_index = 0usize;
+
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut opening_quote = 0usize;
+    let mut field_started = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: index,
+            });
+        }
+
+        if !quoted && byte == b'\r' {
+            if index + 1 >= bytes.len() || bytes[index + 1] != b'\n' {
+                return Err(CsvError::BareCr {
+                    record: record_index,
+                    byte: index,
+                });
+            }
+        }
+
+        if quoted {
+            if byte == quote {
+                if index + 1 < bytes.len() && bytes[index + 1] == quote {
+                    field.push(quote as char);
+                    index += 2;
+                    continue;
+                }
+                quoted = false;
+                after_quote = true;
+                index += 1;
+                continue;
+            }
+            field.push(byte as char);
+            index += 1;
+            continue;
+        }
+
+        if after_quote {
+            if byte == delimiter {
+                record.push(std::mem::take(&mut field));
+                after_quote = false;
+                field_started = false;
+                index += 1;
+                continue;
+            }
+            if byte == b'\n' || byte == b'\r' {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+                record_index += 1;
+                after_quote = false;
+                field_started = false;
+                index += if byte == b'\r' { 2 } else { 1 };
+                continue;
+            }
+            return Err(CsvError::TrailingByte {
+                record: record_index,
+                byte: index,
+            });
+        }
+
+        if byte == delimiter {
+            record.push(std::mem::take(&mut field));
+            field_started = false;
+            index += 1;
+            continue;
+        }
+
+        if byte == b'\n' || byte == b'\r' {
+            record.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut record));
+            record_index += 1;
+            field_started = false;
+            index += if byte == b'\r' { 2 } else { 1 };
+            continue;
+        }
+
+        if byte == quote {
+            if field_started {
+                return Err(CsvError::UnexpectedQuote {
+                    record: record_index,
+                    byte: index,
+                });
+            }
+            quoted = true;
+            opening_quote = index;
+            field_started = true;
+            index += 1;
+            continue;
+        }
+
+        field.push(byte as char);
+        field_started = true;
+        index += 1;
+    }
+
+    if quoted {
+        return Err(CsvError::UnclosedQuote {
+            record: record_index,
+            byte: opening_quote,
+        });
+    }
+
+    if after_quote || field_started || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_with(input, b',', b'"')
+}
+
+fn make_table(records: Vec<Vec<String>>, config: Config) -> Result<Table, CsvError> {
+    if !config.headers {
+        return Ok(Table {
+            header: None,
+            rows: records,
+            duplicates: config.duplicates,
+        });
+    }
+
+    let mut records = records.into_iter();
+    let Some(header) = records.next() else {
+        return Ok(Table {
+            header: None,
+            rows: Vec::new(),
+            duplicates: config.duplicates,
+        });
+    };
+
+    if config.duplicates == DuplicatePolicy::Reject {
+        for second in 0..header.len() {
+            if let Some(first) = header[..second]
+                .iter()
+                .position(|name| name == &header[second])
+            {
+                return Err(CsvError::DuplicateHeader {
+                    name: header[second].clone(),
+                    first,
+                    second,
+                });
+            }
+        }
+    }
+
+    let expected = header.len();
+    let mut rows = Vec::new();
+    for (offset, row) in records.enumerate() {
+        if row.len() != expected {
+            return Err(CsvError::HeaderWidth {
+                record: offset + 1,
+                expected,
+                actual: row.len(),
+            });
+        }
+        rows.push(row);
+    }
+
+    Ok(Table {
+        header: Some(header),
+        rows,
+        duplicates: config.duplicates,
+    })
+}
+
+impl StreamReader {
+    pub fn new(config: Config) -> Result<Self, CsvError> {
+        validate_config(config)?;
+        Ok(Self {
+            config,
+            input: String::new(),
+            result: None,
+        })
+    }
+
+    pub fn feed(&mut self, chunk: &str) -> Result<(), CsvError> {
+        if self.result.is_some() {
+            return Err(CsvError::ReaderFinished);
+        }
+        self.input.push_str(chunk);
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<Table, CsvError> {
+        if let Some(result) = &self.result {
+            return result.clone();
+        }
+
+        let result = parse_with(&self.input, self.config.delimiter, self.config.quote)
+            .and_then(|records| make_table(records, self.config));
+        self.result = Some(result.clone());
+        result
+    }
+
+    pub fn reset(&mut self) {
+        self.input.clear();
+        self.result = None;
+    }
+}
+
+pub fn read_csv(input: &str, config: Config) -> Result<Table, CsvError> {
+    let mut reader = StreamReader::new(config)?;
+    reader.feed(input)?;
+    reader.finish()
+}
+```

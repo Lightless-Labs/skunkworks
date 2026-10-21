@@ -1,0 +1,264 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Resume {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Preempt {
+        remaining: u64,
+        by: u32,
+    },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Waiting {
+    customer: Customer,
+    remaining: u64,
+    started: bool,
+    pause_time: Option<u64>,
+}
+
+struct Running {
+    customer: Customer,
+    remaining: u64,
+    work_at: u64,
+    finish: u64,
+}
+
+fn waiter_precedes(a: &Waiting, b: &Waiting) -> bool {
+    if a.customer.priority != b.customer.priority {
+        return a.customer.priority < b.customer.priority;
+    }
+    match (a.pause_time, b.pause_time) {
+        (Some(at), Some(bt)) => {
+            at < bt || (at == bt && a.customer.id < b.customer.id)
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => {
+            a.customer.arrival < b.customer.arrival
+                || (a.customer.arrival == b.customer.arrival
+                    && a.customer.id > b.customer.id)
+        }
+    }
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    let mut arrivals: Vec<Customer> = customers.to_vec();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut trace = Vec::new();
+    let mut waiting: Vec<Waiting> = Vec::new();
+    let mut running: Option<Running> = None;
+    let mut next_arrival = 0usize;
+    let mut last_dispatched: Option<u32> = None;
+    let mut now: Option<u64> = None;
+
+    while next_arrival < arrivals.len() || running.is_some() || !waiting.is_empty() {
+        let mut tick = None;
+        if next_arrival < arrivals.len() {
+            tick = Some(arrivals[next_arrival].arrival);
+        }
+        if let Some(active) = &running {
+            tick = Some(tick.map_or(active.finish, |t| t.min(active.finish)));
+            if active.work_at > now.unwrap_or(0) {
+                tick = Some(tick.map_or(active.work_at, |t| t.min(active.work_at)));
+            }
+        }
+        let t = tick.expect("pending work must have a next tick");
+        now = Some(t);
+
+        if running.as_ref().is_some_and(|active| active.finish == t) {
+            let active = running.take().unwrap();
+            trace.push(Event {
+                time: t,
+                customer: active.customer.id,
+                kind: Kind::Finish,
+            });
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == t {
+            let customer = arrivals[next_arrival].clone();
+            trace.push(Event {
+                time: t,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(Waiting {
+                remaining: customer.service,
+                customer,
+                started: false,
+                pause_time: None,
+            });
+            next_arrival += 1;
+        }
+
+        if let Some(active) = &running {
+            if t >= active.work_at {
+                let best = waiting
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        if waiter_precedes(a, b) {
+                            std::cmp::Ordering::Less
+                        } else if waiter_precedes(b, a) {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .map(|(index, _)| index);
+
+                if let Some(index) = best {
+                    if waiting[index].customer.priority < active.customer.priority {
+                        let by = waiting[index].customer.id;
+                        let active = running.take().unwrap();
+                        let remaining = active.finish - t;
+                        trace.push(Event {
+                            time: t,
+                            customer: active.customer.id,
+                            kind: Kind::Preempt { remaining, by },
+                        });
+                        waiting.push(Waiting {
+                            customer: active.customer,
+                            remaining,
+                            started: true,
+                            pause_time: Some(t),
+                        });
+                    }
+                }
+            }
+        }
+
+        while running.is_none() && !waiting.is_empty() {
+            let best_index = waiting
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    if waiter_precedes(a, b) {
+                        std::cmp::Ordering::Less
+                    } else if waiter_precedes(b, a) {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .map(|(index, _)| index)
+                .unwrap();
+
+            let selected = waiting.remove(best_index);
+            let customer_id = selected.customer.id;
+            let cost = if last_dispatched.is_some_and(|id| id != customer_id) {
+                switch_cost
+            } else {
+                0
+            };
+            let work_at = t.checked_add(cost).ok_or(Error::TimeOverflow {
+                customer: customer_id,
+                time: t,
+            })?;
+            let finish = work_at
+                .checked_add(selected.remaining)
+                .ok_or(Error::TimeOverflow {
+                    customer: customer_id,
+                    time: t,
+                })?;
+
+            let kind = if selected.started {
+                Kind::Resume {
+                    remaining: selected.remaining,
+                    work_at,
+                    finish,
+                }
+            } else {
+                Kind::Start {
+                    remaining: selected.remaining,
+                    work_at,
+                    finish,
+                }
+            };
+            trace.push(Event {
+                time: t,
+                customer: customer_id,
+                kind,
+            });
+            last_dispatched = Some(customer_id);
+
+            if finish == t {
+                trace.push(Event {
+                    time: t,
+                    customer: customer_id,
+                    kind: Kind::Finish,
+                });
+            } else {
+                running = Some(Running {
+                    customer: selected.customer,
+                    remaining: selected.remaining,
+                    work_at,
+                    finish,
+                });
+            }
+        }
+    }
+
+    Ok(trace)
+}
+```
