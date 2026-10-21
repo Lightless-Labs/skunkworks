@@ -76,6 +76,9 @@ FIXED_DISCLOSURES = [
     "available (a Luna coder occasionally listed empty resources; such tuples were voided there too). Confirmation-3 "
     "runs with code_mode_host off, so no MCP tool exists; codex then emits one fixed pre-turn notice, exempt from the "
     "count, whose presence the runner requires on every call. Symmetric across arms; injected instructions unchanged.",
+    "Relaunch: a first attempt that dies with calls in flight leaves unmatched invocation_started records, which "
+    "are unauditable and make the run IntegrityReview; the one relaunch therefore rescues only failures without "
+    "calls in flight (fail closed).",
     "Operations during the spend windows: generation runs detached; other Luna work (phase-B rounds, dev runs) is "
     "held while a replicate generates; codex is not upgraded (a fingerprint change voids the replicate).",
     "Injected context: codex 0.162 injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k) "
@@ -327,8 +330,9 @@ def build(args, suite):
                                "record, a call without its transcript) or with its own rate above 0.5%, a malformed "
                                "replicate summary, or the controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
-                       "own Invalid, an aborted run, or a missing or malformed comparison or summary (an aborted "
-                       "generation is a failed attempt: failure_policy)",
+                       "own Invalid, an aborted run, or a missing or malformed pooled summary or comparison (a "
+                       "missing or malformed replicate summary is IntegrityReview; an aborted generation is a failed "
+                       "attempt: failure_policy)",
             "void tuple": "void or unscored submission; any tool event on the submission or on any of its "
                           "invocation records (lane calls included), by the binary's count or by the runner's own "
                           "recount of the transcript; any invocation without a --json transcript carrying the stderr "
