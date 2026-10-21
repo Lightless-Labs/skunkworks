@@ -1930,3 +1930,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Round 3: informed `repair-completion-audit` 0, uninformed `contrastive-review` 0. Both screen-fail. The first run was integrity-invalid on 3 Sol capacity failures; the re-run was valid.
   - So far, 6 proposals from each arm, all screen-fail, with the best at +1 net task. That fits a near-ceiling incumbent (E007 dev all-pass about 95%), where 35-task quarters leave about 1–2 tasks of headroom.
   - Rounds 4–6: round 4 at ≥ 00:10 UTC 10-22 (proposals generated today; the Luna cap is used), round 5 on 10-22, round 6 on 10-23 (finishing before about 22:00).
+
+### Phase B stops at R = 4 (pre-committed 10-21 ~10:40 UTC, before round 4 reports)  [cycle 2]
+- **Decision:** round 4 runs as armed (00:10 UTC 10-22). Then phase B stops: no rounds 5–6 and no continuation. Both registered endpoints are analysed at R = 4 as registered (R = 4 is the protocol's minimum for the precision metric), plus the blinded idea-category labels.
+- **Why** (using only quantities known before round 1): the dev gym is saturated for the incumbent.
+  - E007 solved 130/140 and 137/140 on its two full replicates.
+  - By level, over both replicates: l1 70/70, l2 68/70, l3 66/70, l4 63/70.
+  - 28 of 35 families are fully solved in both.
+  - So a 35-task round quarter has at most about 2 tasks of headroom, against a +2-net screen. Rounds 1–3 match this (6/6 screen-fail, best +1 net).
+- **Deviation from the frozen R = 6:** disclosed as a budget reallocation. The roughly 1–2k Luna saved goes to **gym v3**, a harder dev gym calibrated so the incumbent passes about 40–60%, authored by the blind pipeline; plan to follow.
+- **Report finding:** the search's ceiling became the gym's ceiling after two keeps (E002, then E007). The proposer comparison needs a gym with headroom, and that is next cycle's first deliverable.
