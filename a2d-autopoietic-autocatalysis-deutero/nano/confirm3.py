@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import statistics
 import subprocess
@@ -56,6 +57,8 @@ def transcript_ok(out, prompt_path):
     """The invocation's transcript exists under this out dir in the merged provider's --json
     format (events, marker, stderr). A legacy text transcript means another provider: void.
     The codex version is pinned by bracketing the replicate (no banner under --json)."""
+    if not isinstance(prompt_path, str):
+        return False
     parts = pathlib.PurePath(prompt_path).parts
     if "invocations" not in parts or not parts[-1].endswith(".prompt.txt"):
         return False
@@ -66,6 +69,61 @@ def transcript_ok(out, prompt_path):
         return CODEX_STDERR_MARKER in f.read()
 
 
+def test_names(source):
+    """The controller's `validate::test_names`, ported line for line (#[test] functions)."""
+    names, armed = set(), False
+    for line in (raw.strip() for raw in source.splitlines()):
+        if line.startswith("#[test]") and line[len("#[test]"):].lstrip().startswith("fn "):
+            names.add(re.split(r"[(< ]", line[len("#[test]"):].lstrip()[3:], maxsplit=1)[0])
+            continue
+        if line == "#[test]":
+            armed = True
+        elif armed and line.startswith("fn "):
+            names.add(re.split(r"[(< ]", line[3:], maxsplit=1)[0])
+            armed = False
+        elif armed and not line.startswith("#[") and line:
+            armed = False
+    return names
+
+
+def failed_attempt_audit(out, tasks):
+    """A failed first attempt's integrity evidence, kept after a relaunch (Sol registration
+    review, 10-21): every recorded invocation and its tool events; an invocation without an
+    auditable --json transcript counts as one tool event (fail closed); and the controller's
+    hidden-test-name scan of the attempt's prompts. Counts only."""
+    out = pathlib.Path(out)
+    invocations = tools = unaudited = 0
+    if (out / "ledger.jsonl").exists():
+        for r in records(out):
+            if r.get("kind") == "invocation":
+                invocations += 1
+                tools += r.get("tool_calls") or 0
+                if not transcript_ok(out, r.get("prompt_path", "")):
+                    unaudited += 1
+    hits = 0
+    for task in tasks:
+        names = (test_names((SUITE / task / "hidden_tests.rs").read_text())
+                 - test_names((SUITE / task / "public_tests.rs").read_text()))
+        if not names:
+            continue
+        pattern = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(map(re.escape, sorted(names))) + r")(?![A-Za-z0-9_])")
+        for prompt in sorted((out / "invocations").glob(f"*/{task}/**/*.prompt.txt")):
+            if pattern.search(prompt.read_text(errors="replace")):
+                hits += 1
+    return {"invocations": invocations, "tool_calls": tools + unaudited, "unaudited": unaudited,
+            "hidden_name_hits": hits}
+
+
+def merge_failed_attempt(summary, stats, rep, audit):
+    """Fold a failed attempt's audit into replicate `rep`'s counts and the run's hidden-name hits."""
+    stats[rep]["invocations"] += audit["invocations"]
+    stats[rep]["tool_calls"] += audit["tool_calls"]
+    summary = dict(summary)
+    summary["hidden_name_hits"] = list(summary.get("hidden_name_hits") or []) + \
+        [f"failed attempt r{rep}"] * audit["hidden_name_hits"]
+    return summary
+
+
 def replicate_tuples(out, rep, arms, tasks):
     """({(rep, arm, task): {"pass": bool | None, "void": bool}} for every planned (arm, task),
     {"invocations": n, "tool_calls": n}) for one replicate's out dir. The plan (arms, tasks)
@@ -74,32 +132,59 @@ def replicate_tuples(out, rep, arms, tasks):
     led = next((r for r in recs if r.get("kind") == "registration"), {})
     tuples = {(rep, arm, task): {"pass": None, "void": False} for arm in arms for task in tasks}
     stats = {"invocations": 0, "tool_calls": 0}
-    if list(led.get("arms") or []) != list(arms) or sorted(led.get("tasks") or []) != sorted(tasks):
+    planned = list(led.get("arms") or [])
+    if len(planned) != len(set(planned)) or set(planned) != set(arms) or sorted(led.get("tasks") or []) != sorted(tasks):
         for v in tuples.values():
             v["void"] = True
     claimed, seen = {}, {}
+    count = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None  # noqa: E731
+    submission_tools = invocation_tools = 0
     for r in recs:
         key = (rep, r.get("arm"), r.get("task"))
         kind = r.get("kind")
         if kind == "submission":
-            stats["invocations"] += r.get("invocations") or 0
-            stats["tool_calls"] += r.get("tool_calls") or 0
+            stats["invocations"] += count(r.get("invocations")) or 0
+            submission_tools += count(r.get("tool_calls")) or 0
+        elif kind == "invocation":
+            # Every call's own tool events count, a lane call's included (fresh-Claude review B3).
+            invocation_tools += count(r.get("tool_calls")) or 0
         if key not in tuples:
             continue
+        # A malformed field voids its tuple (fail closed); it never crashes the scoring.
         if kind == "submission":
-            claimed[key] = claimed.get(key, 0) + (r.get("invocations") or 0)
-            if r.get("void_reason") or (r.get("tool_calls") or 0) > 0:
+            n, tools = count(r.get("invocations")), count(r.get("tool_calls") or 0)
+            claimed[key] = claimed.get(key, 0) + (n or 0)
+            if n is None or tools is None or r.get("void_reason") or tools > 0:
                 tuples[key]["void"] = True
         elif kind == "score":
-            tuples[key]["pass"] = bool(r["result"]["all_passed"])
+            result = r.get("result")
+            if isinstance(result, dict) and isinstance(result.get("all_passed"), bool):
+                tuples[key]["pass"] = result["all_passed"]
+            else:
+                tuples[key]["void"] = True
         elif kind == "invocation":
             seen[key] = seen.get(key, 0) + 1
-            if not transcript_ok(out, r.get("prompt_path", "")):
+            tools = count(r.get("tool_calls") or 0)
+            if tools is None or tools > 0 or not transcript_ok(out, r.get("prompt_path", "")):
                 tuples[key]["void"] = True
+    stats["tool_calls"] = max(submission_tools, invocation_tools)
     for key, v in tuples.items():
         if v["pass"] is None or claimed.get(key, 0) != seen.get(key, 0):
             v["void"] = True
     return tuples, stats
+
+
+def lane_usage(out):
+    """Counts only: calls and tokens per (arm, provider) from a replicate's invocation records."""
+    usage = {}
+    for r in records(out):
+        if r.get("kind") != "invocation":
+            continue
+        u = usage.setdefault(str(r.get("arm")), {}).setdefault(str(r.get("provider")), {"calls": 0, "tokens": 0})
+        u["calls"] += 1
+        t = r.get("usage") if isinstance(r.get("usage"), dict) else {}
+        u["tokens"] += sum(v for k, v in t.items() if k in ("prompt_tokens", "completion_tokens") and isinstance(v, int))
+    return usage
 
 
 def family(task):
@@ -174,9 +259,10 @@ def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
     """The confirmation-3 outcome from the pooled controller summary and the tuples."""
     comparisons, classes = {}, {}
     for comp in COMPARATORS:
-        c = next((c for c in summary["comparisons"] if c["treatment"] == X and c["comparator"] == comp), None)
+        c = next((c for c in (summary.get("comparisons") or []) if isinstance(c, dict)
+                  and c.get("treatment") == X and c.get("comparator") == comp), None)
         comparisons[comp] = c
-        classes[comp] = classify(c, summary["min_families"]) if c else "Invalid"
+        classes[comp] = classify(c, summary["min_families"]) if c and "min_families" in summary else "Invalid"
     worst = {comp: bootstrap(imputed(tuples, comp, "worst"), iterations) for comp in COMPARATORS}
     best_d = bootstrap(imputed(tuples, "D", "best"), iterations)
     voids = sum(v["void"] for v in tuples.values())
@@ -186,7 +272,8 @@ def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
     integrity = (bool(summary.get("hidden_name_hits")) or any(r > TOOL_RATE_MAX + EPS for r in tool_rates.values())
                  or summary.get("claim") == "IntegrityReview" or summary.get("integrity_ok") is False
                  or "IntegrityReview" in controller_classes)
-    invalid = (void_share > VOID_SHARE_MAX + EPS or summary["excluded_share"] > summary["max_excluded_share"] + 1e-12
+    invalid = (void_share > VOID_SHARE_MAX + EPS
+               or summary.get("excluded_share", 1.0) > summary.get("max_excluded_share", 0.0) + 1e-12
                or bool(summary.get("aborted")) or summary.get("claim") == "Invalid" or "Invalid" in controller_classes
                or "Invalid" in classes.values())
     if integrity:
@@ -198,7 +285,8 @@ def decide(summary, tuples, rep_stats, iterations=BOOTSTRAP_ITERATIONS):
         ok = all(lift >= MIN_EFFECT - EPS and lo > EPS for lift, lo, _ in worst.values())
         overall = "SUPPORTED" if ok else "INCONCLUSIVE (worst-case void imputation)"
     elif classes["D"] == "RuledOut" and (comparisons["D"] or {}).get("class") == "RuledOut":
-        overall = "RULED OUT" if best_d[2] < MIN_EFFECT - EPS else "INCONCLUSIVE (best-case void imputation)"
+        overall = ("RULED OUT" if best_d[0] < MIN_EFFECT - EPS and best_d[2] < MIN_EFFECT - EPS
+                   else "INCONCLUSIVE (best-case void imputation)")
     else:
         overall = "INCONCLUSIVE"
     r4 = lambda t: [round(v, 4) for v in t]  # noqa: E731 (display only; decisions use the unrounded values)
@@ -315,6 +403,20 @@ def registration(registered_at):
     if git("merge-base", "--is-ancestor", reg["provider_commit"], sha)[0]:
         sys.exit("the registered provider commit is not in the registration's history")
     return reg
+
+
+def suite_hash_now():
+    """`a2d lift hash` of the suite with the current controller ("" on failure)."""
+    r = subprocess.run([A2D, "lift", "hash", str(SUITE)], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def crates_clean(sha):
+    """crates/, Cargo.toml and Cargo.lock equal the registration commit, with nothing untracked
+    there (the controller's --registered-at binding, checked before an attempt is reserved)."""
+    paths = ["crates", "Cargo.toml", "Cargo.lock"]
+    return (git("diff", "--quiet", sha, "--", *paths)[0] == 0
+            and not git("ls-files", "--others", "--exclude-standard", "--", *paths)[1].strip())
 
 
 def build_controller():
@@ -571,6 +673,10 @@ def cmd_generate(args):
         if deferred_today(rep, day):
             emit(stage=stage, decision="deferred (a no-go today moves the start to the next 00:05 UTC)")
             return
+        sys.path.insert(0, str(ROOT / "tools" / "holdout"))
+        from c3lib import HOLDOUT as PIPELINE_HOLDOUT
+        if PIPELINE_HOLDOUT.resolve() != HOLDOUT.resolve():
+            sys.exit("the pipeline's holdout dir (A2D_HOLDOUT_DIR) differs from the runner's")
         if not drained():
             sys.exit("the authoring pipeline is not drained (STOP, no driver, no job process)")
         if not isolation_ok():
@@ -584,6 +690,15 @@ def cmd_generate(args):
             record_deferral(rep, day, "daily Luna cap", luna_today=spent)
             emit(stage=stage, decision="deferred (daily Luna cap)", luna_today=spent, stage_worst_case=worst, cap=DAILY_CAP)
             return
+        # The registered controller is built before any model call, so the preflight probes and the
+        # generation run the same executable (Sol registration review, 10-21).
+        binary = build_controller()
+        # Deterministic preconditions the controller enforces only after the attempt is reserved
+        # (fresh-Claude review B2): refuse here, with no attempt and no model call.
+        if suite_hash_now() != reg["suite_hash"]:
+            sys.exit("the suite hash differs from the registered one (no attempt)")
+        if not crates_clean(sha):
+            sys.exit("crates/, Cargo.toml or Cargo.lock differ from the registration commit (no attempt)")
         # Preflight through the real provider: latency on the coder lane, canary on every lane.
         group = now().strftime("%Y%m%dT%H%M%SZ")
         record_probe(rep, day, group, "started")
@@ -593,7 +708,7 @@ def cmd_generate(args):
             secs, leak, tools, audited = probe_run(model, effort, n, f"r{rep}-{group}-{i}", lock.f.fileno())
             results.append({"model": model, "effort": effort, "secs": [round(s, 1) if s != float("inf") else None
                                                                        for s in secs], "leak": leak, "tool_calls": tools,
-                            "audited": audited})
+                            "audited": audited, "controller_binary_sha256": binary})
         if any(r["leak"] or r["tool_calls"] for r in results):
             record_probe(rep, day, group, "isolation-failed", lanes=results)
             sys.exit("the canary or tool preflight failed: the replicate does not start (§0.10)")
@@ -606,7 +721,8 @@ def cmd_generate(args):
             record_deferral(rep, day, reason, secs=results[0]["secs"])
             emit(stage=stage, decision=f"deferred ({reason})", secs=results[0]["secs"])
             return
-        binary = build_controller()
+        if sha256(A2D) != binary:
+            sys.exit("the controller changed between the preflight and the generation")
         reserve(attempt, {"rep": rep, "relaunch": relaunch, "registered_at": sha, "pid": os.getpid(), "codex": before,
                           "controller_binary_sha256": binary, "started_utc": now().isoformat()})
         cmd = [A2D, "lift", "run", "--experiment", f"C2-CONFIRM3-R{rep}", "--registered-at", sha,
@@ -697,6 +813,8 @@ def cmd_score(args):
         if decision_path.exists():
             sys.exit("decision.json exists; the set is scored once")
         binary = build_controller()
+        if suite_hash_now() != reg["suite_hash"]:
+            sys.exit("the suite hash differs from the registered one; nothing is scored")
         outs = {}
         for rep in (1, 2):
             rel = f"runs/c2-confirm3/manifest-r{rep}.json"
@@ -728,15 +846,23 @@ def cmd_score(args):
             if not bracket.exists() or not json.loads(bracket.read_text())["match"]:
                 for v in t.values():
                     v["void"] = True            # another codex ran, or the bracket is missing
-            if relaunch and (out_dir(rep) / "ledger.jsonl").exists():
-                for r in records(out_dir(rep)):  # the failed first attempt's tool events count too
-                    if r.get("kind") == "submission":
-                        stats[rep]["invocations"] += r.get("invocations") or 0
-                        stats[rep]["tool_calls"] += r.get("tool_calls") or 0
             tuples.update(t)
+        summary = json.loads(pooled.read_text())
+        failed = {}
+        for rep, (out, relaunch) in outs.items():
+            if relaunch and out_dir(rep).exists():   # the failed first attempt's evidence counts too
+                failed[rep] = failed_attempt_audit(out_dir(rep), reg["tasks"])
+                summary = merge_failed_attempt(summary, stats, rep, failed[rep])
         if len(tuples) != 2 * len(reg["arms"]) * len(reg["tasks"]):
             sys.exit("planned tuples do not match the registration")
-        decision = decide(json.loads(pooled.read_text()), tuples, stats)
+        for rep, (out, _) in outs.items():       # each replicate's own integrity record counts too
+            own = json.loads((out / "summary.json").read_text()) if (out / "summary.json").exists() else {}
+            summary["hidden_name_hits"] = list(summary.get("hidden_name_hits") or []) + list(own.get("hidden_name_hits") or [])
+            if own.get("integrity_ok") is False:
+                summary["integrity_ok"] = False
+        decision = decide(summary, tuples, stats)
+        decision["failed_attempt_audit"] = {str(k): v for k, v in failed.items()}
+        decision["calls_and_tokens_by_lane"] = {str(rep): lane_usage(out) for rep, (out, _) in outs.items()}
         decision["controller_binary_sha256"] = binary
         decision["skipped_eligible_days"] = skipped_days(reg)
         decision_path.write_text(json.dumps(decision, indent=1) + "\n")

@@ -9,7 +9,11 @@ records/validate.json stores the stamp and the rejected set; tasks still rejecte
 family's 2nd repair round are written to records/excluded.json (the assembly then replaces
 or drops the family, §0.11). Prints only counts and opaque task ids.
 
-usage: python3 -I tools/holdout/c3_validate.py [--binary <a2d>]
+The controller is built from the checkout (`cargo build --locked --bin a2d`) before the run, and
+records/validate.json carries its git head and binary sha256 (provenance for certification;
+Sol registration review, 10-21). `--binary` is refused outside tests.
+
+usage: python3 -I tools/holdout/c3_validate.py [--binary <a2d>]   (tests only)
 """
 import hashlib
 import re
@@ -19,7 +23,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (C3, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gateway, load_json,  # noqa: E402
+from c3lib import (C3, RECORDS, REPO, SUITE, TASK_RE, TESTING, DriverLock, emit, gateway, load_json,  # noqa: E402
                    safe_write_text, save_json, suite_digest)
 
 LINE = re.compile(r"^(c3-f\d{2}-l[1-4]): (OK|REJECT)\b")
@@ -30,8 +34,19 @@ MAX_FIX_ROUNDS = 2
 @gateway("validate")
 def main():
     args = sys.argv[1:]
+    if "--binary" in args and not TESTING:
+        emit(stage="validate", status="binary-override-refused")
+        sys.exit(2)
     binary = args[args.index("--binary") + 1] if "--binary" in args else str(REPO / "target" / "debug" / "a2d")
     with DriverLock():
+        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if not TESTING:
+            built = subprocess.run(["cargo", "build", "--locked", "--bin", "a2d"], cwd=REPO, capture_output=True,
+                                   stdin=subprocess.DEVNULL)
+            if built.returncode:
+                emit(stage="validate", status="build-failed")
+                sys.exit(1)
+        binary_sha = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
         expected = sorted(p.name for p in SUITE.iterdir() if TASK_RE.match(p.name))
         if not expected:
             raise ValueError("empty suite")
@@ -75,7 +90,8 @@ def main():
             elif target.exists() or target.is_symlink():
                 target.unlink()
         save_json(RECORDS / "validate.json", {"stamp": stamp, "sha256": sha, "rejected": rejected,
-                                              "exit": r.returncode, "suite": suite_digest()})
+                                              "exit": r.returncode, "suite": suite_digest(),
+                                              "head": head, "binary_sha256": binary_sha, "built": not TESTING})
         save_json(RECORDS / "excluded.json", {"tasks": sorted(excluded)})
         emit(stage="validate", exit=r.returncode, tasks=len(expected), count=len(expected) - len(rejected),
              missing=len(rejected), skipped=len(excluded))

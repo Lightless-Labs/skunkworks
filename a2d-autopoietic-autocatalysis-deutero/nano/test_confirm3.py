@@ -37,7 +37,8 @@ class Fixture:
         self.out = pathlib.Path(root)
         self.recs = [{"kind": "registration", "arms": list(arms), "tasks": list(tasks), "replicates": 1}]
 
-    def tuple(self, arm, task, passed=True, void=None, tools=0, transcript=JSON_TRANSCRIPT, calls=2, claimed=None):
+    def tuple(self, arm, task, passed=True, void=None, tools=0, transcript=JSON_TRANSCRIPT, calls=2, claimed=None,
+              inv_tools=0, malformed_score=False):
         d = self.out / "invocations" / arm.replace(":", "-") / task / "r0"
         d.mkdir(parents=True, exist_ok=True)
         for i in range(calls):
@@ -48,12 +49,13 @@ class Fixture:
                 (d / f"inv{i:02d}-lift-coder.transcript.txt").write_text(JSON_TRANSCRIPT if not last else transcript)
             # The ledger records the run's absolute path; scoring resolves it under this out dir.
             self.recs.append({"kind": "invocation", "arm": arm, "task": task, "replicate": 0, "index": i,
+                              "tool_calls": inv_tools if last else 0,
                               "prompt_path": f"/elsewhere/run/invocations/{arm.replace(':', '-')}/{task}/r0/{prompt.name}"})
         self.recs.append({"kind": "submission", "arm": arm, "task": task, "replicate": 0,
                           "invocations": calls if claimed is None else claimed, "tool_calls": tools, "void_reason": void})
         if not void:
             self.recs.append({"kind": "score", "arm": arm, "task": task, "replicate": 0, "family": task[:6],
-                              "result": {"all_passed": passed}})
+                              **({} if malformed_score else {"result": {"all_passed": passed}})})
 
     def write(self):
         (self.out / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in self.recs))
@@ -112,6 +114,21 @@ class Tuples(unittest.TestCase):
                                 ("X:frozen", "c3-f02-l1"), ("X:frozen", "c3-f03-l1")])
         self.assertEqual(len(t), 60)
         self.assertEqual(stats, {"invocations": 121, "tool_calls": 1})
+
+    def test_an_invocation_level_tool_event_voids_its_tuple_and_counts(self):
+        # A judge-lane call's events may not sum into the submission (fresh-Claude review B3).
+        out = self.replicate({("X:frozen", "c3-f05-l1"): {"inv_tools": 3}})
+        t, stats = self.tuples(out)
+        self.assertEqual([k for (_, a, k), v in t.items() if v["void"]], ["c3-f05-l1"])
+        self.assertEqual(stats["tool_calls"], 3)
+
+    def test_arm_order_in_the_ledger_does_not_matter(self):
+        t, _ = self.tuples(self.replicate(arms=list(reversed(ARMS))))
+        self.assertFalse(any(v["void"] for v in t.values()))
+
+    def test_a_malformed_record_is_void_not_a_crash(self):
+        t, _ = self.tuples(self.replicate({("D", "c3-f06-l1"): {"malformed_score": True}}))
+        self.assertEqual([(a, k) for (_, a, k), v in t.items() if v["void"]], [("D", "c3-f06-l1")])
 
     def test_ledger_planned_otherwise_voids_everything(self):
         t, _ = self.tuples(self.replicate(arms=["D", "X:frozen"]))
@@ -205,8 +222,65 @@ class Decide(unittest.TestCase):
             x[(1, "X:frozen", task)] = {"pass": False, "void": True}
         self.assertEqual(self.decide(s, x)["overall"], "INCONCLUSIVE (best-case void imputation)")
 
+    def test_ruled_out_needs_the_best_case_point_too(self):
+        # D voids imputed as fails can lift X's best case above +10 pp at the point while the CI
+        # bound alone would not show it with iterations=0 (point = bounds): both must hold.
+        s = summary(claim="RULED OUT", d=(0.0, -0.05, 0.08), classes=("RuledOut", "Inconclusive"))
+        t = self.tuples(x_pass=12, d_pass=10, d_void=3)
+        self.assertEqual(self.decide(s, t)["overall"], "INCONCLUSIVE (best-case void imputation)")
+
+    def test_lane_usage_counts_calls_and_tokens(self):
+        with tempfile.TemporaryDirectory() as d:
+            recs = [{"kind": "invocation", "arm": "X:frozen", "provider": "codex/gpt-6.1-sol",
+                     "usage": {"prompt_tokens": 10, "completion_tokens": 5, "reported_total": 15}},
+                    {"kind": "invocation", "arm": "X:frozen", "provider": "codex/gpt-6-luna", "usage": None}]
+            (pathlib.Path(d) / "ledger.jsonl").write_text("\n".join(map(json.dumps, recs)) + "\n")
+            self.assertEqual(c3.lane_usage(d), {"X:frozen": {"codex/gpt-6.1-sol": {"calls": 1, "tokens": 15},
+                                                             "codex/gpt-6-luna": {"calls": 1, "tokens": 0}}})
+
+    def test_a_malformed_summary_is_invalid_not_a_crash(self):
+        self.assertEqual(self.decide({"claim": "SUPPORTED"}, self.tuples())["overall"], "Invalid")
+        self.assertFalse(c3.transcript_ok("/x", None))
+
     def test_output_is_counts_only(self):
         self.assertNotIn("c3-f00", json.dumps(self.decide(summary(), self.tuples())))
+
+
+class FailedAttempt(unittest.TestCase):
+    def test_test_names_port_matches_the_controller(self):
+        self.assertEqual(c3.test_names("#[test] fn one_line() {}\n"), {"one_line"})
+        self.assertEqual(c3.test_names("fn helper() {}\n#[test]\n#[should_panic]\nfn panics() {}\n#[test]\nfn plain() {}\n"),
+                         {"panics", "plain"})
+
+    def test_audit_counts_invocations_unaudited_calls_and_hidden_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            suite, out = pathlib.Path(d) / "suite", pathlib.Path(d) / "r1"
+            (suite / "t-l1").mkdir(parents=True)
+            (suite / "t-l1" / "public_tests.rs").write_text("#[test]\nfn shown() {}\n")
+            (suite / "t-l1" / "hidden_tests.rs").write_text("#[test]\nfn shown() {}\n#[test]\nfn secret_case() {}\n")
+            inv = out / "invocations" / "X-frozen" / "t-l1" / "r0"
+            inv.mkdir(parents=True)
+            (inv / "inv00-lift-coder.prompt.txt").write_text("PROMPT shown")
+            (inv / "inv00-lift-coder.transcript.txt").write_text("{}" + c3.CODEX_STDERR_MARKER + "x")
+            (inv / "inv01-lane_judge.prompt.txt").write_text("files: fn secret_case() {}")   # no transcript
+            recs = [{"kind": "invocation", "prompt_path": str(inv / "inv00-lift-coder.prompt.txt"), "tool_calls": 2},
+                    {"kind": "invocation", "prompt_path": str(inv / "inv01-lane_judge.prompt.txt"), "tool_calls": None}]
+            (out / "ledger.jsonl").write_text("\n".join(map(json.dumps, recs)) + "\n")
+            with mock.patch.object(c3, "SUITE", suite):
+                a = c3.failed_attempt_audit(out, ["t-l1"])
+        self.assertEqual(a, {"invocations": 2, "tool_calls": 3, "unaudited": 1, "hidden_name_hits": 1})
+
+    def test_a_failed_attempts_evidence_reaches_the_decision(self):
+        stats = {1: {"invocations": 100, "tool_calls": 0}}
+        s = c3.merge_failed_attempt(summary(), stats, 1, {"invocations": 50, "tool_calls": 1, "unaudited": 1,
+                                                         "hidden_name_hits": 1})
+        self.assertEqual(stats[1], {"invocations": 150, "tool_calls": 1})
+        self.assertEqual(len(s["hidden_name_hits"]), 1)
+        t = Decide.tuples(Decide())
+        self.assertEqual(c3.decide(s, t, stats, 0)["overall"], "IntegrityReview")
+        clean = c3.merge_failed_attempt(summary(), {1: {"invocations": 100, "tool_calls": 0}}, 1,
+                                        {"invocations": 50, "tool_calls": 0, "unaudited": 0, "hidden_name_hits": 0})
+        self.assertEqual(c3.decide(clean, t, {1: {"invocations": 150, "tool_calls": 0}}, 0)["overall"], "SUPPORTED")
 
 
 class Gates(unittest.TestCase):
@@ -265,7 +339,8 @@ class Generate(unittest.TestCase):
                    "probe_run": lambda model, effort, n, tag, fd=None: ([5.0] * n, False, 0, n), "DIR": self.dir,
                    "A2D": str(root / "a2d"),
                    "out_dir": lambda rep, relaunch=False: self.runs / f"r{rep}{'-relaunch1' if relaunch else ''}",
-                   "C2_SEALED": root / "sealed.txt", "build_controller": lambda: "binsha"}
+                   "C2_SEALED": root / "sealed.txt", "build_controller": lambda: c3.sha256(root / "a2d"),
+                   "suite_hash_now": lambda: self.reg["suite_hash"], "crates_clean": lambda sha: True}
         (root / "sealed.txt").write_text("x\n")
         self.patchers = [mock.patch.object(c3, k, v) for k, v in patches.items()]
         self.patchers.append(mock.patch.object(c3.subprocess, "Popen", side_effect=self.fake_popen))
@@ -299,6 +374,35 @@ class Generate(unittest.TestCase):
         with mock.patch("sys.stdout", out):
             c3.cmd_generate(argparse.Namespace(rep=rep, registered_at="abc", relaunch=relaunch, jobs=8))
         return [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+
+    def test_deterministic_preconditions_refuse_before_any_attempt_or_call(self):
+        for name, value in (("suite_hash_now", lambda: "other"), ("crates_clean", lambda sha: False)):
+            probes = []
+            with mock.patch.object(c3, name, value), \
+                    mock.patch.object(c3, "probe_run", lambda *a, **k: probes.append(1) or ([5.0], False, 0, 1)):
+                with self.assertRaises(SystemExit):
+                    self.generate(1)
+            self.assertEqual((probes, self.calls), ([], []))
+            self.assertFalse(list(self.dir.glob("attempt-*")))
+
+    def test_controller_built_before_the_preflight_and_unchanged_at_launch(self):
+        order = []
+        real_probe = c3.probe_run
+        with mock.patch.object(c3, "build_controller", lambda: order.append("build") or c3.sha256(c3.A2D)), \
+                mock.patch.object(c3, "probe_run", lambda *a, **k: order.append("probe") or real_probe(*a, **k)):
+            self.generate(1)
+        self.assertEqual(order[0], "build")
+        self.assertIn("probe", order)
+
+    def test_a_controller_changed_after_the_preflight_stops_the_launch(self):
+        real_probe = c3.probe_run
+        def probe(*a, **k):
+            pathlib.Path(c3.A2D).write_text("other binary")
+            return real_probe(*a, **k)
+        with mock.patch.object(c3, "probe_run", probe):
+            with self.assertRaises(SystemExit):
+                self.generate(1)
+        self.assertEqual(self.calls, [])
 
     def test_generates_once_with_attempt_record_and_bracket(self):
         self.assertEqual(self.generate()[-1]["decision"], "generated (scoring deferred)")

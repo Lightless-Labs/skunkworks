@@ -45,8 +45,26 @@ FIXED_DISCLOSURES = [
     "Authorship: the tasks were authored blind by Sol (gpt-6.1-sol, high) and audited by an independent Sol solve "
     "(medium); a Sol judge lane in the candidate is an author-judge alignment. The claim stays narrow, to this "
     "authoring distribution.",
-    "Mid-authoring pipeline fixes (plan §0.13): the command scan's prose false positive (ecfb1c65) and the retry "
-    "codex-home reset (17da7217). Jobs before 08:00 UTC 10-19 ran under the earlier pipeline commit.",
+    "Mid-authoring pipeline fixes (plan §0.13): the command scan's prose false positive (ecfb1c65), the retry "
+    "codex-home reset (17da7217) and the mutants-directory check that allows non-source extras (99890cd2). Jobs "
+    "before 08:00 UTC 10-19 ran under the earlier pipeline commit.",
+    "Step order (plan §0.13): the step-5 audit ran from the provider branch (2830f5ba, 3ca9102b) before main merged "
+    "the provider (c14956a0, 10-21); certification checks that each audit head contains the provider commit.",
+    "Audit round 1's 4 voids were an instrument fault (§0.14: two concurrent calls sharing a cwd and CODEX_HOME), "
+    "fixed before registration (36bea1e1); the 4 tasks were re-audited and solved in round 2.",
+    "Provenance (Sol registration review): the last validation (10-21) built its own controller and recorded its "
+    "git head and binary sha256, and certification requires that record. The audit runs recorded binary sha256 "
+    "790bcf91... at heads 2830f5ba and 3ca9102b; debug builds are not byte-reproducible here, so the audit binary's "
+    "provenance is that record plus functional evidence: every audited tuple has --json transcripts with the "
+    "provider's marker, the codex bracket held, and each head contains the provider commit.",
+    "Compile-time file reads (Sol registration review): the validator's API-surface check compiles model-written "
+    "Rust outside the sandbox. A counts-only audit found 0 include_str!/include_bytes!/include!/env!/option_env! "
+    "uses and 0 sealed-path mentions in the 1,152 suite files and the 5,456 readable authoring files.",
+    "Instrument errors count as tool events (fail closed): codex `error` items, top-level `error` events and "
+    "`turn.failed` count, so a burst of stream errors could void tuples or reach IntegrityReview; the rate is "
+    "reported from the dev runs on the same provider.",
+    "Operations during the spend windows: generation runs detached; other Luna work (phase-B rounds, dev runs) is "
+    "held while a replicate generates; codex is not upgraded (a fingerprint change voids the replicate).",
     "Injected context: codex 0.162 injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k) "
     "that no switch removes; identical in every arm, no task information.",
     "Instrument versus dev: the dev and dev-holdout estimates were measured with web search open (unused), plugins "
@@ -60,18 +78,20 @@ FIXED_DISCLOSURES = [
     "Codex version: --json transcripts carry no banner, so the binary is pinned by a sha256 fingerprint bracketing "
     "each replicate; a change voids that replicate's tuples.",
     "Spent sets: confirmation-2 (IntegrityReview, web search in arm B); its scored data stays sealed until this "
-    "decision and is then reported descriptively.",
+    "decision and is then reported descriptively. Dev-holdout looks: look 1 (E002, PASS) and look 2 (E007, invalid: "
+    "one coincidental hidden-test name in a judge prompt, echoed from a Luna draft).",
     "Possible model drift between the dev runs (10-15 to 10-23) and the spend days.",
     "SPEC.md was kept byte-identical through authoring (Sol's suggestion #22 not adopted); the limits disclosed in "
     "§0.11 and the step-5 tooling choices of §0.12 apply (a void audit is no information and is re-audited once; a "
-    "repair may change only the requirements and/or the hidden tests and must pass validation and similarity again).",
+    "repair may change only the requirements, never the hidden tests, and must pass validation and similarity again; "
+    "one task was so repaired).",
     "Authoring sandbox: a copied `security` binary can list the world-readable system keychain's metadata (no "
     "secrets); the login keychain file is unreadable (§0.12).",
     "The controller's own excluded-share guard (5% of (task, replicate) pairs, any arm void excludes the pair) is "
     "stricter than §0.13's 5% of (task, arm, replicate) tuples and also applies; c3_power assumed no voids, so the "
     "best-case RULED OUT guard lowers P(RULED OUT | 0) below 0.91.",
-    "Latency go/no-go probes are model calls (3 per spend attempt) made before the attempt record; they count "
-    "toward the daily cap.",
+    "Latency go/no-go probes are model calls (3 Luna canary coding calls plus 1 per registered lane, per spend "
+    "attempt) made before the attempt record; they count toward the daily cap.",
     "Launch isolation before each replicate (§0.10): no codex context in any ancestor of the temp root; every "
     "call's auth-only CODEX_HOME under the holdout dir (A2D_CODEX_HOME_ROOT); a canary preflight through the "
     "real provider on every lane (the secret in no response, 0 tool events); the codex fingerprint.",
@@ -178,6 +198,10 @@ def _certified(tasks, reg):
     audit = load_json(RECORDS / "audit.json", {})
     adj = load_json(RECORDS / "adjudication.json", {})
     excluded = set(load_json(RECORDS / "excluded.json", {"tasks": []})["tasks"])
+    val = load_json(RECORDS / "validate.json", {})
+    if not (val.get("built") is True and val.get("binary_sha256") and val.get("head") and reg.get("provider_commit")
+            and not c3.git("merge-base", "--is-ancestor", reg["provider_commit"], val["head"])[0]):
+        return False                    # the last validation built its own controller from a checkout with the provider
     from c3lib import SUITE, hashes_digest, tree_hashes
     runs = load_json(RECORDS / "audit-runs.json", {}).get("runs", {})
     for t in tasks:                     # the final informative audit round saw exactly the current task
@@ -268,13 +292,18 @@ def build(args, suite):
                          "imputed worst-case (void X = fail, void D/B = pass), lift >= +10 pp and whole-family "
                          "bootstrap ci_low > 0 vs both",
             "RULED OUT": "X vs D RuledOut on complete tuples (ci_high < +10 pp) AND best-case imputed (void X = pass, "
-                         "void D = fail) bootstrap ci_high < +10 pp",
-            "IntegrityReview": "any hidden-test name hit, tool events > 0.5% of a replicate's invocations, or the "
-                               "controller's own IntegrityReview",
+                         "void D = fail) point and bootstrap ci_high both < +10 pp",
+            "IntegrityReview": "any hidden-test name hit (pooled summary, either replicate's own summary, or a "
+                               "failed first attempt's prompts), tool events > 0.5% of a replicate's invocations "
+                               "(the larger of the submission and invocation-record sums, a failed first attempt's "
+                               "calls included, each call without an auditable transcript counted as one event), or "
+                               "the controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
                        "own Invalid, or a missing comparison (an aborted generation is a failed attempt: failure_policy)",
-            "void tuple": "void or unscored submission, any tool event, any invocation without a transcript or "
-                          "(legacy text transcripts) from another codex version; all tuples of a replicate whose codex "
+            "void tuple": "void or unscored submission; any tool event on the submission or on any of its "
+                          "invocation records (lane calls included); any invocation without a --json transcript "
+                          "carrying the stderr marker (a legacy text transcript is void); recorded invocations != "
+                          "the submission's claimed count; a malformed record; all tuples of a replicate whose codex "
                           "fingerprint changed or whose bracket record is missing",
             "otherwise": "INCONCLUSIVE",
         },
@@ -284,19 +313,27 @@ def build(args, suite):
         "spend": {"earliest_utc_day": str(c3.EARLIEST), "after_registration_day": True,
                   "requires": "confirmation-2 sealed (runs/c2-confirm2/sealed-sha256.txt), the authoring pipeline "
                               "drained, codex = the registered fingerprint",
-                  "latency_go": f"median of {c3.LATENCY_PROBES} PONG probes <= {c3.LATENCY_MAX_MEDIAN_SECS:g} s",
+                  "latency_go": f"median of {c3.LATENCY_PROBES} canary coding calls on the coder lane through "
+                                f"`a2d lift run` <= {c3.LATENCY_MAX_MEDIAN_SECS:g} s, plus one canary call per registered "
+                                "lane; all with 0 tool events and the canary secret in no response",
                   "daily_cap": c3.DAILY_CAP, "replicate_2": "a later UTC day than replicate 1's generation"},
         "failure_policy": "each replicate is attempted once (attempt record before any model call); a deferral is not "
                           "an attempt; a generation that fails before generation_complete may be relaunched once with "
                           "the same seed in its own dir, logged; a second failure ends confirmation-3 as not run",
         "instrument": {"controller_last_change": controller,
-                       "provider": "c2-web-provider merged: no web search, isolated CODEX_HOME per call, tool features "
-                                   "disabled, --json allowlist tool counting, failed-call transcripts (plan §0.13)",
+                       "provider": "c2-web-provider merged into main at c14956a0 (branch head ecbb9611, including the "
+                                   "§0.14 cwd/CODEX_HOME uniqueness fix 36bea1e1): no web search, isolated CODEX_HOME per "
+                                   "call, tool features disabled, --json allowlist tool counting, failed-call transcripts "
+                                   "(plan §0.13)",
+                       "launch": "each generate runs detached (own session, caffeinate) from the queue runner; the "
+                                 "controller is built before the preflight, and the suite hash and the crates binding "
+                                 "are checked before the attempt record",
                        "binding": "the controller refuses to run or score if crates/, Cargo.toml or Cargo.lock differ "
                                   "from the registration commit"},
         "power": "docs/experiments/analysis/c3_power.py (dev summaries only): P(RULED OUT | 0) = 0.91; P(SUPPORTED) = "
                  "0.14 / 0.33 / 0.47 / 0.96 at +7.1 / +8.9 / +10 / +15 pp",
-        "expected_spend_per_replicate": "about 1.6k Luna and about 125 Sol (confirmation-2: 1,618 and 1,617 invocations)",
+        "expected_spend_per_replicate": "about 1.6k invocations, Luna and Sol together (confirmation-2: 1,618 and "
+                                        "1,617), of which about 1.5k Luna",
         "disclosures": FIXED_DISCLOSURES + shortfall + list(args.disclosure),
     }
 
