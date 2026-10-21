@@ -210,6 +210,23 @@ class Decide(unittest.TestCase):
 
 
 class Gates(unittest.TestCase):
+    def test_luna_today_counts_phase_b_smoke_ledgers(self):
+        # Phase-B proposal smokes sit five levels under runs/ (round/arm/attempt/smoke).
+        with tempfile.TemporaryDirectory() as d:
+            root, hold = pathlib.Path(d) / "root", pathlib.Path(d) / "hold"
+            day = datetime.date(2026, 10, 24)
+            ts = int(datetime.datetime(2026, 10, 24, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+            rec = json.dumps({"kind": "invocation", "provider": c3.LUNA, "ts_ms": ts})
+            for rel in ("c2-pc/round1/informed/attempt2/smoke", "c2-pc/round1/run"):
+                p = root / "runs" / rel
+                p.mkdir(parents=True)
+                (p / "ledger.jsonl").write_text(rec + "\n" + rec + "\n")
+                import os
+                os.utime(p / "ledger.jsonl", (ts / 1000, ts / 1000))
+            with mock.patch.object(c3, "ROOT", root), mock.patch.object(c3, "HOLDOUT", hold), \
+                    mock.patch.object(c3, "today", lambda: day):
+                self.assertEqual(c3.luna_today(), 4)
+
     def test_spend_day(self):
         d = datetime.date
         g = c3.spend_gate

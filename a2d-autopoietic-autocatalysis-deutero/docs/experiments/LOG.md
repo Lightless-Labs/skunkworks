@@ -1865,3 +1865,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Timing: HANDOFF had said "after L37". That rule kept the provider fixed within the batch, but the batch closed with E007's promotion, and L31–L37 are now provably no-ops. Look 2 had finished at 02:06 on the registered controller.
   - `PROVIDER_COMMIT` stays bc6922f7 (in main's history).
   - From here on, dev runs (phase B) use the `--json` provider: web search off, an isolated CODEX_HOME, the allowlist detector.
+- **Daily-cap accounting fix** (before registration; `nano/confirm3.py` and `nano/eval.py`):
+  - Phase B's 1-task proposal smokes write their ledgers five levels under `runs/` (`c2-pc/roundN/<arm>/attemptN/smoke/`). The `luna_today` globs reach only three, so about 10 Luna per round were uncounted. On the spend days, that would have blinded the confirmation's cap check.
+  - Both counters now include those ledgers. Test added (27 confirm3 tests pass); round-run ledgers (`roundN/run`) were already counted.
