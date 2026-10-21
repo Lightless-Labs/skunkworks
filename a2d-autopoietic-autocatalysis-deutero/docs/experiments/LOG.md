@@ -1964,3 +1964,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - r2 informed submits up to 6–7 files;
   - r2 uninformed can stop after 2 calls;
   - r4 uninformed lifts the incumbent's ban on pseudocode.
+
+### Ops — codex moved to 0.163.0 under the registration; the registered 0.162.0 restored as a pinned copy  [2026-10-21 ~13:00 UTC; no claim data touched]
+- **Found** while reviewing the gym tooling: `/opt/homebrew/bin/codex` was moved to **0.163.0** at 10:32 UTC 10-21 (the Caskroom holds only 0.163.0; not by this session). Confirmation-3 registers codex **0.162.0** by version and file hashes (`codex` 82382730…, `codex-code-mode-host` 0b74f513…).
+  - Unfixed, `confirm3.py generate` would refuse at 00:05 10-24 ("codex differs from the registered binary"). That check runs before any reserve, so it fails closed with no attempt recorded, but it would lose the day.
+- **Fix (outside the frozen files):**
+  - Downloaded the official `rust-v0.162.0` `codex-package-aarch64-apple-darwin.tar.gz` (sha256 5809ee90…). Both binaries are **byte-identical to the registered hashes**.
+  - Installed it with the package layout at `~/.a2d-codex-pin/0.162.0/`. The global install is untouched, since other sessions use it.
+  - Queue lines L41 and L42 now `export PATH=~/.a2d-codex-pin/0.162.0/bin:$PATH`. The provider spawns `codex` by name, and `codex_fingerprint()`, the health probe and the provider all resolve through PATH.
+- **Verified** with the pinned PATH:
+  - `codex_fingerprint()` equals the registration on version and files;
+  - `c3_author.py --drained` is ok;
+  - `c3_health.py` is healthy (2 Luna and 3 Sol PONG calls).
+- **Phase-B round 4** was re-armed (new pid in `~/.a2d-queue/pc-round4.pid`, same command, same ≥ 00:10 UTC 10-22) with the same pin and a version guard, so it runs on the same codex as rounds 2–3.
+- **Lesson:** "don't upgrade codex" was a convention, and a shared machine broke it within hours. A spend-once instrument should pin its toolchain *by path* to a private copy at registration, not rely on the global install staying put.

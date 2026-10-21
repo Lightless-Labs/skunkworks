@@ -30,6 +30,7 @@
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`, reviewed): **no gym model call (Sol or Luna) before confirmation-3 replicate 2's `generation_complete`.**
      Until then: `tools/gym/` (an isolated copy of tools/holdout with GYM_* vars, `~/.a2d-gym`, vendored functions, sandboxed compiles, must-exist denial probes, a launch gate, the frozen rubric SPEC with M1–M5 checkers, power.py and the seeded split). It is being built on branch `gym-v3-tooling` in a worktree and is reviewed before merging.
    - The confirmation-3 lines in the 07:35 block below are unchanged and binding.
+   - **Codex pin (13:00 UTC):** Homebrew codex became 0.163.0 at 10:32 UTC. The registered 0.162.0 is restored byte-identical at `~/.a2d-codex-pin/0.162.0/bin`, and L41, L42 and the round-4 job put it first on PATH (LOG "Ops — codex moved"). **Anything that must match the registration runs with that PATH.** Never delete `~/.a2d-codex-pin`.
 0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
    - **Confirmation-3 is registered** at `fb5110e7285b37b8125ca6fb17c717fb871f3809`, with candidate E002 (look 2 was invalid). Read plan §0.15 and §0.16 for the review dispositions and the code_mode_host change.
    - **Spend:** queue L41 (`confirm3.py generate --rep 1`, from 00:05 UTC 10-24) and L42 (rep 2, from 00:05 UTC 10-25). Both retry deferrals.
