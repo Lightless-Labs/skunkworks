@@ -54,6 +54,19 @@ The review may only **tighten** §0.4 (plan §0.10). Anything else in §0 is fix
 """
 
 
+def provider_diff():
+    """The provider's crate changes: against main before the merge once merged (the three-dot
+    branch diff is empty then), else the branch diff."""
+    git = lambda *a: subprocess.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True)
+    sys.path.insert(0, str(ROOT / "tools/holdout"))
+    from c3lib import PROVIDER_COMMIT
+    if git("merge-base", "--is-ancestor", PROVIDER_COMMIT, "HEAD").returncode == 0:
+        for rev in git("rev-list", "--first-parent", "HEAD").stdout.split():
+            if git("merge-base", "--is-ancestor", PROVIDER_COMMIT, rev).returncode != 0:
+                return git("diff", rev, "HEAD", "--", "crates").stdout
+    return git("diff", "main...c2-web-provider", "--", "crates").stdout
+
+
 def build(packet):
     packet.mkdir(parents=True, exist_ok=True)
     if any(packet.iterdir()):
@@ -73,9 +86,7 @@ def build(packet):
     log = (ROOT / "docs/experiments/LOG.md").read_text()
     start = log.find("### C2-MCP")
     (packet / "LOG-confirmation-3.md").write_text(log[start:] if start >= 0 else log[-60000:])
-    diff = subprocess.run(["git", "-C", str(ROOT), "diff", "main...c2-web-provider", "--", "crates"],
-                          capture_output=True, text=True).stdout
-    (packet / "provider-branch.diff").write_text(diff)
+    (packet / "provider-branch.diff").write_text(provider_diff())
     (packet / "REVIEW.md").write_text(BRIEF)
     return packet
 
