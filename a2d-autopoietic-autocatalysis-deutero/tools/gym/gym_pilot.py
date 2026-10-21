@@ -1,23 +1,37 @@
 """E007-only Luna runs on the gym v3 dev set (plan 2026-10-21, "Selection discipline", "Budget").
 
---wave W      the pilot of a dev wave: every dev family of that wave in the certified suite (or,
-              with --repilot, only the families gym_band.py left pending for that wave).
---acceptance  the first fresh E007 replicate of the kept dev set (every wave's kept and regression
-              families), once, and only when every dev wave of the split has a finalized band
-              decision; it is the A/A threshold's first half and is never used for any selection.
+--wave W            the wave's ONE initial pilot: every family holding a slot of the wave's frozen
+                    membership (runs/c2-gym3/waves.json; gym_split.py freeze), all of which must be
+                    certified (a partial wave is refused, never silently narrowed). Refused once a
+                    spent pilot of the wave exists.
+--wave W --repilot  only the wave's families pending as void ("repilot") or "invalidated" (their
+                    content changed since their pilot data) with no re-pilot spent yet (one each).
+--acceptance        the first fresh E007 replicate of the final selection (gym_band.py finalize:
+                    kept + regression stratum, floors met), once; refused with floors_unmet, or
+                    when the selection's content hashes differ from the current certification.
 
-Refuses (fail closed, content-free) unless: the launch gate holds (confirmation-3 isolation);
-the split (runs/c2-gym3/split.json) is committed; the suite is certified and current
-(gym_export.py certify); no family is a dev-holdout family (the holdout is never piloted); the
-harness is E007 (sha256 pinned); and the daily Luna cap leaves room for the run's worst case.
+Refuses (fail closed, content-free) unless: the launch gate holds (confirmation-3 isolation); the
+split is committed; the suite is certified and current; no family is a dev-holdout family; the
+harness is E007 (sha256 pinned); the daily Luna cap leaves room for the run's worst case (today's
+Luna calls across the cap globs + 6 x tasks <= 3000, as nano/eval.py checks); the pinned codex
+passes (version + sha256) and is the one the a2d child resolves on its PATH (fingerprint), and the
+temp-root ancestry is clean (isolation_ok). The build and a second gate check come BEFORE the
+registry reservation, so a build failure or a closed gate never spends a run; the entry goes
+reserved -> launched (right before a2d starts) -> complete | failed. The fingerprint and the
+temp-root check are repeated after the run; a change fails the run.
 
-The run is `a2d lift run`, arm X:inc (E007, its judge lane declared in its header), Luna low, k = 5,
-on a copy of the certified tasks; the binary is the gym's own build (<gym root>/target). Its out
-dir is runs/c2-gym3-pilot-w<W>/r<N> (or runs/c2-gym3-accept/r1) in the repo, so the ledger is at
-runs/c2-*/*/ledger.jsonl, the depth the existing daily-cap globs count. It is registered in
-runs/c2-gym3/replicates.json before launch (durable), with a manifest binding the content hash of
-every task, the rubric hash and the harness hash. After the run, a seal check confirms that no
-hidden test name appears anywhere in the out dir (no hidden test or reference reaches the repo).
+Sealing: a2d's --out dir, the suite copy, the harness snapshot and the manifest stay under the gym
+root (RUNS/pilot-<name>, RECORDS/pilots/). The repo receives only, at runs/c2-gym3-pilot-w<W>/r<N>/
+(or runs/c2-gym3-accept/r1/), the depth the daily-cap globs (c2-*/*/ledger.jsonl) count:
+  - ledger.jsonl: an ACCOUNTING ledger, written incrementally while a2d runs (a tail thread reads
+    the sealed ledger's complete lines with gymvendor.lines + strict JSON every second and appends
+    each `invocation` record reduced to an allowlist: kind, ts_ms, provider, arm, task, replicate,
+    index, ok, duration_ms, tool_calls, token counts, seq), so in-flight Luna calls are visible to
+    nano/eval.py's and confirm3.py's luna_today; a damaged invocation line is published as a
+    damaged Luna-side record (cap side); every record is scanned for hidden test names (literal
+    substring) BEFORE it is written; an interrupted run is swept again by the next driver;
+  - summary.json: content-free (manifest hashes and ids, counts, statuses), scanned before writing.
+A hidden test name anywhere in the sealed out dir (a submission or prompt) fails the run.
 
 usage: python3 -I tools/gym/gym_pilot.py --wave W [--repilot] [--binary <a2d>]
        python3 -I tools/gym/gym_pilot.py --acceptance [--binary <a2d>]      (--binary: tests only)
@@ -30,15 +44,17 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gymlib import (BINARY, binary_allowed, HOLDOUT_VIEW, OUT_REPO, RECORDS, REPO, RUNS, SUITE, TESTING, DriverLock,  # noqa: E402
-                    _cfg, build_a2d, child_env, emit, gate_or_exit, gateway, launch_gate, load_json, prereqs_ok,
-                    repo_write_root, safe_copy, save_json, spec_sha)
+from gymlib import (BINARY, HOLDOUT_VIEW, OUT_REPO, RECORDS, REPO, RUNS, SUITE, TASK_RE, TESTING,  # noqa: E402
+                    DriverLock, _cfg, _check_chain, binary_allowed, build_a2d, child_env, codex_fingerprint,
+                    codex_pinned, emit, gate_or_exit, gateway, hashes_digest, launch_gate, load_json, prereqs_ok,
+                    repo_write_root, safe_copy, save_json, spec_sha, tree_hashes)
 from gym_rubric import leaked_names  # noqa: E402
-from gymvendor import strict_json, test_names  # noqa: E402
+from gymvendor import isolation_ok, lines, strict_json, test_names  # noqa: E402
 
 LUNA = "codex/gpt-6-luna"
 DAILY_CAP = 3000
@@ -48,6 +64,11 @@ E007 = Path(_cfg("GYM_TEST_HARNESS", str(REPO / "nano" / "harness.py")))
 E007_SHA = _cfg("GYM_TEST_E007_SHA", "c1e3e897d9557f974d01c244c0919deacc9c7bd5c164d56baab9695e2edbf639")
 CAP_GLOBS = ("c2-*/*/ledger.jsonl", "c2-*/ledger.jsonl", "c2-*/*/*/ledger.jsonl")   # eval.py / confirm3.py
 REGISTRY = OUT_REPO / "runs" / "c2-gym3" / "replicates.json"
+SPENT = ("launched", "complete", "failed")
+PROVIDER_RE = re.compile(r"[a-z0-9_-]{1,32}/[A-Za-z0-9._:-]{1,64}", re.ASCII)
+ARM_RE = re.compile(r"[A-Za-z0-9:_-]{1,32}", re.ASCII)
+INT_FIELDS = ("seq", "replicate", "index", "duration_ms", "tool_calls")
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "thinking_tokens", "reported_total")
 
 
 def sha256(path):
@@ -64,8 +85,7 @@ def lanes_of(path):
 
 
 def out_dir(acceptance, wave, rep):
-    rel = Path("runs") / ("c2-gym3-accept" if acceptance else f"c2-gym3-pilot-w{wave}") / f"r{rep}"
-    return rel
+    return Path("runs") / ("c2-gym3-accept" if acceptance else f"c2-gym3-pilot-w{wave}") / f"r{rep}"
 
 
 def cap_visible(rel):
@@ -77,7 +97,7 @@ def cap_visible(rel):
 
 def luna_today():
     """Luna invocations since 00:00 UTC across the cycle's ledgers (as eval.py / confirm3.py count
-    them, plus the gym's own); a damaged line that may be a Luna call counts (cap side)."""
+    them, the gym's accounting ledgers included); a damaged line that may be a Luna call counts."""
     lo_ms = datetime.datetime.combine(datetime.datetime.now(datetime.timezone.utc).date(), datetime.time(),
                                       datetime.timezone.utc).timestamp() * 1000
     seen, total = set(), 0
@@ -103,13 +123,126 @@ def luna_today():
     return total
 
 
-def seal_breaches(out, tasks):
-    """Files in the out dir that contain any hidden test name of the run's tasks (count only)."""
-    names = set()
-    for t in tasks:
-        names |= test_names((SUITE / t / "hidden_tests.rs").read_text())
-    if not names:
-        return 0
+# ------------------------------------------------------------------ accounting ledger
+
+def _int(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
+def reduce_invocation(rec):
+    """An invocation record reduced to content-free, type-checked accounting fields (the shape
+    luna_today counts: `"invocation"`, the provider and ts_ms kept verbatim)."""
+    prov = rec.get("provider")
+    if not (isinstance(prov, str) and PROVIDER_RE.fullmatch(prov)):
+        prov = LUNA if isinstance(prov, str) and LUNA in prov else "unknown"
+    out = {"kind": "invocation", "provider": prov,
+           "ts_ms": _int(rec.get("ts_ms")) or int(time.time() * 1000), "ok": rec.get("ok") is True}
+    for k in INT_FIELDS:
+        out[k] = _int(rec.get(k))
+    task, arm = rec.get("task"), rec.get("arm")
+    out["task"] = task if isinstance(task, str) and TASK_RE.match(task) else None
+    out["arm"] = arm if isinstance(arm, str) and ARM_RE.fullmatch(arm) else None
+    usage = rec.get("usage")
+    out["usage"] = {k: _int(usage.get(k)) for k in USAGE_FIELDS} if isinstance(usage, dict) else None
+    return out
+
+
+def _append(path, text, root):
+    """Append-only, durable write under the repo's runs/c2-gym3* (never through a symlink)."""
+    _check_chain(path, root)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+class Accounting:
+    """Publishes the sealed ledger's invocation records, reduced, to the repo's accounting ledger
+    while the run goes on (and once more at the end). Resumable: records carry the sealed seq and
+    a sweep skips what the published ledger already holds."""
+
+    def __init__(self, sealed_ledger, publish_ledger, names):
+        self.src, self.dst, self.names = Path(sealed_ledger), Path(publish_ledger), names
+        self.root = repo_write_root(self.dst)
+        self.offset, self.published, self.breaches, self.seen = 0, 0, 0, 0
+        self.done = self._already()
+        self.lock = threading.Lock()
+
+    def _already(self):
+        try:
+            text = self.dst.read_text(errors="replace")
+        except FileNotFoundError:
+            return set()
+        out = set()
+        for line in lines(text):
+            try:
+                r = strict_json(line)
+            except ValueError:
+                continue
+            out.add(r.get("src") if isinstance(r, dict) else None)
+        return out
+
+    def sweep(self, final=False):
+        with self.lock:
+            try:
+                with open(self.src, "rb") as f:
+                    f.seek(self.offset)
+                    data = f.read()
+            except FileNotFoundError:
+                return
+            if not final:
+                data = data[:data.rfind(b"\n") + 1]           # hold back a partial last line
+            self.offset += len(data)
+            start = self.offset - len(data)
+            pos = 0
+            for raw in data.split(b"\n"):
+                at, pos = start + pos, pos + len(raw) + 1
+                line = raw.decode("utf-8", errors="replace")
+                if not line.strip():
+                    continue
+                try:
+                    rec = strict_json(line)
+                    if not isinstance(rec, dict) or rec.get("kind") != "invocation":
+                        continue
+                    out = reduce_invocation(rec)
+                except ValueError:
+                    if '"invocation"' not in line:
+                        continue
+                    out = {"kind": "invocation", "provider": LUNA if LUNA in line else "unknown",
+                           "ts_ms": int(time.time() * 1000), "damaged": True}
+                self.seen += 1
+                out["src"] = f"b{at}"                         # the record's byte offset in the sealed ledger
+                if out["src"] in self.done:
+                    self.published += 1
+                    continue
+                text = json.dumps(out, sort_keys=True) + "\n"
+                if leaked_names(self.names, text):            # scanned BEFORE publishing
+                    self.breaches += 1
+                    continue
+                _append(self.dst, text, self.root)
+                self.done.add(out["src"])
+                self.published += 1
+
+    def run_while(self, proc, every=1.0):
+        stop = threading.Event()
+
+        def loop():
+            while not stop.wait(every):
+                self.sweep()
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+        try:
+            return proc.wait()
+        finally:
+            stop.set()
+            t.join()
+            self.sweep(final=True)
+
+
+def sealed_hits(out, names):
+    """Files in the sealed out dir that contain any hidden test name (literal substring)."""
     n = 0
     for p in sorted(Path(out).rglob("*")) if Path(out).exists() else []:
         if p.is_file() and not p.is_symlink() and leaked_names(names, p.read_text(errors="replace")):
@@ -117,39 +250,89 @@ def seal_breaches(out, tasks):
     return n
 
 
-class AcceptanceNotReady(Exception):
-    """A dev wave of the split has no finalized band decision yet: the write-once acceptance
-    replicate (the A/A threshold's first half) would be spent on a partial kept set."""
+def hidden_names(tasks):
+    names = set()
+    for t in tasks:
+        names |= test_names((SUITE / t / "hidden_tests.rs").read_text())
+    return names
 
 
-def select_families(args, sp, act, cert):
-    from gym_band import band_path, kept_dev
-    from gym_split import assignment, families_for
+def publish_summary(rel, summary, names):
+    text = json.dumps(summary, indent=1, sort_keys=True) + "\n"
+    if leaked_names(names, text):
+        raise RuntimeError("seal: hidden test name in a summary")
+    save_json(OUT_REPO / rel / "summary.json", summary)
+
+
+# ------------------------------------------------------------------ registry
+
+def reconcile(reg, names_of):
+    """A run left `launched` (its driver died): sweep its accounting once more from the sealed
+    ledger, then mark it failed (interrupted). It stays spent."""
+    from gym_band import sealed_out
+    changed = False
+    for rel, e in reg.items():
+        if e.get("status") == "launched":
+            acc = Accounting(sealed_out(rel) / "ledger.jsonl", OUT_REPO / rel / "ledger.jsonl", names_of(e))
+            acc.sweep(final=True)
+            e.update({"status": "failed", "interrupted": True, "accounting_published": acc.published})
+            changed = True
+    return changed
+
+
+class Refusal(Exception):
+    def __init__(self, status, code=2, **fields):
+        super().__init__(status)
+        self.status, self.code, self.fields = status, code, fields
+
+
+def select_families(args, sp, act, cert, reg):
+    """(families, wave, purpose) for this call, or Refusal."""
+    from gym_band import SELECTION, acceptance_spent, wave_record
+    from gym_split import holder, load_waves
     if "--acceptance" in args:
-        waves = sorted({a["wave"] for a in sp["assign"].values() if a["set"] == "dev"})
-        if not all((load_json(band_path(w)) or {}).get("finalized") for w in waves):
-            raise AcceptanceNotReady()
-        return kept_dev(waves), None
+        if acceptance_spent(reg):
+            raise Refusal("acceptance-exists")
+        sel = load_json(SELECTION)
+        if not sel:
+            raise Refusal("acceptance-not-ready")
+        if sel.get("status") != "ok":
+            raise Refusal("floors_unmet")
+        if any(cert["content"].get(t) != h for t, h in sel["content"].items()):
+            raise Refusal("content-mismatch")                   # finalize again on the current certification
+        return sorted(sel["retained"]), None, "acceptance"
     wave = int(args[args.index("--wave") + 1])
+    frozen = load_waves().get(str(wave))
+    if not frozen:
+        raise Refusal("wave-not-frozen")
     if "--repilot" in args:
-        rec = load_json(band_path(wave), {})
-        fams = sorted(f for f, d in rec.get("decisions", {}).items() if d in ("repilot", "invalidated"))
-    else:
-        if load_json(band_path(wave)):
-            raise RuntimeError("wave already piloted (use --repilot)")
-        fams = families_for(sp, act, "dev", wave)
-    for f in fams:
-        a = assignment(f, sp, act)
-        if not a or a["set"] != "dev" or a["wave"] != wave:
-            raise ValueError("a non-dev or off-wave family")
-    in_cert = [f for f in fams if all(f"{f}-l{lv}" in cert["content"] for lv in (1, 2, 3, 4))]
-    return in_cert, wave
+        rec = wave_record(wave)
+        fams = sorted(r["family"] for r in rec["slots"].values()
+                      if r["status"] == "pending" and r["reason"] in ("repilot", "invalidated"))
+        return fams, wave, "repilot"
+    if any(e.get("wave") == wave and e.get("purpose") == "pilot" and e.get("status") in SPENT for e in reg.values()):
+        raise Refusal("wave-already-piloted")
+    fams = [f for f in (holder(s, act) for s in frozen["slots"]) if f]
+    if any(not all(f"{f}-l{lv}" in cert["content"] for lv in (1, 2, 3, 4)) for f in fams):
+        raise Refusal("wave-not-certified")                     # never silently narrowed
+    return sorted(fams), wave, "pilot"
+
+
+def next_rel(reg, acceptance, wave, purpose):
+    """A stale `reserved` entry (nothing launched) of the same purpose is reused; else the next N."""
+    parent = str(out_dir(acceptance, wave, 0).parent)
+    mine = {k: e for k, e in reg.items() if k.startswith(parent + "/")}
+    for k, e in sorted(mine.items(), key=lambda kv: kv[1].get("seq", 0)):
+        if e.get("status") == "reserved" and e.get("purpose") == purpose:
+            return Path(k)
+    return out_dir(acceptance, wave, len(mine) + 1)
 
 
 @gateway("pilot")
 def main():
+    from gym_band import manifest_path, run_name, sealed_out
     from gym_export import certified_current
-    from gym_split import assignment, committed, load_split
+    from gym_split import assignment, committed, load_split, split_sha256
     args = sys.argv[1:]
     binary = Path(args[args.index("--binary") + 1]) if "--binary" in args else BINARY
     if not binary_allowed(binary, BINARY):
@@ -160,6 +343,10 @@ def main():
         emit(stage="pilot", status="prereqs-not-met")
         sys.exit(2)
     with DriverLock() as lock:
+        reg = load_json(REGISTRY, {})
+        if reconcile(reg, lambda e: hidden_names(sorted(f"{f}-l{lv}" for f in e.get("families", []) for lv in (1, 2, 3, 4)))):
+            save_json(REGISTRY, reg)
+            emit(stage="pilot", status="interrupted-run-failed")
         sp = load_split()
         if not sp or not committed():
             emit(stage="pilot", status="split-not-committed")
@@ -170,15 +357,11 @@ def main():
             sys.exit(2)
         act = load_json(RECORDS / "active.json")
         acceptance = "--acceptance" in args
-        reg = load_json(REGISTRY, {})
-        if acceptance and any(r.get("purpose") == "acceptance" for r in reg.values()):
-            emit(stage="pilot", status="acceptance-exists")
-            sys.exit(2)
         try:
-            fams, wave = select_families(args, sp, act, cert)
-        except AcceptanceNotReady:
-            emit(stage="pilot", status="acceptance-not-ready")
-            sys.exit(2)
+            fams, wave, purpose = select_families(args, sp, act, cert, reg)
+        except Refusal as r:
+            emit(stage="pilot", status=r.status)
+            sys.exit(r.code)
         if any((assignment(f, sp, act) or {}).get("set") != "dev" for f in fams):
             emit(stage="pilot", status="holdout-refused")
             sys.exit(2)
@@ -193,70 +376,88 @@ def main():
         if luna_today() + worst > DAILY_CAP:
             emit(stage="pilot", status="deferred-daily-cap", tasks=len(tasks))
             sys.exit(3)
-        prior = [k for k in reg if k.startswith(str(out_dir(acceptance, wave, 0).parent) + "/")]
-        rel = out_dir(acceptance, wave, len(prior) + 1)
+        names = hidden_names(tasks)
+        rel = next_rel(reg, acceptance, wave, purpose)
         if not cap_visible(rel):
             raise RuntimeError("ledger depth outside the cap globs")
-        out = OUT_REPO / rel
-        repo_write_root(out / "ledger.jsonl")
-        if out.exists():
+        publish = OUT_REPO / rel
+        repo_write_root(publish / "ledger.jsonl")
+        name = run_name(rel)
+        out, sub = sealed_out(rel), RUNS / f"pilot-{name}-suite"
+        if publish.exists() or out.exists():
             raise RuntimeError("run exists")
-        sub = RUNS / f"pilot-{rel.parent.name}-{rel.name}-suite"
         if sub.exists():
             shutil.rmtree(sub)
         for t in tasks:
             for p in sorted((SUITE / t).rglob("*")):
                 if p.is_file():
                     safe_copy(p, sub / t / p.relative_to(SUITE / t), SUITE)
-        from gymlib import hashes_digest, tree_hashes
         content = {t: hashes_digest(tree_hashes(sub / t)) for t in tasks}
         if any(content[t] != cert["content"][t] for t in tasks):
             raise RuntimeError("pilot copy differs from the certified suite")
-        snap = out.parent / "harness.py"
-        if not snap.exists():
-            repo_write_root(snap)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(E007, snap)
+        snap = RUNS / f"pilot-{name}-harness.py"
+        safe_copy(E007, snap, E007.parent)
         if sha256(snap) != E007_SHA:
             raise RuntimeError("harness snapshot")
+        # the pin bracket and the temp-root isolation check (before; repeated after the run)
+        before = codex_fingerprint()
+        if not codex_pinned() or before is None:
+            emit(stage="pilot", status="codex-not-pinned")
+            sys.exit(2)
+        if not isolation_ok():
+            emit(stage="pilot", status="isolation-failed")
+            sys.exit(2)
+        if not TESTING and not build_a2d():                   # before any reservation: never spends a run
+            emit(stage="pilot", status="build-failed")
+            sys.exit(1)
+        if not launch_gate():
+            emit(stage="pilot", status="launch-gate-closed")
+            sys.exit(2)
         seed = int(hashlib.sha256(f"gym-v3-pilot:{sp['seed']}:{rel}".encode()).hexdigest()[:8], 16)
-        manifest = {"purpose": "acceptance" if acceptance else "pilot", "wave": wave, "families": fams,
-                    "content": content, "suite": cert["suite"], "spec_sha256": spec_sha(), "harness_sha256": E007_SHA,
-                    "split_sha256": sha256(OUT_REPO / "runs" / "c2-gym3" / "split.json"), "seed": seed, "k": K,
-                    "model": LUNA, "max_invocations": worst,
+        manifest = {"purpose": purpose, "wave": wave, "families": fams, "content": content, "suite": cert["suite"],
+                    "spec_sha256": spec_sha(), "harness_sha256": E007_SHA, "split_sha256": split_sha256(),
+                    "seed": seed, "k": K, "model": LUNA, "effort": "low", "max_invocations": worst,
                     "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        save_json(OUT_REPO / f"{rel}.manifest.json", manifest)
-        reg[str(rel)] = {"purpose": manifest["purpose"], "wave": wave, "threshold": acceptance,
-                         "status": "reserved", "families": fams}
-        save_json(REGISTRY, reg)                      # durable before any call
+        save_json(manifest_path(rel), manifest)
+        reg[str(rel)] = {"seq": max([e.get("seq", 0) for e in reg.values()] + [0]) + 1, "purpose": purpose,
+                         "wave": wave, "threshold": acceptance, "status": "reserved", "families": fams,
+                         "manifest_sha256": sha256(manifest_path(rel))}
+        save_json(REGISTRY, reg)                                # durable before any call
         argv = [str(binary), "lift", "run", "--experiment", f"C2-GYM3-{rel.parent.name.upper()}-{rel.name.upper()}",
                 "--unregistered", "--suite", str(sub), "--model", LUNA, "--effort", "low", "--arms", "X:inc",
                 "--k", str(K), "--seed", str(seed), "--jobs", "4", "--min-families", "1",
                 "--max-invocations", str(worst), "--max-wall-clock-secs", "21600", "--out", str(out),
                 "--external", f"inc={snap}"]
-        for name, spec in lanes_of(snap).items():
-            argv += ["--lane", f"{name}={spec}"]
-        if not TESTING and not build_a2d():
-            reg[str(rel)]["status"] = "build-failed"
-            save_json(REGISTRY, reg)
-            emit(stage="pilot", status="build-failed")
-            sys.exit(1)
-        if not launch_gate():
-            reg[str(rel)]["status"] = "gate-closed"
-            save_json(REGISTRY, reg)
-            emit(stage="pilot", status="launch-gate-closed")
-            sys.exit(2)
-        with open(RECORDS / f"pilot-{rel.parent.name}-{rel.name}.log", "wb") as log:
-            code = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                  pass_fds=(lock.fd,), env=child_env()).returncode
-        breaches = seal_breaches(out, tasks)
-        reg = load_json(REGISTRY, {})
-        reg[str(rel)].update({"status": "complete" if code == 0 and not breaches else "failed", "exit": code,
-                              "seal_breaches": breaches})
+        for lane, spec in lanes_of(snap).items():
+            argv += ["--lane", f"{lane}={spec}"]
+        publish.mkdir(parents=True, exist_ok=True)
+        acc = Accounting(out / "ledger.jsonl", publish / "ledger.jsonl", names)
+        reg[str(rel)]["status"] = "launched"
         save_json(REGISTRY, reg)
-        emit(stage="pilot", exit=code, families=len(fams), tasks=len(tasks), ok=code == 0 and not breaches,
-             status="seal-breach" if breaches else ("acceptance" if acceptance else f"wave-{wave}"))
-        if breaches or code:
+        with open(RECORDS / f"pilot-{name}.log", "wb") as log:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                    pass_fds=(lock.fd,), env=child_env())
+            code = acc.run_while(proc)
+        after = codex_fingerprint()
+        bracket_ok = after is not None and after == before and isolation_ok()
+        hits = sealed_hits(out, names)
+        complete_acc = acc.breaches == 0 and acc.published == acc.seen
+        ok = code == 0 and hits == 0 and bracket_ok and complete_acc
+        reg = load_json(REGISTRY, {})
+        reg[str(rel)].update({"status": "complete" if ok else "failed", "exit": code, "seal_breaches": hits + acc.breaches,
+                              "codex_bracket_ok": bracket_ok, "accounting_published": acc.published})
+        save_json(REGISTRY, reg)
+        publish_summary(rel, {"run": str(rel), "purpose": purpose, "wave": wave, "families": fams,
+                              "tasks": len(tasks), "content": content, "suite": cert["suite"],
+                              "spec_sha256": manifest["spec_sha256"], "harness_sha256": E007_SHA,
+                              "split_sha256": manifest["split_sha256"], "manifest_sha256": reg[str(rel)]["manifest_sha256"],
+                              "seed": seed, "k": K, "model": LUNA, "max_invocations": worst, "exit": code,
+                              "status": reg[str(rel)]["status"], "invocations_published": acc.published,
+                              "seal_breaches": hits + acc.breaches, "codex_bracket_ok": bracket_ok}, names)
+        emit(stage="pilot", exit=code, families=len(fams), tasks=len(tasks), ok=ok,
+             status="seal-breach" if hits or acc.breaches else (
+                 ("acceptance" if acceptance else f"wave-{wave}") if ok else "run-failed"))
+        if not ok:
             sys.exit(1)
 
 

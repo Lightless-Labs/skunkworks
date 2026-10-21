@@ -161,12 +161,16 @@ def main():
             raise ValueError("parallel")
         ids = list(act["active"])
         if "--set" in args:
-            from gym_split import families_for, load_split
+            from gym_split import families_for, load_split, load_waves
             sp = load_split()
             if not sp:
                 raise ValueError("no split")
             wave = int(args[args.index("--wave") + 1]) if "--wave" in args else None
             count = int(args[args.index("--count") + 1]) if "--count" in args else None
+            frozen = load_waves().get(str(wave)) if wave else None
+            if wave == 2 and (frozen is None or (count is not None and count != frozen["count"])):
+                emit(stage="author", status="wave-2-not-frozen")   # the prefix is frozen before any of it
+                sys.exit(2)
             ids = families_for(sp, act, args[args.index("--set") + 1], wave, count)
         if "--only" in args:
             ids = [i for i in ids if i == args[args.index("--only") + 1]]

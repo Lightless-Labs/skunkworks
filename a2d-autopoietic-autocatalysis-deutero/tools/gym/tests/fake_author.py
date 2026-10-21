@@ -83,7 +83,7 @@ def author(fid, cls, dup=False, bad=False):
         d = Path("out") / fid / tid
         (d / "mutants").mkdir(parents=True, exist_ok=True)
         req = requirements(fid, lv, cls, dup)
-        json.dump({"id": tid, "family": fid, "requirements": req, "test_timeout_secs": 5}, open(d / "task.json", "w"))
+        json.dump({"id": tid, "family": fid, "requirements": req, "test_timeout_secs": 10}, open(d / "task.json", "w"))
         for f in ("public_tests.rs", "reference.rs"):
             shutil.copyfile(FIX / f, d / f)
         hidden = (FIX / "hidden_tests.rs").read_text()

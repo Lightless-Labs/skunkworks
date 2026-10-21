@@ -1502,15 +1502,30 @@ def task_content(tid):
     return hashes_digest(tree_hashes(SUITE / tid))
 
 
+def wave_piloted(fid, act):
+    """True once the split wave of the slot `fid` holds has a registered pilot (any status): its
+    families are frozen, so a replacement would select on outcomes; it becomes a drop."""
+    sp = load_json(OUT_REPO / "runs" / "c2-gym3" / "split.json")
+    if not sp:
+        return False
+    a = sp["assign"].get(lineage(fid, act))
+    if not a or a.get("wave") is None:
+        return False
+    reg = load_json(OUT_REPO / "runs" / "c2-gym3" / "replicates.json", {})
+    return any(r.get("wave") == a["wave"] for r in reg.values())
+
+
 def replace_family(fid, reason):
     """An excluded family is replaced by the next unused spare of the SAME rubric class (in id
-    order), which inherits its split slot; otherwise it is dropped. Recorded in active.json."""
+    order), which inherits its split slot (no pilot data is ever inherited: a spare's pilot data
+    are its own); otherwise it is dropped. Once the slot's wave has a pilot, a replacement is a
+    drop (no outcome-driven replenishment). Recorded in active.json."""
     act = load_json(RECORDS / "active.json")
     if fid not in act["active"]:
         return None
     cls = act["classes"][fid]
     pool = act["spares"].get(cls, [])
-    spare = pool.pop(0) if pool else None
+    spare = pool.pop(0) if pool and not wave_piloted(fid, act) else None
     i = act["active"].index(fid)
     if spare:
         act["active"][i] = spare

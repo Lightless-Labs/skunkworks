@@ -7,7 +7,8 @@ Env hooks (space-separated task ids): GYM_TEST_AUDIT_FAIL, GYM_TEST_AUDIT_VOID,
 GYM_TEST_AUDIT_NOCOMPILE, GYM_TEST_PILOT_FAIL, GYM_TEST_PILOT_VOID; GYM_TEST_ENV_DUMP=<file>
 records which isolation-relevant variables the child saw; GYM_TEST_LEAK=1 writes a hidden test
 name into a submission (seal-breach test); GYM_TEST_A2D_TOUCH=<file> appends to that file (a codex
-package file changing during the run)."""
+package file changing during the run); GYM_TEST_WAIT_ACCOUNTING=<repo ledger> keeps the run alive
+until the driver has published every invocation there (got/want written to GYM_TEST_WAIT_RESULT)."""
 import json
 import os
 import re
@@ -82,7 +83,25 @@ for arm in arms:
         lines.append({"kind": "score", "arm": arm, "task": t, "family": tj["family"],
                       "result": {"all_passed": passed, "compiled": t not in nocompile,
                                  "passed": len(names) - (0 if passed else 1), "expected": len(names)}})
-lines.append({"kind": "generation_complete", "aborted": False, "ts_ms": now})
-(out / "ledger.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+wait = os.environ.get("GYM_TEST_WAIT_ACCOUNTING")
+if wait:
+    # in-flight visibility: write everything but the last record, then wait (up to 30 s) until the
+    # driver has published every invocation to the repo's accounting ledger while this run is alive
+    (out / "ledger.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+    want, got, end = sum(1 for x in lines if x["kind"] == "invocation"), 0, time.time() + 30
+    while time.time() < end:
+        try:
+            got = sum(1 for x in Path(wait).read_text().split("\n") if '"invocation"' in x)
+        except FileNotFoundError:
+            got = 0
+        if got >= want:
+            break
+        time.sleep(0.2)
+    Path(os.environ["GYM_TEST_WAIT_RESULT"]).write_text(f"{got}/{want}")
+    with open(out / "ledger.jsonl", "a") as f:
+        f.write(json.dumps({"kind": "generation_complete", "aborted": False, "ts_ms": now}) + "\n")
+else:
+    lines.append({"kind": "generation_complete", "aborted": False, "ts_ms": now})
+    (out / "ledger.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
 (out / "summary.json").write_text(json.dumps({"tasks": len(tasks)}))
 print("SECRET run output")

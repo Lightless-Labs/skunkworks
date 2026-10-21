@@ -9,10 +9,14 @@ certify: the suite is clean and settled -> records/certified.json binds its dige
   Pilots run only on the certified suite (gym_pilot.py); a later repair changes the content and
   invalidates that family's pilot data (gym_band.py).
 
-export: writes runs/c2-gym3/export/ in the repo: for dev tasks, task.json (id, family,
-  requirements, test_timeout_secs) and public_tests.rs; for every task, its file hashes
+export (publication of the final gym): only with a final selection (gym_band.py finalize) whose
+  floors are met (else status floors_unmet) and whose content hashes equal the current
+  certification; writes runs/c2-gym3/export/ in the repo: for the retained dev families (kept +
+  regression stratum), task.json (id, family, requirements, test_timeout_secs) and
+  public_tests.rs; for every retained dev and surviving holdout task, its file hashes
   (hashes.json). Hidden tests and references stay under the gym root; dev-holdout requirements
-  are not exported. Every exported text is checked to contain no hidden test name.
+  are not exported. Every exported text, hashes.json included, is checked BEFORE it is written to
+  contain no hidden test name (literal substring).
 
 usage: python3 -I tools/gym/gym_export.py certify | export
 """
@@ -27,7 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gymlib import (MAX_VOID_ROUNDS, OUT_REPO, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gate_or_exit,  # noqa: E402
                     gateway, latest_round, void_rounds,
-                    hashes_digest, load_json, repo_write_root, safe_write_text, save_json, spec_sha, suite_digest,
+                    hashes_digest, load_json, parse_task_json, repo_write_root, safe_write_text, save_json, spec_sha,
+                    suite_digest,
                     tree_hashes)
 from gym_rubric import leaked_names  # noqa: E402
 from gymvendor import test_names  # noqa: E402
@@ -103,36 +108,43 @@ def certified_current():
 
 
 def export():
-    from gym_split import assignment, load_split
+    from gym_band import SELECTION
     cert = certified_current()
-    sp = load_split()
-    if not cert or not sp:
-        emit(stage="export", status="not-certified" if not cert else "no-split")
+    sel = load_json(SELECTION)
+    if not cert or not sel:
+        emit(stage="export", status="not-certified" if not cert else "not-finalized")
         return False
-    act = load_json(RECORDS / "active.json")
+    if sel.get("status") != "ok":
+        emit(stage="export", status="floors_unmet")
+        return False
+    content = dict(sel["content"], **sel["holdout_content"])
+    if any(cert["content"].get(t) != h for t, h in content.items()):
+        emit(stage="export", status="content-mismatch")
+        return False
     hidden_names = set()
     for tid in cert["content"]:
         hidden_names |= test_names((SUITE / tid / "hidden_tests.rs").read_text())
+    files, hashes = {}, {}
+    for tid in sorted(content):
+        dev = tid in sel["content"]
+        hashes[tid] = {"content": cert["content"][tid], "files": tree_hashes(SUITE / tid),
+                       "set": "dev" if dev else "holdout"}
+        if not dev:
+            continue
+        tj = parse_task_json((SUITE / tid / "task.json").read_bytes())
+        files[f"{tid}/task.json"] = json.dumps({k: tj[k] for k in TASK_KEYS if k in tj}, indent=1, sort_keys=True) + "\n"
+        files[f"{tid}/public_tests.rs"] = (SUITE / tid / "public_tests.rs").read_text()
+    files["hashes.json"] = json.dumps({"suite": cert["suite"], "spec_sha256": cert["spec_sha256"], "tasks": hashes},
+                                      indent=1, sort_keys=True) + "\n"
+    if any(leaked_names(hidden_names, text) for text in files.values()):     # before anything is written
+        raise RuntimeError("seal: hidden test name in an exported file")
     root = repo_write_root(EXPORT / "hashes.json")
     if EXPORT.exists():
         shutil.rmtree(EXPORT)
-    hashes, dev = {}, 0
-    for tid in sorted(cert["content"]):
-        a = assignment(tid.rsplit("-l", 1)[0], sp, act)
-        hashes[tid] = {"content": cert["content"][tid], "files": tree_hashes(SUITE / tid),
-                       "set": a["set"] if a else None}
-        if not a or a["set"] != "dev":
-            continue
-        tj = json.loads((SUITE / tid / "task.json").read_text())
-        texts = {"task.json": json.dumps({k: tj[k] for k in TASK_KEYS if k in tj}, indent=1, sort_keys=True) + "\n",
-                 "public_tests.rs": (SUITE / tid / "public_tests.rs").read_text()}
-        for name, text in texts.items():
-            if leaked_names(hidden_names, text):          # literal substring, no token boundary
-                raise RuntimeError("seal: hidden test name in an exported file")
-            (EXPORT / tid).mkdir(parents=True, exist_ok=True)
-            safe_write_text(EXPORT / tid / name, text, root)
-        dev += 1
-    save_json(EXPORT / "hashes.json", {"suite": cert["suite"], "spec_sha256": cert["spec_sha256"], "tasks": hashes})
+    for rel, text in files.items():
+        (EXPORT / rel).parent.mkdir(parents=True, exist_ok=True)
+        safe_write_text(EXPORT / rel, text, root)
+    dev = len(sel["retained"])
     emit(stage="export", tasks=len(hashes), n=dev, ok=True)
     return True
 

@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -72,7 +73,7 @@ class Base(unittest.TestCase):
                         GYM_CODEX=str(FAKE),
                         GYM_AUTH=str(self.tmp / "auth.json"), GYM_CANARY=str(self.canary), GYM_PINNED_SHA=sha,
                         GYM_TEST_HOLDOUT=str(self.holdout), GYM_TEST_OUT_REPO=str(self.repo),
-                        GYM_TEST_QUOTA="1", GYM_TEST_SPARES="1")
+                        GYM_TEST_QUOTA="1", GYM_TEST_SPARES="1", GYM_TEST_DEV_FLOOR="1", GYM_TEST_HOLDOUT_FLOOR="1")
         self.gym = self.root / "authoring" / "gym-v3"
         self.rec = self.gym / "_records"
 
@@ -102,20 +103,25 @@ class Base(unittest.TestCase):
 
     # ------------------------------------------------------------------ flow helpers
 
-    def select_and_split(self, seed=7, holdout=1, wave1=3):
+    def select_and_split(self, holdout=1, wave1=3, freeze=True):
         code, lines = self.run_script("gym_select.py")
         self.assertEqual(code, 0, lines)
-        code, lines = self.run_script("gym_split.py", "register", "--seed", str(seed), "--holdout", str(holdout),
-                                      "--wave1", str(wave1))
+        code, lines = self.run_script("gym_split.py", "register", "--holdout", str(holdout), "--wave1", str(wave1))
         self.assertEqual(code, 0, lines)
         git(self.repo, "add", "runs/c2-gym3/split.json")
         git(self.repo, "commit", "-q", "-m", "split")
+        if freeze:
+            code, lines = self.run_script("gym_split.py", "freeze", "--wave", "1")
+            self.assertEqual((code, lines[-1]["status"]), (0, "wave-frozen"), lines)
         return json.loads((self.repo / "runs" / "c2-gym3" / "split.json").read_text())
 
     def settle(self):
         self.assertEqual(self.run_script("gym_assemble.py")[0], 0)
         code, lines = self.run_script("gym_validate.py", "--jobs", "4")
         self.assertEqual(code, 0, lines)
+        val = json.loads((self.rec / "validate.json").read_text())
+        rejects = [x for f in self.rec.glob(f"validate-{val['stamp']}.txt") for x in f.read_text().splitlines() if "REJECT" in x]
+        self.assertEqual(val["rejected"], [], rejects)                  # verdict lines: ids and reasons only
         code, lines = self.run_script("gym_similarity.py")
         self.assertEqual(code, 0, lines)
         return lines
@@ -124,8 +130,9 @@ class Base(unittest.TestCase):
         return self.run_script("gym_audit.py", "--binary", str(FAKE_A2D), env=dict(self.env, **hooks))
 
     def flow(self):
-        """The full fake-codex gym flow, up to a certified, exported, piloted and accepted suite.
-        Every dev family is in wave 1, so the acceptance replicate may run once wave 1 is decided."""
+        """The full fake-codex gym flow, up to a certified, piloted, selected, accepted and exported
+        suite. Every dev family is in wave 1 (wave 2 is frozen empty), so the final selection and the
+        acceptance replicate may run once wave 1 is decided."""
         sp = self.select_and_split(wave1=4)
         fams = (self.gym / "FAMILIES.txt").read_text().split()
         self.canary.write_text("CANARY-CONTENT\n")
@@ -145,18 +152,31 @@ class Base(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         code, lines = self.run_script("gym_export.py", "certify")
         self.assertEqual(code, 0, lines)
-        code, lines = self.run_script("gym_export.py", "export")
-        self.assertEqual(code, 0, lines)
         w1 = sorted(f for f, a in sp["assign"].items() if a["wave"] == 1)
         fail = [f"{w1[0]}-l1", f"{w1[0]}-l2"] + [f"{w1[2]}-l{i}" for i in (1, 2, 3, 4)]
         code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D),
                                       env=dict(self.env, GYM_TEST_PILOT_FAIL=" ".join(fail)))
         self.assertEqual(code, 0, lines)
         code, lines = self.run_script("gym_band.py", "band", "--wave", "1", "--run", "runs/c2-gym3-pilot-w1/r1")
+        self.assertEqual((code, lines[-1]["status"]), (0, "finalized"), lines)
+        code, lines = self.run_script("gym_export.py", "export")
+        self.assertEqual((code, lines[-1]["status"]), (1, "not-finalized"), lines)    # publication needs the selection
+        code, lines = self.run_script("gym_split.py", "freeze", "--wave", "2", "--count", "0")
         self.assertEqual(code, 0, lines)
+        code, lines = self.run_script("gym_band.py", "finalize")
+        self.assertEqual((code, lines[-1]["status"]), (0, "ok"), lines)
+        # C-B5: an acceptance reservation that never launched (a crash before a2d started) is not
+        # spent; the next call reuses it
+        reg_path = self.repo / "runs" / "c2-gym3" / "replicates.json"
+        reg = json.loads(reg_path.read_text())
+        reg["runs/c2-gym3-accept/r1"] = {"seq": 99, "purpose": "acceptance", "wave": None, "threshold": True,
+                                         "status": "reserved", "families": []}
+        reg_path.write_text(json.dumps(reg))
         code, lines = self.run_script("gym_pilot.py", "--acceptance", "--binary", str(FAKE_A2D))
         self.assertEqual(code, 0, lines)
         code, lines = self.run_script("gym_band.py", "accept", "--run", "runs/c2-gym3-accept/r1")
+        self.assertEqual(code, 0, lines)
+        code, lines = self.run_script("gym_export.py", "export")
         self.assertEqual(code, 0, lines)
         return sp, fams, w1
 
@@ -801,7 +821,7 @@ class Units(Base):
             "print(a == b, a != c, len(hold), len(w1), len(a['wave2_order']), per)\n"
             "print(len(set(a['assign'])) == 90, not set(hold) & set(w1), sorted(a['wave2_order']) == sorted("
             "f for f, x in a['assign'].items() if x['wave'] == 2))\n"
-            "try:\n    s.record(fams, 1, 25, 12, 0.3, 4, 45)\n    print('accepted')\nexcept ValueError:\n    print('refused')")
+            "try:\n    s.record(fams, 25, 12, 0.3, 4)\n    print('accepted')\nexcept ValueError:\n    print('refused')")
         a, b, c = out.splitlines()
         self.assertEqual(a, "True True 25 12 53 (['depth', 'edges', 'scale', 'state', 'surface'], [5, 5, 5, 5, 5])")
         self.assertEqual(b, "True True True")
@@ -917,44 +937,78 @@ class Units(Base):
                                            "leak a hidden name": False})
 
     def test_band_rules(self):
+        """classify; the registered regression rounding (C-I12, exact arithmetic); the
+        deterministic authoritative-data rule over the registry (B7/C-I9), content binding (B8),
+        slot accounting (B9) and the one-re-pilot cap (C-I14); the acceptance decision (B10)."""
         out = self.lib(
-            "import gym_band as b\nT, F, V = True, False, None\n"
+            "import gym_band as b, gym_split as s, json\nT, F, V = True, False, None\n"
             "print([b.classify(x) for x in ([T, F, F, F], [T, T, T, F], [T, T, T, T], [F, F, F, F],"
             " [T, T, V, F], [T, T, T, V], [F, F, F, V], [V, V, T, T], [V, T, F, F])])\n"
+            "print([b.stratum_size(n, 99) for n in (0, 1, 3, 5, 7, 10, 40, 45)], b.stratum_size(40, 3))\n"
             "e = ['g3-f%03d' % i for i in range(1, 41)]\n"
-            "r1, r2 = b.regression_stratum(e, 0.175, 7, 1), b.regression_stratum(e, 0.175, 7, 1)\n"
-            "print(len(r1), r1 == r2, set(r1) <= set(e), b.regression_stratum(e, 0.15, 7, 1) != b.regression_stratum(e, 0.15, 8, 1))\n"
-            "try:\n    b.regression_stratum(e, 0.3, 7, 1)\n    print('accepted')\nexcept ValueError:\n    print('refused')\n"
-            "sp = {'assign': {'g3-f001': {'set': 'dev', 'wave': 1}, 'g3-f002': {'set': 'holdout', 'wave': None},"
-            " 'g3-f003': {'set': 'dev', 'wave': 2}}, 'band': {'keep_min': 1, 'keep_max': 3}}\n"
-            "asg = lambda f, s, a: s['assign'].get(f)\n"
-            "c = {'content': {f'g3-f001-l{i}': 'h' for i in (1, 2, 3, 4)}}\n"
-            "tup = {f'g3-f001-l{i}': {'pass': i == 1, 'void': False} for i in (1, 2, 3, 4)}\n"
-            "m = {'families': ['g3-f001'], 'content': dict(c['content'])}\n"
-            "print(b.decide(sp, {}, 1, m, tup, c, asg))\n"
-            "m2 = {'families': ['g3-f001'], 'content': dict(c['content'], **{'g3-f001-l3': 'old'})}\n"
-            "print(b.decide(sp, {}, 1, m2, tup, c, asg))\n"
-            "for fam, w in (('g3-f002', 1), ('g3-f003', 1)):\n"
-            "    try:\n        b.decide(sp, {}, w, {'families': [fam], 'content': {}}, {}, c, asg)\n        print('accepted')\n"
-            "    except ValueError:\n        print('refused')\n"
-            "print(b.acceptance_rate({'a': {'pass': True, 'void': False}, 'b': {'pass': False, 'void': False},"
-            " 'c': {'pass': None, 'void': True}}))")
+            "r1, r2 = b.draw_regression(e, 7, 11), b.draw_regression(list(reversed(e)), 7, 11)\n"
+            "print(len(r1), r1 == r2, set(r1) <= set(e), b.draw_regression(e, 7, 12) != r1)\n"
+            "tid = lambda f: [f'{f}-l{i}' for i in (1, 2, 3, 4)]\n"
+            "act = {'active': ['g3-f001', 'g3-f002', 'g3-f003', 'g3-f004', 'g3-f007'], 'events': ["
+            "{'family': 'g3-f005', 'reason': 'similarity', 'replacement': None},"
+            "{'family': 'g3-f006', 'reason': 'validation-cap', 'replacement': 'g3-f007'}]}\n"
+            "cert = {t: 'h' for f in act['active'] for t in tid(f)}\n"
+            "def tup(f, passes, voids=()):\n"
+            "    return {t: {'pass': i < passes, 'void': i in voids} for i, t in enumerate(tid(f))}\n"
+            "t1 = {**tup('g3-f001', 4, (0, 1)), **tup('g3-f002', 1), **tup('g3-f003', 4), **tup('g3-f004', 2), **tup('g3-f007', 4)}\n"
+            "c1 = dict(cert, **{'g3-f004-l2': 'old'})\n"
+            "runs = [{'rel': 'r1', 'purpose': 'pilot', 'status': 'complete', 'families': ['g3-f001', 'g3-f002', 'g3-f003', 'g3-f004', 'g3-f007'],"
+            " 'content': c1, 'tuples': t1}]\n"
+            "slots = ['g3-f001', 'g3-f002', 'g3-f003', 'g3-f004', 'g3-f005', 'g3-f006']\n"
+            "show = lambda d: {k: (v['family'], v['status'], v['reason']) for k, v in d.items()}\n"
+            "d1 = b.decide_wave(slots, act, cert, runs, (1, 3), s.holder, s.drop_reason)\n"
+            "print(json.dumps(show(d1)))\n"
+            "runs.append({'rel': 'r2', 'purpose': 'repilot', 'status': 'complete', 'families': ['g3-f001', 'g3-f004'],"
+            " 'content': cert, 'tuples': {**tup('g3-f001', 0), **tup('g3-f004', 4, (0, 1))}})\n"
+            "runs.append({'rel': 'r3', 'purpose': 'pilot', 'status': 'complete', 'families': ['g3-f002'],"
+            " 'content': cert, 'tuples': tup('g3-f002', 4)})\n"
+            "d2 = b.decide_wave(slots, act, cert, runs, (1, 3), s.holder, s.drop_reason)\n"
+            "print(json.dumps(show(d2)), d2['g3-f002']['run'], d2['g3-f002']['content'] == {t: 'h' for t in tid('g3-f002')})\n"
+            "cert2 = dict(cert, **{'g3-f002-l1': 'new'})\n"
+            "d3 = b.decide_wave(slots, act, cert2, runs, (1, 3), s.holder, s.drop_reason)\n"
+            "print(d3['g3-f002']['status'], d3['g3-f002']['reason'])\n"
+            "def acc(n, v, p):\n"
+            "    tu = {f't{i}': {'void': i < v, 'pass': v <= i < v + p} for i in range(n)}\n"
+            "    m = b.acceptance_rate(tu, sorted(tu) + ['missing'] * 0)\n"
+            "    return b.acceptance_decision(m), m['rate']\n"
+            "print(acc(20, 18, 1), acc(20, 0, 10), acc(100, 4, 33), acc(100, 3, 50), acc(100, 2, 80), acc(100, 6, 50))\n"
+            "m = b.acceptance_rate({'a': {'void': False, 'pass': True}}, ['a', 'b'])\n"
+            "print(m['voids'], m['wilson95'], b.acceptance_decision(m))")
         lines = out.splitlines()
         self.assertEqual(lines[0], "['band', 'band', 'easy', 'hard', 'band', 'repilot', 'repilot', 'repilot', 'band']")
-        self.assertEqual(lines[1], "7 True True True")
-        self.assertEqual(lines[2], "refused")
-        self.assertEqual(lines[3], "{'g3-f001': 'band'}")
-        self.assertEqual(lines[4], "{'g3-f001': 'invalidated'}")
-        self.assertEqual(lines[5:7], ["refused", "refused"])                  # holdout, other wave
-        self.assertEqual(lines[7], "{'tasks': 3, 'voids': 1, 'passed': 1, 'rate': 0.5, 'in_band': True}")
+        self.assertEqual(lines[1], "[(0, 'clamped-15-20'), (0, 'nearest-feasible'), (1, 'nearest-feasible'), "
+                                   "(1, 'clamped-15-20'), (1, 'nearest-feasible'), (2, 'clamped-15-20'), "
+                                   "(7, 'clamped-15-20'), (8, 'clamped-15-20')] (3, 'clamped-15-20+candidates-short')")
+        self.assertEqual(lines[2], "7 True True True")
+        self.assertEqual(json.loads(lines[3]), {
+            "g3-f001": ["g3-f001", "pending", "repilot"], "g3-f002": ["g3-f002", "kept", None],
+            "g3-f003": ["g3-f003", "regression-candidate", None], "g3-f004": ["g3-f004", "pending", "invalidated"],
+            "g3-f005": [None, "dropped", "similarity"], "g3-f006": ["g3-f007", "regression-candidate", None]})
+        a, run, bound = lines[4].rsplit(" ", 2)
+        self.assertEqual(json.loads(a), {
+            "g3-f001": ["g3-f001", "dropped", "hard (0/4)"], "g3-f002": ["g3-f002", "kept", None],
+            "g3-f003": ["g3-f003", "regression-candidate", None],
+            "g3-f004": ["g3-f004", "dropped", "unknown (re-pilot cap)"],       # its one re-pilot was void again
+            "g3-f005": [None, "dropped", "similarity"], "g3-f006": ["g3-f007", "regression-candidate", None]})
+        self.assertEqual((run, bound), ("r1", "True"))                        # the FIRST deciding run counts
+        self.assertEqual(lines[5], "pending invalidated")                     # content changed after the decision
+        self.assertEqual(lines[6], "('incomplete', 0.5) ('ok', 0.5) ('incomplete', 0.3438) ('ok', 0.5155) "
+                                   "('adjust-next-wave', 0.8163) ('incomplete', 0.5319)")
+        self.assertEqual(lines[7], "1 [0.2065, 1.0] incomplete")
 
     def test_pilot_ledgers_match_the_cap_globs(self):
+        """The repo's accounting ledger sits at the cap-glob depth and its reduced invocation records
+        satisfy eval.py's and confirm3.py's luna_today predicate; nothing else of the record is kept."""
         out = self.lib("import gym_pilot as p\n"
                        "print(p.out_dir(False, 1, 3), p.cap_visible(p.out_dir(False, 1, 3)),"
                        " p.out_dir(True, None, 1), p.cap_visible(p.out_dir(True, None, 1)),"
                        " p.cap_visible('runs/c2-gym3-pilot-w1/a/b/c'), p.cap_visible('runs/gym3/r1'))")
         self.assertEqual(out, "runs/c2-gym3-pilot-w1/r3 True runs/c2-gym3-accept/r1 True False False")
-        # the literal globs of nano/eval.py and nano/confirm3.py find it
         runs = self.tmp / "globs" / "runs"
         (runs / "c2-gym3-pilot-w1" / "r3").mkdir(parents=True)
         (runs / "c2-gym3-pilot-w1" / "r3" / "ledger.jsonl").write_text("")
@@ -962,8 +1016,86 @@ class Units(Base):
             + list(runs.glob("c2-*/*/*/ledger.jsonl"))
         self.assertEqual([p.relative_to(runs).as_posix() for p in found], ["c2-gym3-pilot-w1/r3/ledger.jsonl"])
         for src in (A2D / "nano" / "eval.py", A2D / "nano" / "confirm3.py"):
-            self.assertIn('glob("c2-*/*/ledger.jsonl")', src.read_text())
+            text = src.read_text()
+            self.assertIn('glob("c2-*/*/ledger.jsonl")', text)
+            self.assertIn("if '\"invocation\"' in line and LUNA in line:", text)
+            self.assertIn('r.get("kind") == "invocation" and r.get("provider") == LUNA and r.get("ts_ms", 0) >= lo_ms', text)
+        rec = {"seq": 7, "kind": "invocation", "ts_ms": 1760000000000, "prev_sha256": "ab", "arm": "X:inc",
+               "task": "g3-f001-l1", "replicate": 0, "index": 2, "enzyme": "SECRET-enzyme", "provider": "codex/gpt-6-luna",
+               "ok": False, "error": "SECRET error text", "duration_ms": 5, "prompt_sha256": "cd", "response_sha256": "ef",
+               "prompt_path": "/x/SECRET/p", "response_path": "/x/SECRET/r",
+               "usage": {"prompt_tokens": 1, "completion_tokens": 2, "thinking_tokens": 3, "reported_total": 6, "x": "SECRET"},
+               "tool_calls": 0}
+        out = self.lib("import gym_pilot as p, json\n"
+                       f"r = p.reduce_invocation({rec!r})\nline = json.dumps(r, sort_keys=True)\n"
+                       "print(line)\nprint('\"invocation\"' in line and p.LUNA in line, r['provider'] == p.LUNA,"
+                       " p.reduce_invocation({'kind': 'invocation', 'provider': 'x codex/gpt-6-luna'})['provider'])")
+        a, b = out.splitlines()
+        self.assertNotIn("SECRET", a)
+        self.assertEqual(sorted(json.loads(a)), ["arm", "duration_ms", "index", "kind", "ok", "provider", "replicate",
+                                                 "seq", "task", "tool_calls", "ts_ms", "usage"])
+        self.assertEqual(b, "True True codex/gpt-6-luna")
 
+    def test_replacement_becomes_a_drop_once_the_wave_is_piloted(self):
+        """C-I10 / interpretation 10: a same-class spare takes a family's split slot only before
+        that wave has a pilot; afterwards a replacement is a drop (no outcome-driven
+        replenishment). A holdout slot (never piloted) keeps structural replacement."""
+        c2 = self.repo / "runs" / "c2-gym3"
+        c2.mkdir(parents=True)
+        (c2 / "split.json").write_text(json.dumps({"assign": {"g3-f001": {"set": "dev", "wave": 1, "class": "depth"},
+                                                              "g3-f002": {"set": "holdout", "wave": None, "class": "depth"}}}))
+        self.rec.mkdir(parents=True)
+        fams = ("g3-f001", "g3-f002", "g3-f006", "g3-f011", "g3-f016")
+        (self.rec / "active.json").write_text(json.dumps({
+            "active": ["g3-f001", "g3-f002"], "spares": {"depth": ["g3-f006", "g3-f011", "g3-f016"]},
+            "classes": {f: "depth" for f in fams}, "events": []}))
+        rep = "import gymlib\nprint(gymlib.replace_family(%r, 'similarity'))"
+        self.assertEqual(self.lib(rep % "g3-f001"), "g3-f006")                     # before any pilot
+        (c2 / "replicates.json").write_text(json.dumps({"runs/c2-gym3-pilot-w1/r1": {"wave": 1, "purpose": "pilot",
+                                                                                    "status": "launched"}}))
+        self.assertEqual(self.lib(rep % "g3-f006"), "None")                        # the slot's wave is piloted
+        self.assertEqual(self.lib(rep % "g3-f002"), "g3-f011")                     # holdout: structural replacement
+        act = json.loads((self.rec / "active.json").read_text())
+        self.assertEqual((act["active"], act["spares"]["depth"]), (["g3-f011"], ["g3-f016"]))
+
+    def test_wave_pilot_refuses_a_partial_wave(self):
+        """C-I11 / B9: the initial pilot covers every frozen slot's family, all certified; an
+        uncertified one refuses the pilot instead of silently narrowing the wave."""
+        c2 = self.repo / "runs" / "c2-gym3"
+        c2.mkdir(parents=True)
+        (c2 / "waves.json").write_text(json.dumps({"1": {"slots": ["g3-f001", "g3-f003"], "count": None}}))
+        out = self.lib("import gym_pilot as p\n"
+                       "act = {'active': ['g3-f001', 'g3-f003'], 'events': []}\n"
+                       "cert = {'content': {f'g3-f001-l{i}': 'h' for i in (1, 2, 3, 4)}}\n"
+                       "for c in (cert, {'content': dict(cert['content'], **{f'g3-f003-l{i}': 'h' for i in (1, 2, 3, 4)})}):\n"
+                       "    try:\n        print(p.select_families(['--wave', '1'], {}, act, c, {}))\n"
+                       "    except p.Refusal as r:\n        print(r.status)\n"
+                       "try:\n    p.select_families(['--wave', '1'], {}, act, cert, {'x': {'wave': 1, 'purpose': 'pilot', 'status': 'failed'}})\n"
+                       "except p.Refusal as r:\n    print(r.status)\n"
+                       "print(p.select_families(['--wave', '1'], {}, act, c, {'x': {'wave': 1, 'purpose': 'pilot', 'status': 'reserved'}}))")
+        self.assertEqual(out.splitlines(), ["wave-not-certified", "(['g3-f001', 'g3-f003'], 1, 'pilot')",
+                                            "wave-already-piloted", "(['g3-f001', 'g3-f003'], 1, 'pilot')"])
+
+    def test_split_seed_is_derived_and_refused_after_authoring(self):
+        """C-I16: no operator seed; the seed is sha256(families_sha256 + constant) mod 2**32;
+        registration is refused once any authoring status exists."""
+        out = self.lib("import gym_split as s, hashlib\n"
+                       "d = 'ab' * 32\n"
+                       "print(s.derived_seed(d) == int(hashlib.sha256((d + ':gym-v3-split-2026-10-21').encode()).hexdigest(), 16) % 2**32)")
+        self.assertEqual(out, "True")
+        code, lines = self.run_script("gym_select.py")
+        self.assertEqual(code, 0, lines)
+        code, lines = self.run_script("gym_split.py", "register", "--seed", "7")
+        self.assertEqual((code, lines[-1]["status"]), (2, "operator-seed-refused"))
+        (self.rec / "author-g3-f001").mkdir(parents=True)
+        (self.rec / "author-g3-f001" / "status.json").write_text('{"attempts": 0}')
+        code, lines = self.run_script("gym_split.py", "register")
+        self.assertEqual((code, lines[-1]["status"]), (2, "authoring-started"))
+        (self.rec / "author-g3-f001" / "status.json").unlink()
+        code, lines = self.run_script("gym_split.py", "register", "--holdout", "1", "--wave1", "3")
+        sp = json.loads((self.repo / "runs" / "c2-gym3" / "split.json").read_text())
+        self.assertEqual((code, sp["seed"]), (0, int(self.lib(f"import gym_split as s\nprint(s.derived_seed({sp['families_sha256']!r}))"))))
+        self.assertEqual(sp["floors"], {"wave1_min_kept": 4, "dev_min_kept": 1, "dev_min_tasks": 4, "holdout_min": 1})
 
 class Sandbox(Base):
     """Isolation checks and probes under the real seatbelt profile."""
@@ -1190,9 +1322,10 @@ class Flows(Base):
         export = self.repo / "runs" / "c2-gym3" / "export"
         holdout_fams = [f for f, a in sp["assign"].items() if a["set"] == "holdout"]
         self.assertEqual(sorted(p.name for p in export.iterdir() if p.is_dir()),
-                         sorted(f"{f}-l{i}" for f in fams if f not in holdout_fams for i in (1, 2, 3, 4)))
+                         sorted(f"{w1[0]}-l{i}" for i in (1, 2, 3, 4)))          # the retained dev family only
         self.assertEqual({p.name for p in export.rglob("*") if p.is_file()}, {"task.json", "public_tests.rs", "hashes.json"})
-        self.assertEqual(len(json.loads((export / "hashes.json").read_text())["tasks"]), 20)
+        hashes = json.loads((export / "hashes.json").read_text())["tasks"]
+        self.assertEqual(sorted({t.rsplit("-l", 1)[0] for t in hashes}), sorted([w1[0]] + holdout_fams))
         # never filter on solvability: the solver failure, judged DETERMINED by both, stays
         adj = json.loads((self.rec / "adjudication.json").read_text())
         failing = adj[f"{fams[0]}-l2"]["r1"]
@@ -1203,23 +1336,35 @@ class Flows(Base):
         self.assertTrue(all(len(r["m4"]) == 2 for t in adj.values() for r in t.values()), adj)
         self.assertEqual(len(adj), 20)
         jobs = json.loads((self.rec / "adj-jobs.json").read_text())
-        self.assertEqual(sorted(k for k in jobs if k.endswith("-A")), [f"{fams[0]}-repair-A"])
-        self.assertEqual(len([k for k in jobs if k.endswith("-B")]), 6)       # 5 repair units + 1 classify
+        self.assertEqual([k.rsplit("-", 2)[0] for k in jobs if k.endswith("-A")], [f"{fams[0]}-repair"])
+        self.assertEqual(len([k for k in jobs if k.endswith("-B")]), 6)       # 5 families + the void task's r2
         # the audit ran on the gym's codex homes and never saw A2D_HOLDOUT_DIR
         cert = json.loads((self.rec / "certified.json").read_text())
         self.assertEqual(len(cert["content"]), 20)
-        # pilot: ledger in the scratch repo at the cap depth, registered, holdout never piloted
+        # pilot: only an accounting ledger and a content-free summary reach the repo, at the cap
+        # depth; everything raw stays sealed under the gym root; holdout never piloted
         reg = json.loads((self.repo / "runs" / "c2-gym3" / "replicates.json").read_text())
         self.assertEqual(sorted(reg), ["runs/c2-gym3-accept/r1", "runs/c2-gym3-pilot-w1/r1"])
-        self.assertTrue((self.repo / "runs" / "c2-gym3-pilot-w1" / "r1" / "ledger.jsonl").is_file())
-        man = json.loads((self.repo / "runs" / "c2-gym3-pilot-w1" / "r1.manifest.json").read_text())
-        self.assertEqual(man["families"], w1)
-        self.assertFalse(set(man["families"]) & set(holdout_fams))
+        self.assertEqual({e["status"] for e in reg.values()}, {"complete"})
+        for d in ("c2-gym3-pilot-w1", "c2-gym3-accept"):
+            self.assertEqual(sorted(p.relative_to(self.repo / "runs" / d).as_posix()
+                                    for p in (self.repo / "runs" / d).rglob("*") if p.is_file()),
+                             ["r1/ledger.jsonl", "r1/summary.json"], d)
+        acct = [json.loads(x) for x in (self.repo / "runs" / "c2-gym3-pilot-w1" / "r1" / "ledger.jsonl").read_text().splitlines()]
+        self.assertEqual((len(acct), {r["kind"] for r in acct}, {r["provider"] for r in acct}), (16, {"invocation"}, {"codex/gpt-6-luna"}))
+        self.assertTrue((self.root / "runs" / "pilot-c2-gym3-pilot-w1-r1" / "submissions").is_dir())   # sealed
+        summ = json.loads((self.repo / "runs" / "c2-gym3-pilot-w1" / "r1" / "summary.json").read_text())
+        self.assertEqual((summ["families"], summ["status"], summ["invocations_published"]), (w1, "complete", 16))
+        self.assertFalse(set(summ["families"]) & set(holdout_fams))
         band = json.loads((self.repo / "runs" / "c2-gym3" / "band-w1.json").read_text())
-        self.assertEqual(band["decisions"], {w1[0]: "band", w1[1]: "easy", w1[2]: "hard", w1[3]: "easy"})
-        self.assertEqual((band["kept"], band["regression"], band["dropped"]), ([w1[0]], [], [w1[1], w1[2], w1[3]]))
+        self.assertEqual({s: r["status"] for s, r in band["slots"].items()},
+                         {w1[0]: "kept", w1[1]: "regression-candidate", w1[2]: "dropped", w1[3]: "regression-candidate"})
+        self.assertEqual((band["kept"], band["candidates"], band["dropped"]), ([w1[0]], [w1[1], w1[3]], [w1[2]]))
+        sel = json.loads((self.repo / "runs" / "c2-gym3" / "selection.json").read_text())
+        self.assertEqual((sel["status"], sel["retained"], sel["regression"], sel["regression_rule"]),
+                         ("ok", [w1[0]], [], "nearest-feasible"))          # N = 1: [0.15, 0.20] holds no integer
         acc = json.loads((self.repo / "runs" / "c2-gym3" / "acceptance.json").read_text())
-        self.assertEqual((acc["tasks"], acc["decision"]), (4, "adjust-next-wave"))      # 4/4 pass: 100%
+        self.assertEqual((acc["tasks"], acc["voids"], acc["decision"]), (4, 0, "adjust-next-wave"))      # 4/4: 100%
         self.assertTrue(reg["runs/c2-gym3-accept/r1"]["threshold"])
         # an acceptance (A/A threshold) replicate can never feed a selection; nor a second acceptance
         code, lines = self.run_script("gym_band.py", "band", "--wave", "1", "--run", "runs/c2-gym3-accept/r1")
@@ -1345,56 +1490,133 @@ class Flows(Base):
         code, lines = self.audit(GYM_CODEX=str(pkg / "bin" / "codex-moved"))
         self.assertEqual((code, lines[-1]["status"]), (2, "codex-fingerprint-missing"), lines)
 
-    def test_pilot_refusals_and_seal_check(self):
-        sp = self.select_and_split()
+    def test_pilot_refusals_registry_and_seal(self):
+        """Selection discipline end to end: frozen membership (B9), the daily cap (B4), one initial
+        pilot per wave and re-pilots only of pending families (B7), registry-only band inputs
+        (C-I9), sealed raw artifacts with accounting published in flight (B4), the re-pilot cap,
+        floors at final selection."""
+        sp = self.select_and_split(freeze=False)                 # holdout 1, wave 1: 3, wave 2: 1
         self.run_script("gym_author.py", "--parallel", "3")
         self.settle()
         self.audit()
         self.run_script("gym_adjudicate.py")
         self.assertEqual(self.run_script("gym_export.py", "certify")[0], 0)
+
+        def pilot(*a, **env):
+            return self.run_script("gym_pilot.py", *a, "--binary", str(FAKE_A2D), env=dict(self.env, **env))
+
+        def band(wave, *a):
+            return self.run_script("gym_band.py", "band", "--wave", str(wave), *a)
         # a split that is not committed blocks any pilot
         split = self.repo / "runs" / "c2-gym3" / "split.json"
         text = split.read_text()
-        split.write_text(text.replace('"seed": 7', '"seed": 8'))
-        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D))
-        self.assertEqual((code, lines[-1]["status"]), (2, "split-not-committed"))
+        split.write_text(text.replace('"n_wave1": 3', '"n_wave1": 4'))
+        self.assertEqual(pilot("--wave", "1")[1][-1]["status"], "split-not-committed")
         split.write_text(text)
+        # wave membership must be frozen before its pilot; wave 2 only after wave 1 is finalized
+        code, lines = pilot("--wave", "1")
+        self.assertEqual((code, lines[-1]["status"]), (2, "wave-not-frozen"))
+        code, lines = self.run_script("gym_split.py", "freeze", "--wave", "2", "--count", "1")
+        self.assertEqual((code, lines[-1]["error"]), (1, "runtimeerror"))
+        self.assertEqual(self.run_script("gym_split.py", "freeze", "--wave", "1")[0], 0)
         # a harness other than E007 is refused
         other = self.tmp / "other.py"
         other.write_text("# lanes: judge=codex/gpt-6.1-sol:medium\n")
-        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D),
-                                      env=dict(self.env, GYM_TEST_HARNESS=str(other)))
+        code, lines = pilot("--wave", "1", GYM_TEST_HARNESS=str(other))
         self.assertEqual((code, lines[-1]["status"]), (2, "harness-not-e007"))
-        # a hidden test name in the run's out dir is a seal breach: the run is not usable
-        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D),
-                                      env=dict(self.env, GYM_TEST_LEAK="1"))
+        # the daily Luna cap: today's Luna calls + 6 x tasks must stay <= 3000 (as nano/eval.py)
+        busy = self.repo / "runs" / "c2-other" / "r1"
+        busy.mkdir(parents=True)
+        rec = json.dumps({"kind": "invocation", "provider": "codex/gpt-6-luna", "ts_ms": int(time.time() * 1000)})
+        (busy / "ledger.jsonl").write_text((rec + "\n") * (3000 - 6 * 12 + 1))
+        code, lines = pilot("--wave", "1")
+        self.assertEqual((code, lines[-1]["status"]), (3, "deferred-daily-cap"))
+        shutil.rmtree(busy.parent)
+        self.assertNotIn("runs/c2-gym3-pilot-w1/r1", json.loads((self.repo / "runs" / "c2-gym3" / "replicates.json").read_text())
+                         if (self.repo / "runs" / "c2-gym3" / "replicates.json").exists() else {})
+        # the initial pilot: two voids in one family (pending), the others decided
+        w1 = sorted(f for f, a in sp["assign"].items() if a["wave"] == 1)
+        code, lines = pilot("--wave", "1", GYM_TEST_PILOT_VOID=f"{w1[0]}-l1 {w1[0]}-l2", GYM_TEST_PILOT_FAIL=f"{w1[1]}-l1")
+        self.assertEqual(code, 0, lines)
+        code, lines = band(1, "--run", "runs/c2-gym3-pilot-w1/r1")
+        self.assertEqual((lines[-1]["repilot"], lines[-1]["status"]), (1, "pending"), lines)
+        # one initial pilot per wave: no second draw to choose from
+        code, lines = pilot("--wave", "1")
+        self.assertEqual((code, lines[-1]["status"]), (2, "wave-already-piloted"))
+        # only registered pilot runs feed the band
+        code, lines = band(1, "--run", "runs/c2-gym3-pilot-w1/r9")
+        self.assertEqual((code, lines[-1]["error"]), (1, "valueerror"))
+        # the re-pilot covers only the pending family, and decides it
+        code, lines = pilot("--wave", "1", "--repilot", GYM_TEST_PILOT_FAIL=f"{w1[0]}-l4")
+        self.assertEqual((code, lines[-1]["families"]), (0, 1), lines)
+        code, lines = band(1)
+        b1 = json.loads((self.repo / "runs" / "c2-gym3" / "band-w1.json").read_text())
+        self.assertTrue(b1["finalized"])
+        self.assertEqual({s: r["status"] for s, r in b1["slots"].items()},
+                         {w1[0]: "kept", w1[1]: "kept", w1[2]: "regression-candidate"})
+        self.assertEqual(b1["slots"][w1[0]]["run"], "runs/c2-gym3-pilot-w1/r2")
+        code, lines = pilot("--wave", "1", "--repilot")
+        self.assertEqual((code, lines[-1]["status"]), (0, "nothing-due"))
+        # no acceptance replicate before the final selection
+        code, lines = pilot("--acceptance")
+        self.assertEqual((code, lines[-1]["status"]), (2, "acceptance-not-ready"))
+        # wave 2: the frozen prefix; its initial pilot leaks a hidden test name into a submission:
+        # the run fails as a seal breach and the repo holds only the accounting ledger and summary
+        code, lines = self.run_script("gym_split.py", "freeze", "--wave", "2", "--count", "1")
+        self.assertEqual(code, 0, lines)
+        code, lines = pilot("--wave", "2", GYM_TEST_LEAK="1")
         self.assertEqual((code, lines[-1]["status"]), (1, "seal-breach"))
         reg = json.loads((self.repo / "runs" / "c2-gym3" / "replicates.json").read_text())
-        self.assertEqual(reg["runs/c2-gym3-pilot-w1/r1"]["status"], "failed")
-        code, lines = self.run_script("gym_band.py", "band", "--wave", "1", "--run", "runs/c2-gym3-pilot-w1/r1")
-        self.assertEqual(code, 1)
-        # two voids in a family: re-pilot; then a clean re-pilot decides it
-        w1 = sorted(f for f, a in sp["assign"].items() if a["wave"] == 1)
-        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D),
-                                      env=dict(self.env, GYM_TEST_PILOT_VOID=f"{w1[0]}-l1 {w1[0]}-l2",
-                                               GYM_TEST_PILOT_FAIL=f"{w1[1]}-l1"))
+        self.assertEqual(reg["runs/c2-gym3-pilot-w2/r1"]["status"], "failed")
+        w2 = self.repo / "runs" / "c2-gym3-pilot-w2"
+        self.assertEqual(sorted(p.relative_to(w2).as_posix() for p in w2.rglob("*") if p.is_file()),
+                         ["r1/ledger.jsonl", "r1/summary.json"])
+        hidden = set()
+        for t in (self.root / "gym-v3").iterdir():
+            hidden |= set(re.findall(r"fn (h_[0-9a-f]+)\(", (t / "hidden_tests.rs").read_text()))
+        for p in w2.rglob("*"):
+            if p.is_file():
+                self.assertFalse(any(n in p.read_text() for n in hidden), p)
+        self.assertEqual(band(2)[1][-1]["status"], "pending")
+        # its one re-pilot: the accounting ledger is visible while the run is still going
+        led = w2 / "r2" / "ledger.jsonl"
+        code, lines = pilot("--wave", "2", "--repilot", GYM_TEST_WAIT_ACCOUNTING=str(led),
+                            GYM_TEST_WAIT_RESULT=str(self.tmp / "wait.txt"))
         self.assertEqual(code, 0, lines)
-        code, lines = self.run_script("gym_band.py", "band", "--wave", "1", "--run", "runs/c2-gym3-pilot-w1/r2")
-        self.assertEqual((lines[-1]["repilot"], lines[-1]["status"]), (1, "pending"), lines)
-        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--repilot", "--binary", str(FAKE_A2D),
-                                      env=dict(self.env, GYM_TEST_PILOT_FAIL=f"{w1[0]}-l4"))
-        self.assertEqual((code, lines[-1]["families"]), (0, 1), lines)
-        code, lines = self.run_script("gym_band.py", "band", "--wave", "1", "--run", "runs/c2-gym3-pilot-w1/r3")
-        band = json.loads((self.repo / "runs" / "c2-gym3" / "band-w1.json").read_text())
-        self.assertTrue(band["finalized"])
-        self.assertEqual(band["decisions"][w1[0]], "band")
-        # the dev-holdout is never piloted, even when asked for by wave
+        self.assertEqual((self.tmp / "wait.txt").read_text(), "4/4")
+        self.assertEqual(band(2)[1][-1]["status"], "finalized")
+        # final selection: floors met; the stratum drawn once over the pooled 4/4 families
+        code, lines = self.run_script("gym_band.py", "finalize")
+        self.assertEqual((code, lines[-1]["status"]), (0, "ok"), lines)
+        sel = json.loads((self.repo / "runs" / "c2-gym3" / "selection.json").read_text())
+        self.assertEqual((sel["kept"], sel["regression_k"]), (sorted([w1[0], w1[1]]), 0))
         hold = [f for f, a in sp["assign"].items() if a["set"] == "holdout"][0]
-        self.assertNotIn(hold, json.dumps(band))
-        # wave 2 has a family but no band decision: the write-once acceptance replicate is refused
+        self.assertEqual(sel["holdout"], [hold])
+        for f in ("band-w1.json", "band-w2.json", "replicates.json"):
+            self.assertNotIn(hold, (self.repo / "runs" / "c2-gym3" / f).read_text())
+
+    def test_floors_unmet_blocks_acceptance_and_publication(self):
+        """B9: a final selection below the registered floors is floors_unmet, never quietly OK:
+        the acceptance replicate and the export both refuse it."""
+        sp = self.select_and_split(wave1=4)
+        self.run_script("gym_author.py", "--parallel", "3")
+        self.settle()
+        self.audit()
+        self.run_script("gym_adjudicate.py")
+        self.assertEqual(self.run_script("gym_export.py", "certify")[0], 0)
+        w1 = sorted(f for f, a in sp["assign"].items() if a["wave"] == 1)
+        fail = " ".join(f"{f}-l{i}" for f in w1 for i in (1, 2, 3, 4))     # all hard: nothing kept
+        env = dict(self.env, GYM_TEST_PILOT_FAIL=fail)
+        self.assertEqual(self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D), env=env)[0], 0)
+        self.assertEqual(self.run_script("gym_band.py", "band", "--wave", "1")[0], 0)
+        self.assertEqual(self.run_script("gym_split.py", "freeze", "--wave", "2", "--count", "0")[0], 0)
+        code, lines = self.run_script("gym_band.py", "finalize")
+        self.assertEqual((code, lines[-1]["status"]), (0, "floors_unmet"))
         code, lines = self.run_script("gym_pilot.py", "--acceptance", "--binary", str(FAKE_A2D))
-        self.assertEqual((code, lines[-1]["status"]), (2, "acceptance-not-ready"))
-        self.assertNotIn("runs/c2-gym3-accept/r1", json.loads((self.repo / "runs" / "c2-gym3" / "replicates.json").read_text()))
+        self.assertEqual((code, lines[-1]["status"]), (2, "floors_unmet"))
+        code, lines = self.run_script("gym_export.py", "export")
+        self.assertEqual((code, lines[-1]["status"]), (1, "floors_unmet"))
+        self.assertFalse((self.repo / "runs" / "c2-gym3" / "export").exists())
 
 
 class Acceptance(Base):
