@@ -7,6 +7,8 @@
 **Addendum:** 2026-10-18 ~12:00 UTC — §0.12. Sol's second pipeline re-check found 5 startup blockers. A live probe then showed that a *copied* `open` launched an app outside the sandbox. All 5 are closed in code, and one gap in the frozen rules is filled: an authoring-exhausted family is replaced. Still before any selection call.
 **Addendum:** 2026-10-19 ~07:00 UTC — §0.13: the scoring shape (imputation binds the point threshold, as in confirmation-2; a best-case guard on RULED OUT). A failed call has no transcript and so voids its tuple; this is fixed on the provider branch before registration. Written during selection, before any authored content.
 **Addendum:** 2026-10-20 ~01:10 UTC — §0.14: concurrent provider calls could share a cwd and CODEX_HOME (the 4 failed calls behind audit round 1's 4 voids). Fixed on the provider branch (36bea1e1) with a regression test; controls re-run complete at that head (73bc99ee). Before registration; no rule changes.
+**Addendum:** 2026-10-21 — §0.15: the registration review (Codex Sol high and a fresh Claude, copies only) answered Yes with 7 blockers between them; all are fixed before the registration commit, with dispositions below. Candidate E002 (look 2 invalid).
+**Addendum:** 2026-10-21 — §0.16: `code_mode_host` is disabled (it carries codex's built-in MCP tools, which a Luna coder called in phase-B round 1); the detector exempts its one fixed pre-turn notice; the bound runner recounts every transcript and requires the notice. Reverses §0.13's "code_mode_host stays on". Before registration; tightens the instrument.
 **Why:** confirmation-2 ended in IntegrityReview (LOG, 10-18 03:59 UTC: 2 web searches in arm B, replicate 1). Confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs both D and B on its confirmation set) needs a new blind set in the same regime.
 
 ## 0. Pre-commitment (fixed 2026-10-18; binds the registration)
@@ -369,6 +371,110 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
   - Main merges the branch head (≥ 73bc99ee) at the scheduled point, after L37 and after look 2 or T, so the dev batch and look 2 keep main's provider throughout.
   - The registration's binary sha and the review packet's provider diff carry the fix.
 - **Dev runs on main** have the same naming without a per-call CODEX_HOME. There, a collision can only show up as a spawn failure (0 found in 9,035 dev responses) or as a cwd removed under a running call. This is paired noise that the A/A threshold already includes, and it is left unchanged mid-batch.
+
+### 0.15 Addendum: registration review and dispositions (2026-10-21, before the registration commit)
+- **Candidate:** E002 (`runs/c2-confirm2/frozen.py`, sha e772bd6e…). Look 2 (E007) was invalid because of one hidden-test name, coincidental and echoed from a Luna draft into a judge prompt. Under §0.1 the candidate is fixed at the look's result, so it does not wait for T.
+- **Reviews** (copies-only packets, `c3_review.py`):
+  - Codex Sol (high, web disabled, 0 searches): **Yes** with 4 blockers.
+  - Fresh Claude: **Yes** with 3 blockers and 16 non-blocking points.
+  - Both answered the open question the same way: imputed CIs on both claims, already adopted.
+- **Sol blockers:**
+  1. A failed first attempt's integrity evidence was dropped after a relaunch. Fixed: `failed_attempt_audit` counts every invocation record's tool events and counts an invocation without an auditable transcript as one event (fail closed). It also scans the attempt's prompts for hidden test names with a port of the controller's `test_names`. `merge_failed_attempt` feeds all of it into the decision.
+  2. The preflight used the binary before the build. Fixed: the build comes first, every probe record carries the binary sha, and the launch refuses a binary that changed since then.
+  3. Validator and audit provenance.
+     - Validation: `c3_validate.py` now builds its own controller and records the head and binary sha; `--binary` is refused outside tests. Re-validation on 10-21 accepted 144/144 with that record (head caceb9b5, binary 848eb8fe…), and certification requires it.
+     - Audit: re-running it would exceed the registered audit allowance, and the rebuilds at both audit heads are not byte-reproducible (59f990ee… and 5c4fd509… vs the recorded 790bcf91…). So the audit binary's provenance is its record plus functional evidence, and that is disclosed: `--json` transcripts with the provider's marker in every audited tuple, the codex bracket held, and the provider commit in each head.
+  4. Compile-time file reads in the validator's unsandboxed API-surface compile. The counts-only audit found 0 `include_str!`/`include_bytes!`/`include!`/`env!`/`option_env!` and 0 sealed-path mentions in the 1,152 suite files and the 5,456 readable authoring files. No further authoring or validation runs for this set. Disclosed.
+- **Claude blockers:**
+  1. The runner had never run end to end on real data. Fixed:
+     - a **dress rehearsal** (`c3_rehearsal.py`, 2 dev tasks, real binary and exact flags): generate ×2, manifest, score, pool and decide all ran, and runner voids 0 = controller `tuples_void` 0 in both replicates;
+     - the submissions' claimed invocations include the judge-lane calls;
+     - arms are compared as a set, and malformed records or summaries void or invalidate instead of crashing.
+  2. Deterministic preconditions came after the attempt. Fixed: the suite hash (`a2d lift hash`) and the crates/Cargo binding (diff against the registration commit, nothing untracked) are checked after the build and before any probe or attempt. Scoring re-checks the suite hash.
+  3. Invocation-level tool events were ignored. Fixed (a §0.4 tightening): any invocation record with `tool_calls > 0` voids its tuple, and the per-replicate rate uses the larger of the submission and invocation sums.
+- **Claude non-blocking, taken:**
+  - (2) each replicate's own summary feeds the hidden-name hits and the integrity flag;
+  - (3) RULED OUT also needs the best-case point;
+  - (4) build first;
+  - (5) launch detached (the queue runner is detached; stated in the registration);
+  - (6) other Luna work is held during generation windows;
+  - (7) the registration texts were corrected: latency probes, the void-tuple text, invocations versus Luna;
+  - (8) disclosures updated: requirements-only repairs, the step order, the mutants fix, §0.14, spent sets and looks;
+  - (9) the provider head is named;
+  - (10) calls and tokens by lane are in `decision.json`;
+  - (12) the holdout dirs must agree;
+  - (15) no codex upgrade during the windows;
+  - (16) `registration.json` is committed together with these dispositions.
+- **Non-blocking, answered:**
+  - (1) Instrument errors count as tool events (fail closed, not loosened). On the merged provider, dev runs so far show 0 tool events (rehearsal 44 calls; phase-B round 1). Disclosed.
+  - (11) `skipped_days` affects disclosure accuracy only; noted.
+  - (13) No retry layer sits between `MeteredProvider` and `CliProvider`; a failed call is recorded and spent.
+  - (14) An operator-killed run is a failure that permits the one relaunch; the reason will be logged, and the partial ledger stays unread.
+- **Re-check round** (narrow, on the fixes):
+  - The fresh Claude answered **Yes**: all 7 fixed as dispositioned, nothing loosens §0.4, no new blockers.
+  - Sol answered **No**, with these open; all now fixed (675b77c9):
+    - (a) Failed-attempt accounting was not conservative. Now: the larger of the submission and invocation sums plus one per unauditable call. Any unauditable call, or a failed attempt's own rate above 0.5%, blocks the claim. A dead run's cut-off ledger lines count as unauditable and do not crash scoring.
+    - (b) `classify()` could crash on a malformed comparison. `well_formed()` now gates it, and a malformed comparison is Invalid.
+    - (c) Audit provenance was not enforced. `c3_rescore_audit.py` re-scores every task's final audit-round submission with an oracle independent of `a2d`: python + rustc, compile and run under seatbelt profiles modelled on the controller's, with the oracle's compile environment. Result: **144/144 agree** (run 1: 139, run 2: 5), 0 compile failures, 0 timeouts, committed as `runs/c2-confirm3/audit-rescore.json`. Certification requires it.
+    - (d) The compile channel was disclosed, not closed. `c3_channel_audit.py` with a committed result (`channel-audit.json`): 0 macros and 0 sealed-path mentions over the suite, the authoring tree and both audit runs. The validator refuses to run once a registration exists. The re-scorer's sandbox blocks a compile-time `include_str!` canary, which compiles without the sandbox. Certification requires the clean result.
+  - The fresh Claude's non-blocking points, taken:
+    - the tolerant dead-ledger parse;
+    - each failed attempt gated on its own rate;
+    - scoring also checks the crates binding;
+    - real-data checks: the runner's hidden-name scan finds look 2's single hit; E007's 35-family comparison is well-formed; the registered suite hash equals a fresh one;
+    - a second dress rehearsal pinned to the final runner's sha256;
+    - text gaps closed (per-lane canary evidence; malformed or aborted ⇒ Invalid).
+- **Sol's second re-check** (No, 4 items partly fixed), all fixed (19d6e1e6):
+  - (1) interrupted attempts: ledgers are read tolerantly everywhere (`records_tolerant`). For a failed attempt, a missing ledger or a prompt file without its invocation record is unauditable, and that blocks a claim.
+  - (2) malformed summaries: the container, the comparison list, finite numbers and the guard fields are validated, and anything malformed is Invalid; `well_formed` rejects NaN and infinities.
+  - (3) audit provenance: the audit records must carry a binary sha. `c3_rescore_audit.py` also recounts every final-round audit transcript with the bound runner's own detector port: 144 transcripts, 0 missing, **0 events**. Certification requires it.
+  - (4) the channel scan uses a string-aware Rust lexer that removes line and nested block comments, plus `#[path]` and `mod x;` loaders and a permissive raw-text pattern: 0 macros, 0 loaders, 0 sealed mentions.
+- **Third re-check** (Sol No, fresh Claude No):
+  - **Fresh Claude's blocker, fixed (fdb0f739):**
+    - The recount, `host_off` and the ledger reader split on `\n` only, like Rust's `str::lines()`. Python's `splitlines()` also split on U+2028, U+2029 and U+0085, which serde_json leaves raw inside strings, so one benign model output could have voided tuples or made a replicate IntegrityReview.
+    - JSON parsing is as strict as serde (no NaN or Infinity; deep nesting is unparsable).
+    - It confirmed that §0.16 cannot be forged and does not bias toward SUPPORTED.
+  - **Sol's items:**
+    - (1) A call in flight when a run dies left no record. Fixed: the meter writes a durable `invocation_started` before each call, and an unmatched start in a failed attempt is unauditable and blocks the claim.
+    - (2) Summaries were touched before validation. Fixed: `cmd_score` validates the pooled and replicate summaries before folding them, and `decide()` rejects boolean or non-positive `min_families` and shares outside [0, 1].
+    - (3) The audit's historical launch isolation (its CODEX_HOME and environment) cannot be re-verified. **Dispositioned, not fixed:**
+      - the audit decides which tasks were certified, not how the arms compare (every arm runs every certified task);
+      - its verdicts and tool events are re-derived without its binary (re-score 144/144, recount 0 events);
+      - re-running it would exceed the registered audit allowance;
+      - disclosed.
+    - (4) The scanner missed aliased imports and non-ASCII `mod` names. Fixed (aliases with a `::` path, bare macro names, any `mod x;`), and the artifact is still clean. The disclosure states that a lexical scan is not a proof (user-macro indirection is not detected) and that the validator refuses to run after registration.
+- **Stopping rule for the review loop** (written 10-21, before the final re-check): after a fourth narrow re-check, any remaining finding is fixed only if it can bias the arm comparison toward SUPPORTED or break the bound runner on data it will actually see. Findings that fail closed (voids, Invalid, IntegrityReview), or that bear only on certification or historical artifacts, are dispositioned and disclosed instead. The plan asks for a review; it does not require unanimous assent to every hardening.
+- **Fourth re-check** (under the stopping rule; Sol No, fresh Claude No): both found the same single in-scope blocker. `load_summary_obj` turned an unparsable or non-object replicate `summary.json` into a sentinel dict, and `fold_replicate_summary` let it pass as clean (fail-open; reproduced: truncated, `null` and `["h"]` gave SUPPORTED).
+  - Fixed with their minimal fix (ae853669): the sentinel, a non-dict, or a summary without `integrity_ok` blocks the claim. A regression test runs the real path (load → fold → decide on `""`, `{` and a summary missing its flag).
+  - The final runner re-scored rehearsal 4's data and reproduced its committed decision.
+  - Non-blocking points taken: the Invalid wording (a missing replicate summary is IntegrityReview), and a relaunch disclosure (a first attempt that dies with calls in flight ends IntegrityReview).
+  - Dispositioned:
+    - the residual parser differences, which cannot loosen anything because the binary's count is maxed in;
+    - same-key scope masking, which is not present (44/44 starts matched);
+    - the descriptive `controller_last_change`.
+- **Confirmation of the last fix** (Codex Sol, narrow, 0 searches): **VERDICT: Yes**. The blocker is fixed (`nano/confirm3.py:268-269` and the load → fold → decide regression), and the fix introduces no in-scope finding. With every in-scope blocker from both reviewers fixed, the registration is committed with these dispositions.
+- **Not changed:** the hidden-name rule is not narrowed (§0.10). Its false-positive risk (about 10–15% for an IntegrityReview with no leak) is disclosed with the candidate's wording.
+
+### 0.16 Addendum: `code_mode_host` off; the bound runner recounts every transcript (2026-10-21, before registration)
+- **Evidence:** phase-B round 1, the first dev run at scale on the merged provider.
+  - A Luna coder call (X:inf) called codex's **built-in** `list_mcp_resources` and `list_mcp_resource_templates` (server `codex`; both returned empty lists). That is 4 events (started and completed counted), a rate of 0.89%, so the run was integrity-invalid and used the round's one re-run. The re-run again had 2 such events (0.44%).
+  - Earlier rates: 7 in about 5.7k dev calls (C2-MCP), 3 of 1,240 in look 1 (all X), 0 in confirmation-2's replicate 1.
+  - At about 0.12–0.24% of calls × 2–4 events, a replicate of about 1.6k calls crosses §0.4's 0.5% line in roughly a third to half of replicates, and either replicate crossing makes the run IntegrityReview. Harmless empty listings would have decided the claim.
+- **Probes** (live, Luna low, the provider's exact arguments, an isolated home):
+  - with `code_mode_host` on, a call asked to list MCP resources does;
+  - with it off, the tool does not exist (the model answers NO_TOOL). A configured MCP server is not callable either, so the host carries every MCP tool;
+  - codex then emits one fixed `error` item, `CODEX_HOST_OFF_NOTICE`, after `thread.started` and before `turn.started`;
+  - per-server overrides cannot remove the built-in tools (codex rejects them);
+  - the injected instructions are unchanged (prompt-input differs only in ids and timestamps).
+- **Change** (19d6e1e6), a tightening of the instrument: the tools are removed rather than tolerated.
+  - The provider disables `code_mode_host`.
+  - The detector exempts exactly one byte-identical notice that is an `item.completed` before `turn.started`. The same text inside the turn, any other error, or a second notice counts. Unit-tested.
+  - The bound runner (`nano/confirm3.py`) ports the detector line for line (`py_tool_events`) and recounts every transcript, independently of the binary's recorded counts. `host_off()` requires the notice before every turn that started. Either check voids its tuple, and the rate uses the larger of the submission, invocation and recount sums. The preflight canary requires both.
+  - Live controls (re-run at 19d6e1e6): shell, web, file and sub-agent are counted; MCP is counted with the host switched back on for that control only; the **notice** is present and counted as 0; the negative control shows the notice before the turn and 0 events.
+- **What does not change:** §0.4's thresholds and void rules; `PROVIDER_COMMIT` (bc6922f7); certification (ancestry; the audit evidence is the re-score and recount, §0.15).
+- **Disclosures:**
+  - dev and the dev-holdout looks ran with these tools available and occasionally called; any such tuple was voided there too, so the dev estimates already exclude them;
+  - phase B round 1 ran on the old provider and rounds 2–6 run on the new one. The precision metric pairs arms within a round, so this is a comparability note, not a bias.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.
