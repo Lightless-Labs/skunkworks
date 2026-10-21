@@ -36,7 +36,13 @@
      - relaunch once with `--relaunch`, logged;
      - a first attempt that died with calls in flight ends IntegrityReview whatever happens next (fail closed);
      - leave the partial holdout ledger unread.
-   - **Phase B:** round 1 is done (both screen-fail). Round 2 is running (pid 40689, `~/.a2d-queue/qlogs/*pc-round2.log`). Rounds 3–6 go on 10-21 to 10-23, between the windows, from incumbent E007. The provider changed after round 1 (code_mode_host off; disclosed).
+   - **Phase B:** rounds 1–3 are done, and all 6 proposals failed the screen (best +1 net task).
+     - Round 4's proposals are committed (e8e78242). A detached job runs `round --round 4` at ≥ 00:10 UTC 10-22 (pid 36432, `~/.a2d-queue/pc-round4-delayed.out`).
+     - Then round 5 on 10-22: quarters, stats, dossiers and `propose` after round 4's results (the informed brief needs them), commit, run.
+     - Round 6 on 10-23, finishing before about 22:00 UTC.
+     - The provider changed after round 1 (code_mode_host off; disclosed).
+     - Sol capacity failures can make a run integrity-invalid; each round has one re-run.
+   - **Confirmation-3 queue lines** L41 and L42 run the API health probe (`docs/experiments/analysis/c3_health.py`) before `generate` each day (LOG 10-21).
    - Disk: `target/` holds only the a2d binary now (598 MB); the scratch worktrees are removed.
    - **Freeze until `decision.json`:** `nano/confirm3.py`, `crates/`, `Cargo.toml` and `Cargo.lock` must stay byte-identical to fb5110e7, with nothing untracked under `crates/`. `registration()` and `crates_clean()` refuse otherwise, and a refusal at 00:05 costs a day.
      - **No `brew upgrade codex` until 10-26.**
