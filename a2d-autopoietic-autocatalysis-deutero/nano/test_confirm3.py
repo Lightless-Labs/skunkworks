@@ -290,6 +290,12 @@ class Decide(unittest.TestCase):
         self.assertEqual(self.decide(s, self.tuples())["overall"], "SUPPORTED")
         self.assertEqual(self.decide(c3.load_summary_obj("not json"), self.tuples())["overall"], "Invalid")
 
+    def test_a_truncated_replicate_summary_blocks_the_claim_end_to_end(self):
+        # Sol re-check 4: load -> fold -> decide on "", "{" and a summary without its integrity flag.
+        for text in ("", "{", json.dumps({"hidden_name_hits": []})):
+            s = c3.fold_replicate_summary(summary(), c3.load_summary_obj(text))
+            self.assertEqual(self.decide(s, self.tuples())["overall"], "IntegrityReview", text)
+
     def test_ruled_out_needs_the_best_case_point_too(self):
         # D voids imputed as fails can lift X's best case above +10 pp at the point while the CI
         # bound alone would not show it with iterations=0 (point = bounds): both must hold.

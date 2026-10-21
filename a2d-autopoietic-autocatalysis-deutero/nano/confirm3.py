@@ -265,9 +265,9 @@ def fold_replicate_summary(summary, own):
     summary = dict(summary) if isinstance(summary, dict) else {"__malformed__": True}
     hits = list(summary.get("hidden_name_hits") or []) if isinstance(summary.get("hidden_name_hits") or [], list) \
         else ["malformed pooled hits"]
-    if not isinstance(own, dict):
-        summary["integrity_ok"] = False
-    else:
+    if not isinstance(own, dict) or own.get("__malformed__") is True or "integrity_ok" not in own:
+        summary["integrity_ok"] = False     # an unreadable, truncated or incomplete replicate summary
+    if isinstance(own, dict):
         own_hits = own.get("hidden_name_hits") or []
         hits += list(own_hits) if isinstance(own_hits, list) else ["malformed replicate hits"]
         if "integrity_ok" in own and own["integrity_ok"] is not True:
