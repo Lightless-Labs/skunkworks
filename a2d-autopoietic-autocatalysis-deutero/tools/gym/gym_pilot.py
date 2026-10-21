@@ -2,9 +2,9 @@
 
 --wave W      the pilot of a dev wave: every dev family of that wave in the certified suite (or,
               with --repilot, only the families gym_band.py left pending for that wave).
---acceptance  the first fresh E007 replicate of the kept dev set (every finalized wave's kept and
-              regression families), once; it is the A/A threshold's first half and is never used
-              for any selection.
+--acceptance  the first fresh E007 replicate of the kept dev set (every wave's kept and regression
+              families), once, and only when every dev wave of the split has a finalized band
+              decision; it is the A/A threshold's first half and is never used for any selection.
 
 Refuses (fail closed, content-free) unless: the launch gate holds (confirmation-3 isolation);
 the split (runs/c2-gym3/split.json) is committed; the suite is certified and current
@@ -117,12 +117,18 @@ def seal_breaches(out, tasks):
     return n
 
 
+class AcceptanceNotReady(Exception):
+    """A dev wave of the split has no finalized band decision yet: the write-once acceptance
+    replicate (the A/A threshold's first half) would be spent on a partial kept set."""
+
+
 def select_families(args, sp, act, cert):
     from gym_band import band_path, kept_dev
     from gym_split import assignment, families_for
     if "--acceptance" in args:
         waves = sorted({a["wave"] for a in sp["assign"].values() if a["set"] == "dev"})
-        waves = [w for w in waves if load_json(band_path(w))]
+        if not all((load_json(band_path(w)) or {}).get("finalized") for w in waves):
+            raise AcceptanceNotReady()
         return kept_dev(waves), None
     wave = int(args[args.index("--wave") + 1])
     if "--repilot" in args:
@@ -168,7 +174,11 @@ def main():
         if acceptance and any(r.get("purpose") == "acceptance" for r in reg.values()):
             emit(stage="pilot", status="acceptance-exists")
             sys.exit(2)
-        fams, wave = select_families(args, sp, act, cert)
+        try:
+            fams, wave = select_families(args, sp, act, cert)
+        except AcceptanceNotReady:
+            emit(stage="pilot", status="acceptance-not-ready")
+            sys.exit(2)
         if any((assignment(f, sp, act) or {}).get("set") != "dev" for f in fams):
             emit(stage="pilot", status="holdout-refused")
             sys.exit(2)

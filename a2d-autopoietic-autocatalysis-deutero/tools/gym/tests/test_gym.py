@@ -122,8 +122,9 @@ class Base(unittest.TestCase):
         return self.run_script("gym_audit.py", "--binary", str(FAKE_A2D), env=dict(self.env, **hooks))
 
     def flow(self):
-        """The full fake-codex gym flow, up to a certified, exported, piloted and accepted suite."""
-        sp = self.select_and_split()
+        """The full fake-codex gym flow, up to a certified, exported, piloted and accepted suite.
+        Every dev family is in wave 1, so the acceptance replicate may run once wave 1 is decided."""
+        sp = self.select_and_split(wave1=4)
         fams = (self.gym / "FAMILIES.txt").read_text().split()
         self.canary.write_text("CANARY-CONTENT\n")
         code, lines = self.run_script("gym_author.py", "--only", fams[0], env=dict(self.env, GYM_TEST_PROBE=str(self.canary)))
@@ -499,14 +500,17 @@ class Units(Base):
             (scratch / "secret.txt").write_text("GYM-HOME-SECRET\n")
             (self.tmp / "tmp-secret.txt").write_text("GYM-TMP-SECRET\n")
             out = self.lib(
-                "import gymlib, tempfile\nfrom pathlib import Path\n"
+                "import gymlib, shutil, tempfile\nfrom pathlib import Path\n"
                 "def build(target, inside=False):\n"
-                "    d = Path(tempfile.mkdtemp(prefix='gym-canary-')).resolve()\n"
-                "    if inside:\n"
-                "        (d / 'inside.txt').write_text('IN')\n        target = d / 'inside.txt'\n"
-                "    (d / 'c.rs').write_text('pub fn leak() -> &\\'static str { include_str!(%s) }\\nfn main() {}\\n' % repr(str(target)).replace(\"'\", '\"'))\n"
-                "    r = gymlib.sandboxed_rustc(['--edition', '2024', str(d / 'c.rs'), '-o', str(d / 'bin')], d)\n"
-                "    return r.returncode == 0\n"
+                f"    d = Path(tempfile.mkdtemp(prefix='gym-canary-', dir={str(self.tmp)!r})).resolve()\n"
+                "    try:\n"
+                "        if inside:\n"
+                "            (d / 'inside.txt').write_text('IN')\n            target = d / 'inside.txt'\n"
+                "        (d / 'c.rs').write_text('pub fn leak() -> &\\'static str { include_str!(%s) }\\nfn main() {}\\n' % repr(str(target)).replace(\"'\", '\"'))\n"
+                "        r = gymlib.sandboxed_rustc(['--edition', '2024', str(d / 'c.rs'), '-o', str(d / 'bin')], d)\n"
+                "        return r.returncode == 0\n"
+                "    finally:\n"
+                "        shutil.rmtree(d, ignore_errors=True)\n"
                 f"print(build(Path({str(scratch / 'secret.txt')!r})), build(Path({str(self.tmp / 'tmp-secret.txt')!r})),"
                 " build(None, inside=True))", timeout=600)
             self.assertEqual(out, "False False True")
@@ -724,8 +728,8 @@ class Flows(Base):
         self.assertEqual(man["families"], w1)
         self.assertFalse(set(man["families"]) & set(holdout_fams))
         band = json.loads((self.repo / "runs" / "c2-gym3" / "band-w1.json").read_text())
-        self.assertEqual(band["decisions"], {w1[0]: "band", w1[1]: "easy", w1[2]: "hard"})
-        self.assertEqual((band["kept"], band["regression"], band["dropped"]), ([w1[0]], [], [w1[1], w1[2]]))
+        self.assertEqual(band["decisions"], {w1[0]: "band", w1[1]: "easy", w1[2]: "hard", w1[3]: "easy"})
+        self.assertEqual((band["kept"], band["regression"], band["dropped"]), ([w1[0]], [], [w1[1], w1[2], w1[3]]))
         acc = json.loads((self.repo / "runs" / "c2-gym3" / "acceptance.json").read_text())
         self.assertEqual((acc["tasks"], acc["decision"]), (4, "adjust-next-wave"))      # 4/4 pass: 100%
         self.assertTrue(reg["runs/c2-gym3-accept/r1"]["threshold"])
@@ -840,6 +844,10 @@ class Flows(Base):
         # the dev-holdout is never piloted, even when asked for by wave
         hold = [f for f, a in sp["assign"].items() if a["set"] == "holdout"][0]
         self.assertNotIn(hold, json.dumps(band))
+        # wave 2 has a family but no band decision: the write-once acceptance replicate is refused
+        code, lines = self.run_script("gym_pilot.py", "--acceptance", "--binary", str(FAKE_A2D))
+        self.assertEqual((code, lines[-1]["status"]), (2, "acceptance-not-ready"))
+        self.assertNotIn("runs/c2-gym3-accept/r1", json.loads((self.repo / "runs" / "c2-gym3" / "replicates.json").read_text()))
 
 
 class Acceptance(Base):
