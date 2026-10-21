@@ -636,6 +636,11 @@ def sandboxed(workdir, argv, record=None, **kw):
         if not reap(tag):
             raise RuntimeError("probe not quiesced")
         retire_tag(tag)
+        if record is None:                            # anonymous probes leave no profile behind
+            try:
+                os.unlink(prof)
+            except FileNotFoundError:
+                pass
 
 
 # ------------------------------------------------------------ isolation checks

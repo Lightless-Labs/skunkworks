@@ -1,6 +1,6 @@
 # Gym: sandboxed() never deletes its probe profiles
 
-**Found:** 2026-10-21 (gym v3 pre-flight). **Priority:** low; fix before the first pilot or in the next gym review batch.
+**Found:** 2026-10-21 (gym v3 pre-flight). **Priority:** low. **Resolved:** 2026-10-21 (anonymous probes unlink their profile after reap; `test_isolation_checks` asserts none remain).
 
 `gymlib.sandboxed()` writes one `_records/_probe/probe-<pid>-<thread>-<ns>.sb` per call and never
 removes it. One `isolation_check` makes about 20 calls (the control, the denial probes, the write

@@ -1154,6 +1154,7 @@ class Sandbox(Base):
         self.rec.mkdir(parents=True, exist_ok=True)
         check = f"from gymlib import isolation_check\nprint(isolation_check({str(w)!r}))"
         self.assertEqual(self.lib(check), "True")
+        self.assertEqual(list((self.rec / "_probe").glob("*.sb")), [])   # anonymous probes clean up
         (w / "AGENTS.md").write_text("x")
         self.assertEqual(self.lib(check), "False")
         (w / "AGENTS.md").unlink()
