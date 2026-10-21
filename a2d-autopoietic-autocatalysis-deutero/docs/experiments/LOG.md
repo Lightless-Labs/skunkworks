@@ -1978,3 +1978,18 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `c3_health.py` is healthy (2 Luna and 3 Sol PONG calls).
 - **Phase-B round 4** was re-armed (new pid in `~/.a2d-queue/pc-round4.pid`, same command, same ≥ 00:10 UTC 10-22) with the same pin and a version guard, so it runs on the same codex as rounds 2–3.
 - **Lesson:** "don't upgrade codex" was a convention, and a shared machine broke it within hours. A spend-once instrument should pin its toolchain *by path* to a private copy at registration, not rely on the global install staying put.
+
+## Ops — gym v3 tooling merged (09c80774f) with three post-review deltas; model-free pre-flight passed  [2026-10-21 ~20:00 UTC; no model calls, no claim data touched]
+- **Merged:** `tools/gym` after Codex Sol (*Not ready*, 15 blockers) and fresh-Claude (*Ready with blockers*) reviews and a fix pass (7a53b9c92..ae55db4ae). The full suite gave 59 tests OK, with the acceptance line identical/True, at 613a8f4fe in the worktree.
+- **Three changes after the reviews, unreviewed** (send them in the next gym review batch):
+  1. **34e75aa3a, gate (a) needs both replicates.** The window opens only when replicates 1 and 2 each hold a non-aborted `generation_complete` (first attempt or `-relaunch1`), or once `decision.json` exists. Keyed to replicate 2 alone, it would have opened during a replicate-1 relaunch on a later deferral day.
+  2. **613a8f4fe, scale timing.** It takes the fastest passing reference run, timing two more runs before a reject; each run's figure is still max(libtest, wall). A load spike could otherwise reject a correct task and spend a FIX round.
+  3. **a17d03ad5, gate (b) tolerates `__pycache__/*.pyc`** under the frozen paths. Main's `tools/holdout/__pycache__` holds three import caches from 10-21. The strict check would have kept the gate closed for good: the worktree had no caches, so its tests passed. Such a cache never loads without its source, and the diff covers the source. A sourceless `.pyc`, or any other untracked file, still closes the gate. `confirm3.crates_clean` covers only `crates/` and `Cargo.*`, so these caches cannot trip the spend.
+- **Pre-flight** (real pin, production gym root, booleans and timings only), all True:
+  - `isolation_ok`, `codex_pinned` (14 s) and the sandboxed `codex --version`;
+  - the fingerprint: 42 files, codex and host hashes equal the registration, 5 s;
+  - the full `isolation_check`, with every sealed path denied, 9 s.
+
+  It left harmless records under `~/.a2d-gym/authoring/gym-v3/_records/`; the classifier refused their deletion (HANDOFF).
+- **Still open:** a real `cargo build` into the gym target, the pilot accounting against a real ledger (check it on the first pilot's first lines), and `todos/gym-probe-profiles-leak.md`.
+- **Lesson:** `docs/solutions/best-practices/test-launch-gates-in-the-deployment-tree-2026-10-21.md`.
