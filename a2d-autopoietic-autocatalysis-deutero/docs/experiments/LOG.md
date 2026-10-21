@@ -2006,3 +2006,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **The producer is off:** `confirm3.py generate` imports `tools/holdout/c3lib`, so L41 and L42 now run `python3 -I -B` and export `PYTHONDONTWRITEBYTECODE=1`. Backups of the previous scripts are in the scratchpad (`qbak/`). `zsh -n` passes. Manual confirm3 runs use `-B` (HANDOFF).
   - **dd4b253e9:** the scale measure is the median of three timed runs after a warm-up run, and all four must pass.
 - **Lesson** (solution doc corrected): do not loosen an integrity check to tolerate a byproduct. Switch off the byproduct's producer, and send even a "trivial" post-review loosening to review.
+
+## C2-PB label join — pre-specified before round 4 reports  [2026-10-21 ~21:00 UTC; descriptive only]
+- **Script:** `docs/experiments/analysis/c2_phaseb_labels.py`. It is new and separate: `c2_phaseb.py` stays untouched until the armed round-4 job, which executes it at 00:10, has finished.
+  - It writes `runs/c2-pc/labels-join.json`.
+  - Per proposal: category, candidate sha256 and registered decision.
+  - Per arm: the categories and how many are distinct.
+  - The categories both arms proposed, and cross-arm repeats (same category, or identical candidate bytes, as an earlier proposal of the other arm).
+  - Per category: the mean delta_allpass.
+  - With 8 proposals there is no test and no interval. The registered endpoints stay `c2_phaseb.py analyze` at R = 4.
+- **Already fixed before any round-4 outcome:**
+  - Each arm has 4 distinct categories; 2 categories are shared (judge-effort, reviewer-feedback-enrichment).
+  - Both round-4 proposals repeat a category the other arm proposed in round 1. The informed one repeats r1-uninformed byte for byte (48339373).
+  - Descriptively, by R = 4 the informed proposer was not exploring a different idea space from the uninformed one.
+- **After round 4:** run `python3 -I -B docs/experiments/analysis/c2_phaseb_labels.py` once, after `c2_phaseb.py analyze`, and commit `labels-join.json`.
