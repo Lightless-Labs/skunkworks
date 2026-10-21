@@ -1896,3 +1896,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - uninformed `high-effort-review`: **screen-fail**, Δ 0.
   - The round's first run was integrity-invalid (the MCP listing above) and was re-run with a new seed, as the protocol allows.
   - Rounds 2–6 run on the new provider (disclosed).
+- **Confirmation-3 REGISTERED** at **fb5110e7285b37b8125ca6fb17c717fb871f3809** (10-21 ~07:30 UTC). The commit adds `registration.json`, `frozen.py` and the plan §0.15/§0.16 dispositions together.
+  - Candidate **E002** (sha e772bd6e…); arms D, B, X:frozen; 144 tasks; k = 5; seeds 9191/9292; Luna low with a Sol-medium judge lane.
+  - Review: Codex Sol and a fresh Claude, an initial review plus four narrow re-checks. The rounds found, and these commits fixed:
+    - the runner's preconditions and build order;
+    - failed-attempt auditing, including durable `invocation_started` records;
+    - malformed-data paths;
+    - the `\n`-only line splitting;
+    - the replicate-summary fold;
+    - validation provenance, the audit re-score and recount, and the channel scan;
+    - the `code_mode_host` MCP finding (§0.16).
+    Sol confirmed the last fix: **Yes**. A stopping rule (§0.15) limited the last rounds to findings that could bias toward SUPPORTED or break the runner.
+  - Four 2-task dev dress rehearsals ran the exact command line end to end. The last two ran on the final instrument: host off on every call, `invocation_started` 44/44 matched, the runner's counts equal the controller's. A real Sol capacity failure failed closed.
+  - The bound runner accepts the registration: `registration()` passes, the commit day is 10-21, and the crates are clean.
+- **Spend scheduled:** queue L41 (replicate 1, ≥ 00:05 UTC 10-24) and L42 (replicate 2, ≥ 00:05 UTC 10-25). Each retries a deferral at the next 00:05 for at most 5 days.
+  - Manifest and score are manual: run `python3 -I nano/confirm3.py manifest --registered-at fb5110e7…`, commit and push the manifests, then run `… score --registered-at fb5110e7…`.
+  - **Hold phase-B rounds and any other Luna/Sol work while a replicate generates** (10-24 and 10-25 from 00:05).

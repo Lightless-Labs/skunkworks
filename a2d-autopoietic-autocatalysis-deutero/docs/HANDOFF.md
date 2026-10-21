@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-20 16:20 UTC (session 145, cont.: **E007 PROMOTED**. Its confirmation, launched early at the owner's request, gave +17.1 pp all-pass (SE 4.0), 137/140 vs E002's 113/140. A/A rebuilt from E007's replicates. **Look 2 is armed for 00:05 UTC 10-21** (detached, pid 13208); if it passes, E007 is the confirmation-3 candidate. Confirmation-3's provider fix and pre-check are done (plan §0.14).)
+**Last updated:** 2026-10-21 07:35 UTC (session 145, cont.: **confirmation-3 REGISTERED at fb5110e7** (candidate E002; look 2 invalid). Reviewed by Sol and a fresh Claude (initial review plus four re-checks; all in-scope blockers fixed; plan §0.15/§0.16, including code_mode_host off). **Spend queued: L41 replicate 1 ≥ 00:05 UTC 10-24, L42 replicate 2 ≥ 00:05 UTC 10-25.** Phase B round 2 running; hold phase B during the generation windows.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -23,7 +23,22 @@
 - **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
-0. **State, 10-20 16:20 UTC (read first; supersedes the 07:10 block below):**
+0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
+   - **Confirmation-3 is registered** at `fb5110e7285b37b8125ca6fb17c717fb871f3809`, with candidate E002 (look 2 was invalid). Read plan §0.15 and §0.16 for the review dispositions and the code_mode_host change.
+   - **Spend:** queue L41 (`confirm3.py generate --rep 1`, from 00:05 UTC 10-24) and L42 (rep 2, from 00:05 UTC 10-25). Both retry deferrals.
+     After both have generated:
+     1. `python3 -I nano/confirm3.py manifest --registered-at fb5110e7…`
+     2. Commit and push `runs/c2-confirm3/manifest-r*.json`.
+     3. `python3 -I nano/confirm3.py score --registered-at fb5110e7…`, which writes `decision.json`.
+     4. Only then unseal confirmation-2 (§0.8).
+   - **During the generation windows (10-24 and 10-25 from 00:05), run no phase-B round and no other Luna/Sol job.** Do not upgrade codex: a fingerprint change voids the replicate.
+   - **If a replicate's generation fails** (the qrun line exits non-zero and not deferred), follow the failure_policy:
+     - relaunch once with `--relaunch`, logged;
+     - a first attempt that died with calls in flight ends IntegrityReview whatever happens next (fail closed);
+     - leave the partial holdout ledger unread.
+   - **Phase B:** round 1 is done (both screen-fail). Round 2 is running (pid 40689, `~/.a2d-queue/qlogs/*pc-round2.log`). Rounds 3–6 go on 10-21 to 10-23, between the windows, from incumbent E007. The provider changed after round 1 (code_mode_host off; disclosed).
+   - Disk: `target/` holds only the a2d binary now (598 MB); the scratch worktrees are removed.
+0. **State, 10-20 16:20 UTC:**
    - **Incumbent = E007** (Sol-directed repair). Promoted 15:56 UTC on its confirmation: +17.1 pp all-pass (SE 4.0) vs E002, discordant 24 vs 0. `nano/harness.py` = `runs/c2-E007/candidate.py`; `nano/aa.json` was rebuilt from E007's replicates. The batch's confirmation step is done; E005 and E010 stay unconfirmed provisional keeps.
    - **Look 2:** a detached job (pid 13208, `~/.a2d-queue/look2-early.out`) runs the L38 line (`look_if_promoted.py`) at ≥ 00:05 UTC 10-21, taking about 3 h. Only `runs/c2-look2/gate.json` reaches the repo. PASS ⇒ the confirmation-3 candidate is E007, with the E007 entry of `c3_wording.json`; FAIL ⇒ E002.
    - **After look 2:**
