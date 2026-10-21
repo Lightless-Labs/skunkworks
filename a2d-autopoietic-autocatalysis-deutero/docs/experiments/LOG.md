@@ -1940,3 +1940,10 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - So a 35-task round quarter has at most about 2 tasks of headroom, against a +2-net screen. Rounds 1–3 match this (6/6 screen-fail, best +1 net).
 - **Deviation from the frozen R = 6:** disclosed as a budget reallocation. The roughly 1–2k Luna saved goes to **gym v3**, a harder dev gym calibrated so the incumbent passes about 40–60%, authored by the blind pipeline; plan to follow.
 - **Report finding:** the search's ceiling became the gym's ceiling after two keeps (E002, then E007). The proposer comparison needs a gym with headroom, and that is next cycle's first deliverable.
+- **Gym v3 plan reviewed** (Codex Sol high and a fresh Claude, copies only): **both Yes, with blockers**, all folded into the plan (`docs/plans/2026-10-21-gym-v3.md`, Reviewed 10-21). Main changes:
+  - **no gym model call before confirmation-3 replicate 2's `generation_complete`**, enforced in code;
+  - a separate `tools/gym/` copy (own roots, environment variables, binary dir; sandboxed compiles; must-exist denial probes; no import of the bound runner);
+  - post-filter sizing: dev of at least 180 tasks plus an unfiltered holdout of at least 25 families, with +7.5–10 pp as the minimum useful effect;
+  - selection discipline: a seeded split before the pilot, incumbent-only calibration in staged waves, and an acceptance check on a fresh replicate;
+  - a frozen difficulty rubric, with traceability, two quoting adjudicators and opaque hidden-test names;
+  - budget about 1.0–1.2k Luna in cycle 2.
