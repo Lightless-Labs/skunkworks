@@ -63,6 +63,10 @@ FIXED_DISCLOSURES = [
     "Instrument errors count as tool events (fail closed): codex `error` items, top-level `error` events and "
     "`turn.failed` count, so a burst of stream errors could void tuples or reach IntegrityReview; the rate is "
     "reported from the dev runs on the same provider.",
+    "MCP tools (plan §0.16): dev, the dev-holdout looks and the audit ran with codex's built-in MCP resource tools "
+    "available (a Luna coder occasionally listed empty resources; such tuples were voided there too). Confirmation-3 "
+    "runs with code_mode_host off, so no MCP tool exists; codex then emits one fixed pre-turn notice, exempt from the "
+    "count, whose presence the runner requires on every call. Symmetric across arms; injected instructions unchanged.",
     "Operations during the spend windows: generation runs detached; other Luna work (phase-B rounds, dev runs) is "
     "held while a replicate generates; codex is not upgraded (a fingerprint change voids the replicate).",
     "Injected context: codex 0.162 injects its 4 bundled skills (~7.3k chars) and multi-agent role text (~2.8k) "
@@ -305,17 +309,20 @@ def build(args, suite):
                          "void D = fail) point and bootstrap ci_high both < +10 pp",
             "IntegrityReview": "any hidden-test name hit (pooled summary, either replicate's own summary, or a "
                                "failed first attempt's prompts), tool events > 0.5% of a replicate's invocations "
-                               "(the larger of the submission and invocation-record sums, a failed first attempt's "
-                               "calls included, each call without an auditable transcript counted as one event), or "
-                               "the controller's own IntegrityReview",
+                               "(the largest of the submission, invocation-record and recount sums, a failed first "
+                               "attempt's calls included), a failed first attempt with any unauditable call (no "
+                               "ledger, an unparsable line, a call without its record or transcript) or with its own "
+                               "rate above 0.5%, or the controller's own IntegrityReview",
             "Invalid": "void tuples > 5% of all (task, arm, replicate) tuples, the controller's excluded-share guard or "
                        "own Invalid, an aborted run, or a missing or malformed comparison or summary (an aborted "
                        "generation is a failed attempt: failure_policy)",
             "void tuple": "void or unscored submission; any tool event on the submission or on any of its "
-                          "invocation records (lane calls included); any invocation without a --json transcript "
-                          "carrying the stderr marker (a legacy text transcript is void); recorded invocations != "
-                          "the submission's claimed count; a malformed record; all tuples of a replicate whose codex "
-                          "fingerprint changed or whose bracket record is missing",
+                          "invocation records (lane calls included), by the binary's count or by the runner's own "
+                          "recount of the transcript; any invocation without a --json transcript carrying the stderr "
+                          "marker (a legacy text transcript is void); a call whose turn started without the host-off "
+                          "notice before it; recorded invocations != the submission's claimed count; a malformed "
+                          "record; all tuples of a replicate with an unparsable ledger line, a changed codex "
+                          "fingerprint or a missing bracket record",
             "otherwise": "INCONCLUSIVE",
         },
         "codex": fp,
@@ -326,17 +333,20 @@ def build(args, suite):
                               "drained, codex = the registered fingerprint",
                   "latency_go": f"median of {c3.LATENCY_PROBES} canary coding calls on the coder lane through "
                                 f"`a2d lift run` <= {c3.LATENCY_MAX_MEDIAN_SECS:g} s, plus one canary call per registered "
-                                "lane; every lane needs at least one successful, transcript-audited call; all with 0 "
-                                "tool events and the canary secret in no response",
+                                "lane; every lane needs at least one successful call whose transcript the runner "
+                                "recounts at 0 events with the host-off notice; all with 0 tool events and the canary "
+                                "secret in no response",
                   "daily_cap": c3.DAILY_CAP, "replicate_2": "a later UTC day than replicate 1's generation"},
         "failure_policy": "each replicate is attempted once (attempt record before any model call); a deferral is not "
                           "an attempt; a generation that fails before generation_complete may be relaunched once with "
                           "the same seed in its own dir, logged; a second failure ends confirmation-3 as not run",
         "instrument": {"controller_last_change": controller,
                        "provider": "c2-web-provider merged into main at c14956a0 (branch head ecbb9611, including the "
-                                   "§0.14 cwd/CODEX_HOME uniqueness fix 36bea1e1): no web search, isolated CODEX_HOME per "
-                                   "call, tool features disabled, --json allowlist tool counting, failed-call transcripts "
-                                   "(plan §0.13)",
+                                   "§0.14 cwd/CODEX_HOME uniqueness fix 36bea1e1), plus 19d6e1e6 (§0.16): no web search, "
+                                   "isolated CODEX_HOME per call, tool features disabled including code_mode_host (no MCP "
+                                   "tool exists), --json allowlist tool counting with one fixed pre-turn host-off notice "
+                                   "exempt, failed-call transcripts (plan §0.13); the runner recounts every transcript with "
+                                   "its own port of the detector and requires the notice before every turn",
                        "launch": "each generate runs detached (own session, caffeinate) from the queue runner; the "
                                  "controller is built before the preflight, and the suite hash and the crates binding "
                                  "are checked before the attempt record",
