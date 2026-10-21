@@ -1076,6 +1076,32 @@ class Units(Base):
         self.assertEqual(out.splitlines(), ["wave-not-certified", "(['g3-f001', 'g3-f003'], 1, 'pilot')",
                                             "wave-already-piloted", "(['g3-f001', 'g3-f003'], 1, 'pilot')"])
 
+    def test_interrupted_pilot_is_reconciled_even_after_a_drop(self):
+        """A run left `launched` by a dead driver is swept once more (its accounting resumes from
+        the sealed ledger without duplicates) and marked failed by the next pilot call, even when
+        its family has since left the suite (hidden names come from the run's own sealed copy)."""
+        c2 = self.repo / "runs" / "c2-gym3"
+        c2.mkdir(parents=True)
+        rel = "runs/c2-gym3-pilot-w1/r1"
+        (c2 / "replicates.json").write_text(json.dumps({rel: {"seq": 1, "purpose": "pilot", "wave": 1, "status": "launched",
+                                                               "families": ["g3-f009"]}}))
+        sealed = self.root / "runs" / "pilot-c2-gym3-pilot-w1-r1"
+        sealed.mkdir(parents=True)
+        inv = lambda i: json.dumps({"kind": "invocation", "provider": "codex/gpt-6-luna", "ts_ms": 1760000000000 + i,  # noqa: E731
+                                    "task": "g3-f009-l1", "arm": "X:inc", "error": "SECRET"}) + "\n"
+        (sealed / "ledger.jsonl").write_text(inv(0) + '{"kind": "score"}\n' + inv(1) + '{"kind": "invocation", "provider": "codex/gpt-6-luna", "tru')
+        pub = self.repo / rel / "ledger.jsonl"
+        pub.parent.mkdir(parents=True)
+        pub.write_text(json.dumps({"kind": "invocation", "provider": "codex/gpt-6-luna", "ts_ms": 1760000000000, "src": "b0"}) + "\n")
+        code, lines = self.run_script("gym_pilot.py", "--wave", "1", "--binary", str(FAKE_A2D))
+        self.assertEqual(self.statuses(lines), ["interrupted-run-failed", "split-not-committed"], lines)
+        reg = json.loads((c2 / "replicates.json").read_text())[rel]
+        self.assertEqual((reg["status"], reg["interrupted"], reg["accounting_published"]), ("failed", True, 3))
+        acct = [json.loads(x) for x in pub.read_text().splitlines()]
+        self.assertEqual([(r.get("src"), r.get("damaged", False)) for r in acct], [("b0", False), (acct[1]["src"], False),
+                                                                               (acct[2]["src"], True)])
+        self.assertNotIn("SECRET", pub.read_text())
+
     def test_split_seed_is_derived_and_refused_after_authoring(self):
         """C-I16: no operator seed; the seed is sha256(families_sha256 + constant) mod 2**32;
         registration is refused once any authoring status exists."""

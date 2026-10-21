@@ -250,10 +250,14 @@ def sealed_hits(out, names):
     return n
 
 
-def hidden_names(tasks):
+def hidden_names(tasks, suite=SUITE):
+    """Every hidden test name of the tasks in `suite` (a task missing there contributes none)."""
     names = set()
     for t in tasks:
-        names |= test_names((SUITE / t / "hidden_tests.rs").read_text())
+        try:
+            names |= test_names((suite / t / "hidden_tests.rs").read_text())
+        except FileNotFoundError:
+            continue
     return names
 
 
@@ -266,14 +270,17 @@ def publish_summary(rel, summary, names):
 
 # ------------------------------------------------------------------ registry
 
-def reconcile(reg, names_of):
+def reconcile(reg):
     """A run left `launched` (its driver died): sweep its accounting once more from the sealed
-    ledger, then mark it failed (interrupted). It stays spent."""
-    from gym_band import sealed_out
+    ledger, then mark it failed (interrupted). It stays spent. The hidden names come from the
+    run's own sealed suite copy (its families may have left the suite since)."""
+    from gym_band import run_name, sealed_out
     changed = False
     for rel, e in reg.items():
         if e.get("status") == "launched":
-            acc = Accounting(sealed_out(rel) / "ledger.jsonl", OUT_REPO / rel / "ledger.jsonl", names_of(e))
+            tasks = [f"{f}-l{lv}" for f in e.get("families", []) for lv in (1, 2, 3, 4)]
+            names = hidden_names(tasks, RUNS / f"pilot-{run_name(rel)}-suite")
+            acc = Accounting(sealed_out(rel) / "ledger.jsonl", OUT_REPO / rel / "ledger.jsonl", names)
             acc.sweep(final=True)
             e.update({"status": "failed", "interrupted": True, "accounting_published": acc.published})
             changed = True
@@ -344,7 +351,7 @@ def main():
         sys.exit(2)
     with DriverLock() as lock:
         reg = load_json(REGISTRY, {})
-        if reconcile(reg, lambda e: hidden_names(sorted(f"{f}-l{lv}" for f in e.get("families", []) for lv in (1, 2, 3, 4)))):
+        if reconcile(reg):
             save_json(REGISTRY, reg)
             emit(stage="pilot", status="interrupted-run-failed")
         sp = load_split()
