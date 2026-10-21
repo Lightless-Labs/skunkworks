@@ -20,7 +20,7 @@ out/<family>/REPORT.md
 ## Rules
 
 1. **Single file, std only, Rust 2024.** `requirements` must say: implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only, and "Output ONLY the Rust source code inside ```rust fences." It gives the exact public API (types, `pub fn` signatures, error enums with exact variants) so tests can call it. All API items `pub`. No `#![...]` inner attributes or `//!` docs in reference/mutants.
-2. **Numbered clauses.** Every requirement is a clause that starts on its own line as `R<n>. ` (R1, R2, … in order, no gaps). l1 has at least 15 clauses; l3 and l4 at least 10 (depth tasks) and as many as the behaviour needs. Each clause is stated affirmatively.
+2. **Numbered clauses.** Every requirement is a clause that starts on its own line as `R<n>. ` (R1, R2, … in order, no gaps). l1 and l2 have at least 5 clauses; l3 and l4 at least 10 (the depth floor) and as many as the behaviour needs. Each clause is stated affirmatively.
 3. **Complete, unambiguous spec.** Every behaviour a hidden test checks follows from the requirements text. A careful engineer reading only the requirements must be able to pass every hidden test. See the forbidden list below.
 4. **Tests.** Tests call only the specified API, are deterministic, and run fast. They are module contents placed in a module that does `use super::*;`. Hidden tests use inputs different from public tests. No `#[should_panic]` unless the spec requires a panic.
 5. **Mutants.** 4 per task. Each must FAIL at least one hidden test by a failing assertion (a compile error is not a catch; a timeout is a catch only for the `naive` mutant of a scale task). At least 2 of the 4 must PASS all public tests.

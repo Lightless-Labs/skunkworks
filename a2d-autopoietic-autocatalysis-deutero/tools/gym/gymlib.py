@@ -70,7 +70,8 @@ CODEX_HOMES = ROOT / "codex-homes"           # A2D_CODEX_HOME_ROOT for every gym
 PROVIDER_CANARIES = ROOT / "canary"
 TARGET = ROOT / "target"                     # CARGO_TARGET_DIR: never the repo's target/
 BINARY = TARGET / "debug" / "a2d"
-CODEX = _cfg("GYM_CODEX", "/opt/homebrew/bin/codex")
+# The registered 0.162.0, restored byte-identical under ~/.a2d-codex-pin (Homebrew moved to 0.163.0 on 10-21; LOG).
+CODEX = _cfg("GYM_CODEX", str(Path.home() / ".a2d-codex-pin" / "0.162.0" / "bin" / "codex"))
 # Copied from c3lib; the installed codex was 0.163.0 on 2026-10-21. Re-pin (version and sha256
 # prefix) before the first gym model call; until then the isolation check fails closed.
 PINNED_CODEX = _cfg("GYM_PINNED_CODEX", "codex-cli 0.162.0")
@@ -327,12 +328,23 @@ MACH_ALLOW = ("com.apple.logd", "com.apple.system.notification_center", "com.app
               "com.apple.SecurityServer")   # codex loads TLS roots through it; keychain files stay unreadable
 
 
+def codex_bin_dir():
+    return str(Path(CODEX).resolve().parent)
+
+
+def codex_package_root():
+    """The codex package directory (bin/, codex-path/, codex-resources/) when CODEX sits in a package
+    layout, else the binary's own directory."""
+    bin_dir = Path(CODEX).resolve().parent
+    return bin_dir.parent if bin_dir.name == "bin" and (bin_dir.parent / "codex-package.json").exists() else bin_dir
+
+
 def profile(workdir, tag):
     """SBPL profile for one codex job (c3lib's, plus the explicit protected-root denials last).
     `tag` is an empty driver-owned file only this profile may read (see job_members)."""
     home = str(Path.home())
     w = _rp(workdir)
-    codex_dir = _rp(Path(CODEX).resolve().parent)
+    codex_dir = _rp(codex_package_root())
     brokers = ["/bin/launchctl", "/usr/bin/open", "/usr/bin/osascript", "/usr/bin/crontab", "/usr/bin/at",
                "/usr/bin/batch", "/usr/bin/pbcopy", "/usr/bin/pbpaste", "/usr/bin/ssh", "/usr/bin/ssh-add",
                "/usr/bin/scp", "/usr/bin/sftp", "/usr/bin/sudo", "/usr/bin/su", "/usr/bin/security",
@@ -464,7 +476,7 @@ def job_codex_home(workdir):
 
 
 def _env(workdir, home):
-    env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin:/opt/homebrew/bin",
+    env = {"HOME": str(Path.home()), "PATH": codex_bin_dir() + ":/usr/bin:/bin:/opt/homebrew/bin",
            "CODEX_HOME": str(home), "TMPDIR": _rp(workdir), "LANG": "en_US.UTF-8",
            "RUSTC": str(TOOLCHAIN / "bin" / "rustc")}
     if TESTING:
@@ -480,7 +492,8 @@ def child_env(**extra):
     parent's, minus A2D_HOLDOUT_DIR and every C3_* / GYM_TEST_* hook (kept only in tests)."""
     env = {k: v for k, v in os.environ.items()
            if k not in SCRUBBED and not k.startswith("C3_") and (TESTING or not k.startswith("GYM_TEST_"))}
-    env.update({"A2D_CODEX_HOME_ROOT": str(CODEX_HOMES), "CARGO_TARGET_DIR": str(TARGET)})
+    env.update({"A2D_CODEX_HOME_ROOT": str(CODEX_HOMES), "CARGO_TARGET_DIR": str(TARGET),
+                "PATH": codex_bin_dir() + ":" + env.get("PATH", "/usr/bin:/bin")})   # the provider spawns `codex` by name
     env.update(extra)
     return env
 

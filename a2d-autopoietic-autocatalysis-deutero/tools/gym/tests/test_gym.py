@@ -294,7 +294,8 @@ class Units(Base):
                        "print(gymlib.BINARY == gymlib.ROOT / 'target' / 'debug' / 'a2d', gymlib.CANARY.name)",
                        env=env)
         a, b, c = out.splitlines()
-        self.assertEqual(a, "False True /opt/homebrew/bin/codex True True")
+        pin = Path.home() / ".a2d-codex-pin" / "0.162.0" / "bin" / "codex"
+        self.assertEqual(a, f"False True {pin} True True")
         self.assertEqual(b, "['.a2d-holdout/confirmation-3', '.a2d-holdout/authoring/confirmation-3/_records', "
                             "'.a2d-holdout/runs/c2-confirm2-decision']")
         self.assertEqual(c, "True .a2d-gym-canary.txt")
