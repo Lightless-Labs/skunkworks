@@ -38,6 +38,19 @@
      - leave the partial holdout ledger unread.
    - **Phase B:** round 1 is done (both screen-fail). Round 2 is running (pid 40689, `~/.a2d-queue/qlogs/*pc-round2.log`). Rounds 3–6 go on 10-21 to 10-23, between the windows, from incumbent E007. The provider changed after round 1 (code_mode_host off; disclosed).
    - Disk: `target/` holds only the a2d binary now (598 MB); the scratch worktrees are removed.
+   - **Freeze until `decision.json`:** `nano/confirm3.py`, `crates/`, `Cargo.toml` and `Cargo.lock` must stay byte-identical to fb5110e7, with nothing untracked under `crates/`. `registration()` and `crates_clean()` refuse otherwise, and a refusal at 00:05 costs a day.
+     - **No `brew upgrade codex` until 10-26.**
+     - No `cargo clean` near a window: the in-window build is about 3 min from a warm `target/`.
+     - Phase B touches only `eval.py` and `c2_phaseb.py`, which is fine.
+   - **00:05 launch path checked on 10-21 (no model calls):**
+     - the runner's env has cargo, codex and python3 on PATH, with A2D_HOLDOUT_DIR and CODEX_HOME unset;
+     - drained, isolation, holdout agreement, the codex fingerprint, the sealed confirmation-2 record, `spend_gate(10-24)` = go, no deferral, no attempts, the suite hash and the crates binding are all OK.
+     - Only the live latency and canary probes remain.
+   - **Luna (25k total), recounted 10-21 07:40:** about 15.9k spent (dev 10,683, holdout 4,957, rehearsals 162, controls about 50); **about 9.1k left.**
+     - Ring-fenced: confirmation-3, about 4.5k (two replicates of about 1.5k plus a relaunch reserve).
+     - Phase B: rounds 3–6 about 1.8k, plus **at most one** continuation (about 2k), decided before round 6.
+     - `luna_today` cannot see rehearsals in `~/.a2d-rehearsal*` (they are removed now).
+     - Do not start a phase-B round after about 22:00 UTC on 10-23 or 10-24.
 0. **State, 10-20 16:20 UTC:**
    - **Incumbent = E007** (Sol-directed repair). Promoted 15:56 UTC on its confirmation: +17.1 pp all-pass (SE 4.0) vs E002, discordant 24 vs 0. `nano/harness.py` = `runs/c2-E007/candidate.py`; `nano/aa.json` was rebuilt from E007's replicates. The batch's confirmation step is done; E005 and E010 stay unconfirmed provisional keeps.
    - **Look 2:** a detached job (pid 13208, `~/.a2d-queue/look2-early.out`) runs the L38 line (`look_if_promoted.py`) at ≥ 00:05 UTC 10-21, taking about 3 h. Only `runs/c2-look2/gate.json` reaches the repo. PASS ⇒ the confirmation-3 candidate is E007, with the E007 entry of `c3_wording.json`; FAIL ⇒ E002.
