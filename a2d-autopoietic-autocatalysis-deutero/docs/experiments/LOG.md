@@ -1925,3 +1925,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Each spend day, before `generate`: 2 Luna-low and 3 Sol-medium PONG calls with the provider's exact arguments and an isolated home. On any API error, `turn.failed` or timeout, the line waits 30 min and retries, at most 16 times (up to about 08:05 UTC), then runs `generate` anyway; the runner's own canary decides.
   - The generation thus finishes the same UTC day, which keeps the replicates on separate days. A deferral still moves to the next 00:05.
   - First run: healthy (5/5) at 08:48 UTC.
+- **Phase B, rounds 2–3** (incumbent E007; new provider, code_mode_host off):
+  - Round 2: informed `paired-draft-pool` 0 pp, uninformed `two-round-review-repair` +2.8 pp (net +1). Both screen-fail.
+  - Round 3: informed `repair-completion-audit` 0, uninformed `contrastive-review` 0. Both screen-fail. The first run was integrity-invalid on 3 Sol capacity failures; the re-run was valid.
+  - So far, 6 proposals from each arm, all screen-fail, with the best at +1 net task. That fits a near-ceiling incumbent (E007 dev all-pass about 95%), where 35-task quarters leave about 1–2 tasks of headroom.
+  - Rounds 4–6: round 4 at ≥ 00:10 UTC 10-22 (proposals generated today; the Luna cap is used), round 5 on 10-22, round 6 on 10-23 (finishing before about 22:00).
