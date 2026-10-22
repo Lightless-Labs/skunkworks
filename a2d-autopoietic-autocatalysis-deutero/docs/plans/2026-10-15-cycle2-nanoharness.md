@@ -4,6 +4,31 @@
 **Status:** Active
 **Goal:** the session `/goal` of 2026-10-15 ("A²D cycle 2"). This plan is its working form.
 **Reviewed:** 2026-10-16, proposer-comparison protocol (Codex `gpt-6.1-sol` high + fresh Claude subagent; dispositions in the 2026-10-16 Addendum). 2026-10-15, design review before the first live run (Codex `gpt-6.1-sol` high, fresh Claude subagent; copies-only dirs). Dispositions in the Addendum.
+**Addendum:** 2026-10-22 ~02:00 UTC — **post-confirmation-3 allocation, pre-registered before any confirmation-3 data** (a conditional plan; nothing is spent before confirmation-3's `decision.json`). The rule:
+- **SUPPORTED:** cycle 2 is done (the goal's condition). Freeze E002, publish `results.tsv` and the report, and stop. E007 and gym v3 move to cycle 3.
+- **Anything else** (RULED OUT, INCONCLUSIVE in any variant, IntegrityReview, Invalid, not run): the remaining Luna goes first to the **E007 path**, the only route to the goal's condition before 2026-11-30. It takes priority over gym v3's Luna pilot, which moves to cycle 3. Gym v3's Sol authoring is not blocked.
+  - E007 is the strongest harness found: +17.1 pp all-pass vs E002 at its fresh dev confirm, and E002 was +7.1 pp vs D at its own.
+  - It was never confirmed: its one dev-holdout look (look 2) was invalid on integrity grounds, a coincidental hidden-test name, not on outcome.
+  1. **Budget check first:** recount Luna from all cycle-2 ledgers. Proceed only if remaining ≥ **4.8k**:
+     - look 3, about 1.3k;
+     - confirmation-4's two replicates, about 3.0k;
+     - preflight, canary and controls overheads, about 0.2k;
+     - a 0.3k margin.
+     Otherwise the E007 path is not started (no partial spend).
+  2. **Look 3** (C2-LOOK3): frozen E007 vs D on the dev-holdout, 100 × 2, with a fresh seed, under look 1's rule (lift ≥ +10 pp, CI95 low > 0, valid).
+     - **Grounds:** the dev-holdout is not a spend-once set. The goal itself re-checks the incumbent against D on it repeatedly ("after every 10 keeps"). Proposers have learned one bit per look (look 1 PASS, look 2 invalid) and learn one more here.
+     - The hidden-name rule is unchanged (strict). A recurrence makes look 3 invalid, and the path ends.
+     - **Binary:** confirmation-3's own controller binary and the pinned codex 0.162.0. Look 3 is the first job after `decision.json`, before the `eval.py` fix, any merge or any `cargo build`. Its manifest records the binary's sha256. Look 2 ran on the pre-merge binary, from before the web-provider fix.
+  3. **Power gate (fixed now):** before any confirmation-4 authoring, run `c3_power.py`'s model (dev summaries only; B = D − 3.6 pp, as registered for confirmation-3).
+     - The lift used is half of E007's summed dev confirm estimates over D: (17.1 + 7.1) / 2 ≈ +12 pp. The half allows for selection.
+     - Author confirmation-4 only if P(SUPPORTED) ≥ 0.5 at that lift. For reference, the same model gives 0.47 at +10 pp and 0.96 at +15 pp.
+  4. **If look 3 passes and the power gate holds:** confirmation-4 (C2-CONFIRM4), arms D, B and X:E007, 144 tasks, r = 2, k = 5, under confirmation-3's claim and void rules.
+     - It is authored blind by Sol through the confirmation-3 pipeline, **with opaque hidden-test names** (gym-v3 rubric M5). That closes the coincidental-name channel which voided look 2.
+     - Before registration: a similarity check that includes confirmation-3, and one Codex Sol plus fresh-Claude review.
+     - Replicates run on separate UTC days, and the spend must finish by 2026-11-30.
+     - **No relaunch** (the 25k cap leaves no reserve): a replicate whose generation fails ends confirmation-4 as "not run". This weakens confirmation-3's one-relaunch policy and is disclosed.
+  5. **If look 3 fails or is invalid, or the budget check or power gate fails:** no confirmation-4. The remainder goes to gym v3's pilot, and cycle 2 closes on the budget or the deadline.
+  6. **Multiplicity, disclosed:** a SUPPORTED on confirmation-4 is a claim about frozen E007 on its own fresh blind set. The report lists every confirmation attempt with its outcome: confirmation-2 IntegrityReview, confirmation-3, confirmation-4.
 **Addendum:** 2026-10-21 ~10:40 UTC — **phase B stops at R = 4** (budget reallocation, a disclosed deviation from R = 6). Written before round 4 reports, so it does not depend on any round-4 outcome. Reason, from quantities known before round 1: E007's two full dev replicates (130/140, 137/140) leave at most about 2 tasks of headroom on a 35-task quarter, against a +2-net screen, so neither registered endpoint can be informative at any R on this gym. R = 4 is the protocol's own minimum for the precision metric. Both endpoints are analysed at R = 4 exactly as registered, with the blinded idea-category labels (e.g. the informed round-4 `deeper-review` repeats the uninformed round-1 `high-effort-review`). The Luna saved goes to gym v3 (plan 2026-10-21-gym-v3), the next cycle's harder dev gym, where the comparison can be re-run with headroom.
 **Addendum:** 2026-10-20 — phase-B stats script: branch labels generalised for a promoted incumbent (see protocol v2, informed context); before any phase-B proposal.
 **Addendum:** 2026-10-15 — **design review dispositions and definitions** (all accepted unless noted):
