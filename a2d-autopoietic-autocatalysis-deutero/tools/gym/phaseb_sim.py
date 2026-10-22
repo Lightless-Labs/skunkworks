@@ -231,7 +231,8 @@ def comparison_table(p, gaps, n_round_fams, rounds_list, sims, seed, keep_curves
                     if keep_curves:
                         rej["keeps"] += fisher_one_sided(keeps[0], R, keeps[1], R) <= 0.05
                 row = {"round_tasks": 4 * nf, "R": R, "gap": gap,
-                       "reject_cluster": rej["cluster"] / sims, "reject_round": rej["round"] / sims}
+                       "reject_cluster": rej["cluster"] / sims, "reject_round": rej["round"] / sims,
+                       "luna_rounds": 3 * 4 * nf * R * p["calls_per_task"]}
                 if keep_curves:
                     row["reject_keeps"] = rej["keeps"] / sims
                 out.append(row)
@@ -244,18 +245,20 @@ def main():
         ap.add_argument("--" + key.replace("_", "-"), type=type(val), default=val)
     ap.add_argument("--k", type=int, default=2, help="the fixed screen's net-task bar (protocol v2: 2)")
     ap.add_argument("--quick", action="store_true", help="few simulations, for a smoke run")
+    ap.add_argument("--round-fams", type=int, nargs="+", default=[9, 15, 30], help="families per round (4 tasks each)")
+    ap.add_argument("--rounds", type=int, nargs="+", default=[4, 6, 10, 15, 20])
+    ap.add_argument("--gaps", type=float, nargs="+", default=[0.0, 0.025, 0.05, 0.075])
     ap.add_argument("--seed", type=int, default=20261022)
     ap.add_argument("--out")
     args = ap.parse_args()
     p = {key: getattr(args, key) for key in DEFAULTS}
     sims_screen, sims_cmp = (200, 200) if args.quick else (3000, 1500)
-    round_fams = [9, 15, 30]
+    round_fams = args.round_fams
     designs = ["fixed", "aa", "half"]
     deltas = [0.0, 0.025, 0.05, 0.075, 0.10, 0.15]
     screens = screen_table(p, designs, deltas, round_fams, sims_screen, args.seed, args.k)
     curves = {4 * nf: keep_probability(screens, "half", 4 * nf) for nf in round_fams}
-    comps = comparison_table(p, [0.0, 0.025, 0.05, 0.075], round_fams, [4, 6, 10, 15, 20], sims_cmp,
-                             args.seed + 1, curves)
+    comps = comparison_table(p, args.gaps, round_fams, args.rounds, sims_cmp, args.seed + 1, curves)
     result = {"method": "tools/gym/phaseb_sim.py (module docstring)", "params": p, "k": args.k,
               "sims": {"screen": sims_screen, "comparison": sims_cmp}, "mixture": mixture(p["pi"], p["d"], p["shape"]),
               "screens": screens, "comparisons": comps}
