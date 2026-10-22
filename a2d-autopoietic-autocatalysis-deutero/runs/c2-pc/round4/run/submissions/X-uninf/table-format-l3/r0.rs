@@ -1,0 +1,173 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.is_empty() {
+            return Err(TableError::EmptyRow { row: row_index });
+        }
+    }
+
+    let columns = rows[0].len();
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.len() != columns {
+            return Err(TableError::Ragged {
+                row: row_index,
+                expected: columns,
+                actual: row.len(),
+            });
+        }
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != columns {
+        return Err(TableError::AlignmentCount {
+            expected: columns,
+            actual: options.alignments.len(),
+        });
+    }
+
+    let minimum = 3 * columns + 1 + columns;
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, cell) in row.iter().enumerate() {
+            for (byte, ch) in cell.char_indices() {
+                if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Err(TableError::InvalidChar {
+                        row: row_index,
+                        column: column_index,
+                        byte,
+                    });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.trim_end_matches(' ').to_owned())
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; columns];
+    for row in &trimmed {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+
+    if options.max_width != 0 {
+        let mut total = 3 * columns + 1 + widths.iter().sum::<usize>();
+        while total > options.max_width {
+            let eligible = (0..columns).filter(|&column| widths[column] > 1);
+            let widest = eligible.max_by_key(|&column| (widths[column], column));
+            match widest {
+                Some(column) => {
+                    widths[column] -= 1;
+                    total -= 1;
+                }
+                None => break,
+            }
+        }
+    }
+
+    let mut output = String::new();
+    append_border(&mut output, &widths);
+
+    for (row_index, row) in trimmed.iter().enumerate() {
+        output.push('|');
+        for column in 0..columns {
+            let content = truncate(&row[column], widths[column]);
+            let alignment = if options.alignments.is_empty() {
+                &Alignment::Left
+            } else {
+                &options.alignments[column]
+            };
+            append_cell(&mut output, &content, widths[column], alignment);
+            output.push('|');
+        }
+        output.push('\n');
+
+        if options.header && row_index == 0 && rows.len() > 1 {
+            append_border(&mut output, &widths);
+        }
+    }
+
+    append_border(&mut output, &widths);
+    Ok(output)
+}
+
+fn append_border(output: &mut String, widths: &[usize]) {
+    output.push('+');
+    for &width in widths {
+        for _ in 0..(width + 2) {
+            output.push('-');
+        }
+        output.push('+');
+    }
+    output.push('\n');
+}
+
+fn truncate(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        return value.to_owned();
+    }
+
+    let mut result: String = value.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+
+fn append_cell(output: &mut String, content: &str, width: usize, alignment: &Alignment) {
+    output.push(' ');
+    let content_width = content.chars().count();
+    let extra = width - content_width;
+
+    let (left, right) = match alignment {
+        Alignment::Left => (0, extra),
+        Alignment::Right => (extra, 0),
+        Alignment::Center => (extra / 2, extra - extra / 2),
+    };
+
+    for _ in 0..left {
+        output.push(' ');
+    }
+    output.push_str(content);
+    for _ in 0..right {
+        output.push(' ');
+    }
+    output.push(' ');
+}

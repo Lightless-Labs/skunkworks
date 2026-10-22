@@ -1,0 +1,242 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single { opening: usize },
+    Double { opening: usize },
+}
+
+fn is_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\r' | '\n')
+}
+
+fn is_name_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_name_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn env_value<'a>(name: &str, env: &'a [(&str, &str)]) -> &'a str {
+    env.iter()
+        .find_map(|(key, value)| (*key == name).then_some(*value))
+        .unwrap_or("")
+}
+
+fn find_braced_end(input: &str, mut i: usize) -> Option<usize> {
+    while i < input.len() {
+        let ch = input[i..].chars().next()?;
+        if ch == '\\' {
+            i += ch.len_utf8();
+            if i < input.len() {
+                let next = input[i..].chars().next()?;
+                i += next.len_utf8();
+            }
+        } else if ch == '}' {
+            return Some(i);
+        } else {
+            i += ch.len_utf8();
+        }
+    }
+    None
+}
+
+fn decode_default(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch == '\\' {
+            if let Some((_, next)) = chars.next() {
+                result.push(next);
+            } else {
+                result.push('\\');
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn expand(input: &str, dollar: usize, env: &[(&str, &str)]) -> Result<(String, usize), SplitError> {
+    let after_dollar = dollar + 1;
+    let next = input[after_dollar..].chars().next();
+
+    if next == Some('{') {
+        let contents_start = after_dollar + 1;
+        let end = find_braced_end(input, contents_start)
+            .ok_or(SplitError::UnterminatedExpansion { pos: dollar })?;
+        let contents = &input[contents_start..end];
+
+        let name_end = contents
+            .char_indices()
+            .find_map(|(offset, ch)| (!is_name_continue(ch)).then_some(offset))
+            .unwrap_or(contents.len());
+
+        let name = &contents[..name_end];
+        if name.is_empty() || !name.chars().next().is_some_and(is_name_start) {
+            return Err(SplitError::InvalidExpansion { pos: dollar });
+        }
+
+        let tail = &contents[name_end..];
+        let value = if tail.is_empty() {
+            env_value(name, env).to_string()
+        } else if let Some(default) = tail.strip_prefix(":-") {
+            let existing = env_value(name, env);
+            if existing.is_empty() {
+                decode_default(default)
+            } else {
+                existing.to_string()
+            }
+        } else {
+            return Err(SplitError::InvalidExpansion { pos: dollar });
+        };
+
+        Ok((value, end + 1))
+    } else if next.is_some_and(is_name_start) {
+        let mut end = after_dollar;
+        while end < input.len() {
+            let ch = input[end..].chars().next().expect("valid UTF-8 boundary");
+            if !is_name_continue(ch) {
+                break;
+            }
+            end += ch.len_utf8();
+        }
+        Ok((env_value(&input[after_dollar..end], env).to_string(), end))
+    } else {
+        Ok(("$".to_string(), after_dollar))
+    }
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut quote = Quote::None;
+    let mut i = 0;
+
+    while i < input.len() {
+        let ch = input[i..].chars().next().expect("valid UTF-8 boundary");
+        let next_i = i + ch.len_utf8();
+
+        match quote {
+            Quote::Single { .. } => {
+                if ch == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.push(ch);
+                }
+                i = next_i;
+            }
+            Quote::Double { .. } => {
+                match ch {
+                    '"' => {
+                        quote = Quote::None;
+                        i = next_i;
+                    }
+                    '\\' => {
+                        if next_i == input.len() {
+                            return Err(SplitError::TrailingEscape { pos: i });
+                        }
+                        let escaped = input[next_i..].chars().next().expect("valid UTF-8 boundary");
+                        let escaped_end = next_i + escaped.len_utf8();
+                        if matches!(escaped, '"' | '\\' | '$') {
+                            word.push(escaped);
+                            i = escaped_end;
+                        } else if escaped == '\n' {
+                            i = escaped_end;
+                        } else {
+                            word.push('\\');
+                            i = next_i;
+                        }
+                    }
+                    '$' => {
+                        let (value, end) = expand(input, i, env)?;
+                        word.push_str(&value);
+                        active = true;
+                        i = end;
+                    }
+                    _ => {
+                        word.push(ch);
+                        i = next_i;
+                    }
+                }
+            }
+            Quote::None => {
+                match ch {
+                    '\'' => {
+                        active = true;
+                        quote = Quote::Single { opening: i };
+                        i = next_i;
+                    }
+                    '"' => {
+                        active = true;
+                        quote = Quote::Double { opening: i };
+                        i = next_i;
+                    }
+                    '\\' => {
+                        if next_i == input.len() {
+                            return Err(SplitError::TrailingEscape { pos: i });
+                        }
+                        let escaped = input[next_i..].chars().next().expect("valid UTF-8 boundary");
+                        let escaped_end = next_i + escaped.len_utf8();
+                        if escaped == '\n' {
+                            i = escaped_end;
+                        } else {
+                            word.push(escaped);
+                            active = true;
+                            i = escaped_end;
+                        }
+                    }
+                    '$' => {
+                        let (value, end) = expand(input, i, env)?;
+                        word.push_str(&value);
+                        active = true;
+                        i = end;
+                    }
+                    _ if is_separator(ch) => {
+                        if active {
+                            words.push(std::mem::take(&mut word));
+                            active = false;
+                        }
+                        i = next_i;
+                    }
+                    _ => {
+                        word.push(ch);
+                        active = true;
+                        i = next_i;
+                    }
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single { opening } => {
+            return Err(SplitError::UnterminatedSingle { pos: opening });
+        }
+        Quote::Double { opening } => {
+            return Err(SplitError::UnterminatedDouble { pos: opening });
+        }
+        Quote::None => {}
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}

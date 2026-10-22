@@ -1,0 +1,404 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+    OverflowCount { expected: usize, actual: usize },
+    MarkdownNeedsHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overflow {
+    Clip,
+    Wrap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    Grid,
+    Compact,
+    Markdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+    pub overflow: Vec<Overflow>,
+    pub mode: Mode,
+}
+
+#[derive(Clone)]
+struct Token {
+    text: String,
+    width: usize,
+}
+
+type LogicalLine = Vec<Token>;
+type CellLines = Vec<LogicalLine>;
+
+fn validate_cell(text: &str, row: usize, column: usize) -> Result<(), TableError> {
+    let mut chars = text.char_indices().peekable();
+    while let Some((byte, ch)) = chars.next() {
+        if ch == '\r' {
+            match chars.peek() {
+                Some((_, '\n')) => {
+                    chars.next();
+                }
+                _ => return Err(TableError::InvalidChar { row, column, byte }),
+            }
+        } else if (ch.is_control() && ch != '\n') || ch == '\u{2028}' || ch == '\u{2029}' {
+            return Err(TableError::InvalidChar { row, column, byte });
+        }
+    }
+    Ok(())
+}
+
+fn tokenize_line(line: &str, markdown: bool) -> LogicalLine {
+    let trimmed = line.trim_end_matches(' ');
+    let mut tokens = Vec::new();
+    for ch in trimmed.chars() {
+        if markdown && ch == '|' {
+            tokens.push(Token {
+                text: "\\|".to_owned(),
+                width: 2,
+            });
+        } else if markdown && ch == '\\' {
+            tokens.push(Token {
+                text: "\\\\".to_owned(),
+                width: 2,
+            });
+        } else {
+            tokens.push(Token {
+                text: ch.to_string(),
+                width: 1,
+            });
+        }
+    }
+    tokens
+}
+
+fn normalize_cell(text: &str, markdown: bool) -> CellLines {
+    let normalized = text.replace("\r\n", "\n");
+    normalized
+        .split('\n')
+        .map(|line| tokenize_line(line, markdown))
+        .collect()
+}
+
+fn line_width(line: &[Token]) -> usize {
+    line.iter().map(|token| token.width).sum()
+}
+
+fn fragments(tokens: &[Token], width: usize, overflow: &Overflow) -> Vec<String> {
+    if tokens.is_empty() {
+        return vec![String::new()];
+    }
+
+    match overflow {
+        Overflow::Clip => {
+            let total = line_width(tokens);
+            if total <= width {
+                return vec![tokens.iter().map(|token| token.text.as_str()).collect()];
+            }
+
+            let mut output = String::new();
+            let mut used = 0;
+            for token in tokens {
+                if used + token.width > width.saturating_sub(1) {
+                    break;
+                }
+                output.push_str(&token.text);
+                used += token.width;
+            }
+            output.push('…');
+            vec![output]
+        }
+        Overflow::Wrap => {
+            let mut result = Vec::new();
+            let mut index = 0;
+            while index < tokens.len() {
+                let start = index;
+                let mut used = 0;
+                while index < tokens.len() && used + tokens[index].width <= width {
+                    used += tokens[index].width;
+                    index += 1;
+                }
+                if index == start {
+                    index += 1;
+                }
+                result.push(
+                    tokens[start..index]
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect(),
+                );
+            }
+            result
+        }
+    }
+}
+
+fn scalar_count(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn align(content: &str, width: usize, alignment: &Alignment, omit_right: bool) -> String {
+    let extra = width.saturating_sub(scalar_count(content));
+    let (left, right) = match alignment {
+        Alignment::Left => (0, extra),
+        Alignment::Right => (extra, 0),
+        Alignment::Center => (extra / 2, extra - extra / 2),
+    };
+    let right = if omit_right { 0 } else { right };
+    format!("{}{}{}", " ".repeat(left), content, " ".repeat(right))
+}
+
+fn emit_data_line(
+    output: &mut String,
+    row: &[Vec<String>],
+    fragment_index: usize,
+    widths: &[usize],
+    alignments: &[Alignment],
+    mode: &Mode,
+) {
+    if !matches!(mode, Mode::Compact) {
+        output.push('|');
+    }
+
+    for column in 0..widths.len() {
+        let content = row[column]
+            .get(fragment_index)
+            .map(String::as_str)
+            .unwrap_or("");
+        let omit_right = matches!(mode, Mode::Compact) && column + 1 == widths.len();
+
+        // An all-empty Compact physical row has no content or source spaces;
+        // its specified output is just LF, irrespective of alignment padding.
+        let all_empty_compact = matches!(mode, Mode::Compact)
+            && row.iter().all(|fragments| {
+                fragments
+                    .get(fragment_index)
+                    .is_none_or(|fragment| fragment.is_empty())
+            });
+        let padded = if all_empty_compact {
+            String::new()
+        } else {
+            align(content, widths[column], &alignments[column], omit_right)
+        };
+
+        if matches!(mode, Mode::Compact) {
+            if column > 0 {
+                output.push_str("  ");
+            }
+            output.push_str(&padded);
+        } else {
+            output.push(' ');
+            output.push_str(&padded);
+            output.push(' ');
+            output.push('|');
+        }
+    }
+    output.push('\n');
+}
+
+fn emit_grid_border(output: &mut String, widths: &[usize]) {
+    output.push('+');
+    for &width in widths {
+        output.push_str(&"-".repeat(width + 2));
+        output.push('+');
+    }
+    output.push('\n');
+}
+
+fn emit_markdown_marker(output: &mut String, widths: &[usize], alignments: &[Alignment]) {
+    output.push('|');
+    for (width, alignment) in widths.iter().zip(alignments) {
+        output.push(' ');
+        match alignment {
+            Alignment::Left => {
+                output.push(':');
+                output.push_str(&"-".repeat(width - 1));
+            }
+            Alignment::Right => {
+                output.push_str(&"-".repeat(width - 1));
+                output.push(':');
+            }
+            Alignment::Center => {
+                output.push(':');
+                output.push_str(&"-".repeat(width - 2));
+                output.push(':');
+            }
+        }
+        output.push(' ');
+        output.push('|');
+    }
+    output.push('\n');
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.is_empty() {
+            return Err(TableError::EmptyRow { row });
+        }
+    }
+
+    let column_count = rows[0].len();
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.len() != column_count {
+            return Err(TableError::Ragged {
+                row,
+                expected: column_count,
+                actual: cells.len(),
+            });
+        }
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != column_count {
+        return Err(TableError::AlignmentCount {
+            expected: column_count,
+            actual: options.alignments.len(),
+        });
+    }
+    if !options.overflow.is_empty() && options.overflow.len() != column_count {
+        return Err(TableError::OverflowCount {
+            expected: column_count,
+            actual: options.overflow.len(),
+        });
+    }
+    if matches!(options.mode, Mode::Markdown) && !options.header {
+        return Err(TableError::MarkdownNeedsHeader);
+    }
+
+    let minimum_width = if matches!(options.mode, Mode::Markdown) {
+        3
+    } else {
+        1
+    };
+    let overhead = if matches!(options.mode, Mode::Compact) {
+        2 * (column_count - 1)
+    } else {
+        3 * column_count + 1
+    };
+    let minimum = overhead + column_count * minimum_width;
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            validate_cell(cell, row, column)?;
+        }
+    }
+
+    let alignments = if options.alignments.is_empty() {
+        vec![Alignment::Left; column_count]
+    } else {
+        options.alignments.clone()
+    };
+    let overflows = if options.overflow.is_empty() {
+        vec![Overflow::Wrap; column_count]
+    } else {
+        options.overflow.clone()
+    };
+
+    let markdown = matches!(options.mode, Mode::Markdown);
+    let cells: Vec<Vec<CellLines>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| normalize_cell(cell, markdown))
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![minimum_width; column_count];
+    for row in &cells {
+        for (column, cell) in row.iter().enumerate() {
+            for line in cell {
+                widths[column] = widths[column].max(line_width(line));
+            }
+        }
+    }
+
+    if options.max_width != 0 {
+        let mut total: usize = widths.iter().sum::<usize>() + overhead;
+        while total > options.max_width {
+            let candidate = (0..column_count)
+                .filter(|&column| widths[column] > minimum_width)
+                .max_by_key(|&column| (widths[column], column));
+            match candidate {
+                Some(column) => {
+                    widths[column] -= 1;
+                    total -= 1;
+                }
+                None => break,
+            }
+        }
+    }
+
+    let mut output_rows = Vec::with_capacity(rows.len());
+    for row in &cells {
+        let mut output_row = Vec::with_capacity(column_count);
+        for (column, cell) in row.iter().enumerate() {
+            let mut cell_fragments = Vec::new();
+            for line in cell {
+                cell_fragments.extend(fragments(line, widths[column], &overflows[column]));
+            }
+            output_row.push(cell_fragments);
+        }
+        output_rows.push(output_row);
+    }
+
+    let mut output = String::new();
+    if matches!(options.mode, Mode::Grid) {
+        emit_grid_border(&mut output, &widths);
+    }
+
+    for (row_index, row) in output_rows.iter().enumerate() {
+        let height = row.iter().map(Vec::len).max().unwrap_or(1);
+        for fragment_index in 0..height {
+            emit_data_line(
+                &mut output,
+                row,
+                fragment_index,
+                &widths,
+                &alignments,
+                &options.mode,
+            );
+        }
+
+        if matches!(options.mode, Mode::Markdown) && row_index == 0 {
+            emit_markdown_marker(&mut output, &widths, &alignments);
+        }
+        if matches!(options.mode, Mode::Grid)
+            && options.header
+            && row_index == 0
+            && rows.len() > 1
+        {
+            emit_grid_border(&mut output, &widths);
+        }
+    }
+
+    if matches!(options.mode, Mode::Grid) {
+        emit_grid_border(&mut output, &widths);
+    }
+    Ok(output)
+}
