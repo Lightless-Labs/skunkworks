@@ -68,6 +68,8 @@
         - Then the power gate (`c3_power.py` model, P(SUPPORTED) ≥ 0.5 at +12 pp).
         - Then confirmation-4: Sol-authored, opaque hidden-test names, reviewed, no relaunch, spent by 11-30.
         - Any failed check → gym v3's pilot instead.
+     6. **Session-only check-ins** (CronCreate, 10-22) fire at 08:17 UTC 10-24 (replicate 1) and 08:23 UTC 10-25 (replicate 2 and steps 1–5). They die with the session; if it has ended, run these steps by hand.
+        - **Confirmation-4 prep is deliberately not started before the spend:** the holdout pipeline's tests and `--drained` check touch the holdout dir that confirmation-3 checks on 10-24. Its generalisation (set name, M5 opaque hidden-test names) comes right after `decision.json`.
    - **During the generation windows (10-24 and 10-25 from 00:05), run no phase-B round and no other Luna/Sol job.** Do not upgrade codex: a fingerprint change voids the replicate.
    - **If a replicate's generation fails** (the qrun line exits non-zero and not deferred), follow the failure_policy:
      - relaunch once with `--relaunch`, logged, run as `PATH=~/.a2d-codex-pin/0.162.0/bin:$PATH python3 -I -B nano/confirm3.py generate --rep <n> --relaunch …`;
