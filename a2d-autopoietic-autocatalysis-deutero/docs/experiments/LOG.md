@@ -2020,3 +2020,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Both round-4 proposals repeat a category the other arm proposed in round 1. The informed one repeats r1-uninformed byte for byte (48339373).
   - Descriptively, by R = 4 the informed proposer was not exploring a different idea space from the uninformed one.
 - **After round 4:** run `python3 -I -B docs/experiments/analysis/c2_phaseb_labels.py` once, after `c2_phaseb.py analyze`, and commit `labels-join.json`.
+
+### C2-PB round 4 and close — R = 4 endpoints: 0/4 vs 0/4 keeps; inconclusive by construction  [cycle 2, 2026-10-22 ~00:10–01:00 UTC; pinned codex 0.162.0, 406 invocations]
+- **Round 4** ran 00:10–00:36 UTC on the evaluation quarter (index 3: 8 families, 32 tasks). It was valid: no void tuples, no authorship issues, no hidden-name hits, tool-event rate 0. Commit e7c448707.
+  - Informed (judge-effort, byte-identical to r1-uninformed): 30/32, −1 net vs the incumbent's 31/32. Screen-fail.
+  - Uninformed (reviewer-feedback-enrichment): 32/32, +1 net. Screen-fail.
+- **Registered endpoints** (`c2_phaseb.py analyze`; 4 rounds, 140 paired task-runs; commit 5afa5181e):
+  - Keeps: 0/4 vs 0/4. Screen-pass: 0/4 vs 0/4. None above the A/A threshold, no invalid proposals.
+  - Informed − uninformed: all-pass −1.4 pp, 90% CI [−3.6, +0.7], sign test 1+/2−/1 tie (p = 1.0). Hidden fraction +0.6 pp [−1.4, +2.8].
+- **Headroom:** the incumbent failed exactly one task in every round's quarter (35/36 ×3, then 31/32). The maximum net gain was +1 against a +2 screen, so no proposal could screen-pass. The result is inconclusive by construction on this gym, not evidence for or against the informed proposer.
+- **Label join** (pre-specified above, run once): as dry-run. The same bytes (48339373) scored 0.0 pp on the r1 quarter and −3.1 pp on the r4 quarter.
+- **Defect found: results.tsv held the informed rows only.**
+  - Cause: `eval.log_result` de-duplicates on (id, stage, decision) without the proposer. Both arms log `PC-<r>` / `round` and both screen-failed in every round, so every uninformed row was silently dropped.
+  - Restored by `c2_phaseb_backfill.py` (db3d3a307). It rebuilds the rows from scores.json with c2_phaseb's functions, after reproducing all four logged informed rows field for field. A re-run appends nothing.
+  - Neither arm's inputs were affected (the informed brief filters pc-uninformed rows), and neither were the endpoints (they read scores.json).
+  - `confirm3.py` does not call `log_result`. The eval.py fix waits for the freeze to lift (`todos/results-log-dedup-key.md`).
+- **Phase B is closed.** No rounds 5–6. Report updated. The proposer comparison re-runs on gym v3, with headroom.

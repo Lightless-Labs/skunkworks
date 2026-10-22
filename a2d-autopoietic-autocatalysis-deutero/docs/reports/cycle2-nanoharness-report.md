@@ -1,7 +1,6 @@
 # Cycle 2: Autoresearch on a Minimal Coding Harness
 
-**Status: DRAFT (updated 2026-10-21).** Sections marked **[pending]** are filled at close:
-- phase B round 4 (00:10 UTC 10-22) and the R = 4 analysis;
+**Status: DRAFT (updated 2026-10-22).** Sections marked **[pending]** are filled at close:
 - the confirmation-3 result (replicates on 10-24 and 10-25, then manifest and score);
 - confirmation-2's sealed numbers, descriptive only, released after confirmation-3's decision;
 - look-1 numbers, released at close;
@@ -12,10 +11,10 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 **Goal:** the session `/goal` of 2026-10-15 (quoted in the plan).
 **Plan:** `docs/plans/2026-10-15-cycle2-nanoharness.md`.
 **Evidence:** `docs/experiments/LOG.md`, section "Cycle 2" (every entry registered before its run), and `nano/results.tsv` (one row per experiment stage, including discards).
-**Outcome:** **[pending]**. Known so far (10-21):
+**Outcome:** **[pending]**. Known so far (10-22):
 - Confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim.
 - Confirmation-3 (36 new families × 4) was **registered on 10-21 at `fb5110e7`** with candidate E002. Its replicates run on 10-24 and 10-25.
-- Phase B stopped at R = 4: the dev gym saturated (the incumbent E007 solves about 95%).
+- **Phase B (proposer comparison) is inconclusive by construction.** Keeps were 0/4 in each arm. The incumbent failed exactly one task in each round's quarter, so no proposal could reach the +2 screen. The dev gym saturated; see Phase B.
 
 ## The question
 
@@ -130,16 +129,35 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - 6 rounds, each a 3-arm run on a seeded quarter of the dev families.
   - Endpoints: confirmed keeps per arm, screen-pass rate, and the pooled paired precision difference. "Inconclusive" is the expected outcome at this budget.
 - **Trigger:** when the remaining budget reached 11k, it started after the batch's confirmation step (pre-registered 10-17). The keep count reached by then is reported prominently.
-  - Phase B started on 10-20 from incumbent E007, after three keeps: E002, then E007, with E005 and E010 provisional.
+  - Phase B started on 10-20 from incumbent E007, after two confirmed keeps (E002, then E007) and two provisional ones (E005, E010).
 - **Stopped at R = 4.** This deviation from R = 6 was pre-committed on 10-21, before round 4 reported, as a budget reallocation. R = 4 is the protocol's minimum for the precision metric.
 - **The finding: the search's ceiling became the gym's ceiling.**
   - After two keeps, the incumbent E007 solves about 95% of the dev gym: 130/140 and 137/140 on its two replicates. By level, l1 is 70/70 and l4 63/70, and 28 of the 35 families are fully solved.
-  - A 35-task round quarter leaves at most about 2 tasks of headroom, against a +2-net screen, so neither endpoint can be informative at any R on this gym.
-  - Rounds 1–3: all 6 proposals screen-failed (best +1 net task).
-  - The proposers were productive. Ideas included repair contracts and blueprints, two-reading drafts, deeper Sol review, contrastive review and completion audits. The informed arm's round-4 `deeper-review` repeats the uninformed arm's round-1 `high-effort-review`.
+  - **Measured headroom: one task per round.**
+    - In every round the incumbent failed exactly one task of its quarter: 35/36 in rounds 1–3, 31/32 in round 4.
+    - So the largest net gain any proposal could make was +1, against a +2-net screen. One task (2.8–3.1 pp) is also below the A/A keep threshold of 3.57 pp.
+    - No proposal could have screen-passed in any round, whatever its merit.
+    - Three proposals reached the +1 ceiling (round 1 informed, rounds 2 and 4 uninformed). Each was a single task.
+  - The proposers were productive. Ideas included repair contracts and blueprints, two-reading drafts, deeper Sol review, contrastive review and completion audits.
   - The gym could not rank them.
   - **Consequence:** the next cycle starts with gym v3, a harder dev gym (plan 2026-10-21-gym-v3), where the proposer comparison can be re-run with headroom.
-- **Result** (endpoints at R = 4, as registered, with blinded idea-category labels): **[pending round 4]**
+- **Result** (registered endpoints at R = 4, `runs/c2-pc/analysis.json`): 4 rounds, 140 paired task-runs, all 8 proposals valid.
+  - **Keep rate (the registered self-improvement comparison):** 0/4 informed vs 0/4 uninformed.
+    - Screen-pass was 0/4 in each arm, and no proposal was above the A/A threshold.
+    - No difference is detectable, and on this gym none could have been (above).
+  - **Paired precision** (informed − uninformed, each against the shared incumbent):
+    - All-pass: −1.4 pp, 90% cluster-bootstrap CI [−3.6, +0.7]. By round: +2.8, −2.8, 0.0, −6.3 pp. Sign test 1+/2−/1 tie, p = 1.0.
+    - Hidden fraction: +0.6 pp [−1.4, +2.8]. Sign test 2+/2−, p = 1.0.
+  - **Blinded idea-category labels:**
+    - The labels were assigned before round 4 reported. The join was pre-specified at e485c262b; output in `runs/c2-pc/labels-join.json`, descriptive only.
+    - Each arm proposed 4 distinct categories, and 2 categories were shared: judge-effort and reviewer-feedback-enrichment.
+    - In round 4 the arms crossed over:
+      - The informed proposal is **byte-identical** to the uninformed arm's round-1 candidate (judge-effort, sha 48339373).
+      - The uninformed proposal returns to the informed arm's round-1 category (reviewer-feedback-enrichment).
+    - The identical bytes scored 0.0 pp on the round-1 quarter and −3.1 pp on the round-4 quarter: one task's difference between quarters.
+  - **Reading:**
+    - A²D's mechanical observations did not measurably steer the architect's exploration. By round 4, the informed arm proposed bytes the uninformed arm had already proposed.
+    - This does not test whether observations help find keeps, because on this gym nothing could be kept. The comparison re-runs on gym v3.
 
 ## Instrument integrity in cycle 2
 
@@ -189,3 +207,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **No live Claude lane:** the Claude CLI is blocked inside the session sandbox, so Claude contributed offline via subagents (C2-E1's primary judge, C2-E2, C2-FA2, proposer round c1, reviews). Their tool use was not machine-audited; this is disclosed.
 - **Phase B started before 3 confirmed keeps** (the budget trigger fired first). It started on 10-20 with 2 confirmed keeps (E002, then E007) and 2 provisional ones (E005, E010). This disclosed deviation tests the system as it stood then.
 - **Phase B stopped at R = 4 instead of 6.** This was pre-committed on 10-21, before round 4 reported, because the dev gym is saturated (see Phase B).
+- **results.tsv was missing phase B's uninformed rows; restored on 10-22.**
+  - `eval.log_result` de-duplicates on (id, stage, decision) and ignores the proposer. Both arms logged `PC-<r>` / `round` / `screen-fail`, so every uninformed row was silently dropped.
+  - `c2_phaseb_backfill.py` rebuilt the rows from the registered `scores.json`. As a check, it first reproduced the four logged informed rows field for field.
+  - Neither the arms' inputs nor the endpoints were affected. The fix to `eval.py` waits for confirmation-3's freeze to lift (`todos/results-log-dedup-key.md`).

@@ -1,13 +1,13 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-21 19:55 UTC (session 145, cont.: **gym v3 tooling merged (09c80774f)**; **the dev gym is saturated, so phase B stops at R = 4** (pre-committed before round 4 reports). **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
+**Last updated:** 2026-10-22 01:00 UTC (session 145, cont.: **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
 - **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. Never pause or ask for direction. A failed variant is a data point, not a verdict.
 - **Active goal: cycle 2,** the session `/goal` of 2026-10-15. Working plan: `docs/plans/2026-10-15-cycle2-nanoharness.md` (its addendum holds the design-review dispositions and definitions).
-  - Done when a frozen harness is SUPPORTED vs both D and B on confirmation-2, or when the budget (≤ 3k Luna/day, ≤ 25k total) or the deadline (2026-11-30) is reached.
+  - Done when a frozen harness is SUPPORTED vs both D and B on confirmation-3 (confirmation-2 is spent: IntegrityReview), or when the budget (≤ 3k Luna/day, ≤ 25k total) or the deadline (2026-11-30) is reached.
 - **Cycle 1 is closed** (falsified roadmap). Report: `docs/reports/2026-10-15-lift-first-outcome.md`.
 - **Incumbent = E002** ("Luna generation plus Sol selection", `nano/harness.py`; v0 = D is at `nano/history/before-E002b.py`).
   - 4 Luna samples, then one Sol judge call that picks among the distinct public-green files from the spec alone.
@@ -24,9 +24,12 @@
 
 ## In flight / next
 0. **State, 10-21 11:15 UTC (read first; supersedes the phase-B lines of the 07:35 block):**
-   - **Phase B stops at R = 4** (plan addendum 2026-10-21; LOG). Round 4 runs as armed (pid 30387 in `~/.a2d-queue/pc-round4.pid`, re-armed on the codex pin; output `~/.a2d-queue/pc-round4-delayed.out`; ≥ 00:10 UTC 10-22). No rounds 5–6 and no continuation.
-     After round 4: commit its artifacts and results.tsv rows, then `python3 -I docs/experiments/analysis/c2_phaseb.py analyze`. Join the blinded idea-category labels (packet built 10-21 before any round-4 outcome; `runs/c2-pc/idea-labels.json` once committed) and fill the report's phase-B Result.
-     Round 4's informed candidate is **byte-identical** to round 1's uninformed one (sha 48339373…, Sol review effort medium → high), so round 4 re-tests that harness on another quarter.
+   - **Phase B is closed (10-22 00:36 UTC; LOG "C2-PB round 4 and close").** Round 4 was valid: informed −1, uninformed +1, both screen-fail.
+     - The R = 4 endpoints (`runs/c2-pc/analysis.json`): keeps 0/4 vs 0/4. Informed − uninformed all-pass −1.4 pp, CI [−3.6, +0.7].
+     - The label join is in `runs/c2-pc/labels-join.json`. The report's phase-B Result is filled.
+     - Inconclusive by construction: the incumbent failed exactly 1 task per round, so the maximum net gain was +1 against a +2 screen. The comparison re-runs on gym v3.
+     - **results.tsv defect:** `eval.log_result` de-duplicates on (id, stage, decision) without the proposer. It silently dropped all 4 uninformed rows; they were restored by `c2_phaseb_backfill.py`, checked against the informed rows. Fix eval.py after the freeze (`todos/results-log-dedup-key.md`). `confirm3.py` does not use `log_result`.
+     - `docs/experiments/analysis/__pycache__/` (from the round-4 job) is untracked and harmless. It is outside the gate paths; do not commit it.
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`; tooling merged at 09c80774f after Sol + fresh-Claude reviews and a fix pass; `python3 -I -m unittest discover -s tools/gym/tests`, 59 tests, ~50 min): **no gym model call (Sol or Luna) before BOTH confirmation-3 replicates have a non-aborted `generation_complete` (first attempt or relaunch), and none while confirmation-3 is scored.** Gate (a) enforces both; gate (b) checks that the frozen paths still equal fb5110e7.
      **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Gate (b) is strict, bytecode caches included (Sol review). The three old `tools/holdout/__pycache__` caches were moved to the session scratchpad. If a launch gives `launch-gate-closed` after the spend, look for a new `tools/holdout/__pycache__` first. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
      - `isolation_ok`, `codex_pinned` (14 s) and `codex_smoke`;
@@ -37,7 +40,7 @@
      - `launch.lock` is an flock, released when its process exits;
      - `DriverLock` kills only recorded groups that are still live (pid plus start time), then empties `pids.txt`;
      - `tags/_none` is the reusable sentinel;
-     - probe profiles are never cleaned (`todos/gym-probe-profiles-leak.md`). A real `cargo build` is still untested. Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
+     - the pre-flight's probe profiles stay (the leak is fixed going forward, `todos/gym-probe-profiles-leak.md`). A real `cargo build` is still untested. Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
    - The confirmation-3 lines in the 07:35 block below are unchanged and binding.
    - **Codex pin (13:00 UTC):** Homebrew codex became 0.163.0 at 10:32 UTC. The registered 0.162.0 is restored byte-identical at `~/.a2d-codex-pin/0.162.0/bin`, and L41, L42 and the round-4 job put it first on PATH (LOG "Ops — codex moved"). **Anything that must match the registration runs with that PATH.** Never delete `~/.a2d-codex-pin`.
 0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
@@ -53,9 +56,7 @@
      - relaunch once with `--relaunch`, logged, run as `PATH=~/.a2d-codex-pin/0.162.0/bin:$PATH python3 -I -B nano/confirm3.py generate --rep <n> --relaunch …`;
      - a first attempt that died with calls in flight ends IntegrityReview whatever happens next (fail closed);
      - leave the partial holdout ledger unread.
-   - **Phase B:** rounds 1–3 are done, and all 6 proposals failed the screen (best +1 net task).
-     - Round 4's proposals are committed (e8e78242). A detached job runs `round --round 4` at ≥ 00:10 UTC 10-22 (pid 36432, `~/.a2d-queue/pc-round4-delayed.out`).
-     - ~~Rounds 5–6~~: cancelled (phase B stops at R = 4, see the 11:15 block).
+   - **Phase B:** closed at R = 4 (see the 10-22 lines in the 11:15 block).
      - The provider changed after round 1 (code_mode_host off; disclosed).
      - Sol capacity failures can make a run integrity-invalid; each round has one re-run.
    - **Confirmation-3 queue lines** L41 and L42 run the API health probe (`docs/experiments/analysis/c3_health.py`) before `generate` each day (LOG 10-21).
