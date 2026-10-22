@@ -40,7 +40,7 @@
      - `launch.lock` is an flock, released when its process exits;
      - `DriverLock` kills only recorded groups that are still live (pid plus start time), then empties `pids.txt`;
      - `tags/_none` is the reusable sentinel;
-     - the pre-flight's probe profiles stay (the leak is fixed going forward, `todos/gym-probe-profiles-leak.md`). A real `cargo build` is still untested. Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
+     - the pre-flight's probe profiles stay (the leak is fixed going forward, `todos/gym-probe-profiles-leak.md`). The real `cargo build` into the gym target passed on 10-22: 164 s, 598 MB, repo binary unchanged, gate (b) still True. Then selection → split (derived seed) → wave 1 (~12 families) → E007-only pilot (~0.2k Luna; check the accounting on its first ledger lines).
    - The confirmation-3 lines in the 07:35 block below are unchanged and binding.
    - **Codex pin (13:00 UTC):** Homebrew codex became 0.163.0 at 10:32 UTC. The registered 0.162.0 is restored byte-identical at `~/.a2d-codex-pin/0.162.0/bin`, and L41, L42 and the round-4 job put it first on PATH (LOG "Ops — codex moved"). **Anything that must match the registration runs with that PATH.** Never delete `~/.a2d-codex-pin`.
 0. **State, 10-21 07:35 UTC (read first; supersedes the blocks below):**
