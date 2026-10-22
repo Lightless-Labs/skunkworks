@@ -208,6 +208,10 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - **IntegrityReview or Invalid:** "No claim; the set is spent." The report gives only the triggering counts (the fixed vocabulary). The cause is examined only on copies, and only after the decision.
   - **In every case:**
     - **Self-improvement:** there is no claim that A²D's own proposer beats an uninformed one. Phase B was inconclusive by construction (0/4 vs 0/4 keeps; one task of headroom per round).
+    - **What cycle 3 will and will not test:** its phase B (pre-registered 10-22 in the gym-v3 plan) asks whether A²D's observations improve **a single proposal**, with frozen information and a round-level test.
+      - It does not test learning across rounds.
+      - The goal's keep-rate comparison is descriptive there: under the continuation cap it is at most 1 vs 0.
+      - This narrows the goal's self-improvement endpoint and is disclosed here and in the plan.
     - **E007** (+17.1 pp vs E002 on the dev confirm replicate) is a dev result only: its one dev-holdout look was invalid, and it was never confirmed.
     - **Confirmation-2's** sealed numbers are reported descriptively under their own heading, never as a claim.
 - Wording rules already fixed:

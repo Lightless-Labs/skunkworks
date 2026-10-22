@@ -2054,3 +2054,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - B3: a complete pre-registration rule (deterministic design, ring-fenced budget, v2's validity and invalid-proposal rules carried over).
   - The revisions implement Sol's recommendations and were not re-reviewed.
 - **Where:** plan `2026-10-21-gym-v3.md`, "Phase B on gym v3 → Sizing method"; outputs in `runs/c2-phaseb-sim/`.
+- **Follow-ups (same session, after the advisor's check):**
+  - The rule's "cheapest R" is now a tool: `phaseb_sim.py --search-r`, a seeded bisection that also counts the smoke cost (16 tests). At the placeholders it chooses 16 × 64 (power 0.80, about 7.2k Luna, 128 Sol proposals).
+  - The A/A runs serve both as sizing inputs and as the dossier pool. That use is not selection, so no extra run is needed.
+  - **The estimand change is disclosed** in the plan and the report: a single proposal under frozen information, not learning across rounds, and keeps descriptive. The cycle-3 /goal should restate its self-improvement endpoint.

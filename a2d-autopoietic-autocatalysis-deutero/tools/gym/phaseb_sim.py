@@ -283,6 +283,26 @@ def scenario_rows(p, scenario, designs, gaps, sims, seed, bootstrap=False):
     return out
 
 
+def search_r(p, scenario, nf, target, gap, sims, seed, lo=4, hi=160):
+    """Smallest R in [lo, hi] whose simulated round-test power at `gap` reaches `target`
+    (bisection; power is treated as monotone in R; each evaluation is seeded, so the search is
+    deterministic). Returns (R, power) or (None, power at hi) when hi is not enough."""
+    def power(R):
+        return scenario_rows(p, scenario, [(nf, R)], [gap], sims, seed + R)[0]["reject_round"]
+    top = power(hi)
+    if top < target:
+        return None, top
+    best = (hi, top)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        pw = power(mid)
+        if pw >= target:
+            best, hi = (mid, pw), mid
+        else:
+            lo = mid + 1
+    return best
+
+
 def keep_probability(table, design, round_tasks):
     """Linear interpolation of P(keep | delta) from a screen table."""
     pts = sorted((r["delta"], r["p_keep"]) for r in table if r["design"] == design and r["round_tasks"] == round_tasks)
@@ -350,9 +370,35 @@ def main():
     ap.add_argument("--designs", nargs="+", default=["6x40", "9x30", "15x20"], help="families-per-round x R")
     ap.add_argument("--bootstrap", action="store_true", help="also run the registered bootstrap (slow)")
     ap.add_argument("--sims", type=int, default=1500)
+    ap.add_argument("--search-r", action="store_true",
+                    help="the sizing rule: per round size (--round-fams), the smallest R with power >= --target "
+                         "at --gap under --scenario; prints the cheapest")
+    ap.add_argument("--scenario", default="conservative")
+    ap.add_argument("--target", type=float, default=0.8)
+    ap.add_argument("--gap", type=float, default=0.05)
     ap.add_argument("--out")
     args = ap.parse_args()
     p = {key: getattr(args, key) for key in DEFAULTS}
+    if args.search_r:
+        rows = []
+        for nf in args.round_fams:
+            R, pw = search_r(p, SCENARIOS[args.scenario], nf, args.target, args.gap, args.sims, args.seed)
+            rounds = 3 * 4 * nf * R * p["calls_per_task"] if R else None
+            smokes = 2 * R * p["calls_per_task"] if R else None      # each proposal's 1-task smoke
+            rows.append({"round_tasks": 4 * nf, "R": R, "power": pw, "luna_rounds": rounds,
+                         "luna_total": rounds + smokes if R else None, "sol_proposals": 2 * R if R else None})
+        ok = [r for r in rows if r["R"]]
+        # Cheapest in Luna; ties go to more rounds. The Sol quota (2 proposals per round plus re-asks) is checked by hand.
+        choice = min(ok, key=lambda r: (r["luna_total"], -r["R"])) if ok else None
+        result = {"method": "tools/gym/phaseb_sim.py --search-r", "params": p, "scenario": args.scenario,
+                  "target": args.target, "gap": args.gap, "sims": args.sims, "seed": args.seed,
+                  "candidates": rows, "choice": choice}
+        text = json.dumps(result, indent=1)
+        if args.out:
+            with open(args.out, "w") as fh:
+                fh.write(text + "\n")
+        print(text)
+        return 0
     if args.scenarios is not None:
         names = list(SCENARIOS) if not args.scenarios or args.scenarios == ["all"] else args.scenarios
         designs = [tuple(int(x) for x in d.split("x")) for d in args.designs]

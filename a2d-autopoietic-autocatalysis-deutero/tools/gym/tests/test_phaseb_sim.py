@@ -125,6 +125,16 @@ class ScenarioTest(unittest.TestCase):
         rows = sim.scenario_rows(dict(sim.DEFAULTS), sim.SCENARIOS["conservative"], [(9, 20)], [0.0], 500, 13)
         self.assertLess(rows[0]["reject_round"], 0.09)
 
+    def test_search_r_finds_a_powered_r_and_reports_failure(self):
+        p = dict(sim.DEFAULTS)
+        R, pw = sim.search_r(p, sim.SCENARIOS["base"], 9, 0.5, 0.05, 300, 14, lo=4, hi=60)
+        self.assertIsNotNone(R)
+        self.assertGreaterEqual(pw, 0.5)
+        self.assertLess(R, 60)
+        none, top = sim.search_r(p, sim.SCENARIOS["base"], 9, 0.99, 0.01, 100, 15, lo=4, hi=8)
+        self.assertIsNone(none)
+        self.assertLess(top, 0.99)
+
 
 if __name__ == "__main__":
     unittest.main()
