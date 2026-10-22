@@ -2058,3 +2058,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - The rule's "cheapest R" is now a tool: `phaseb_sim.py --search-r`, a seeded bisection that also counts the smoke cost (16 tests). At the placeholders it chooses 16 × 64 (power 0.80, about 7.2k Luna, 128 Sol proposals).
   - The A/A runs serve both as sizing inputs and as the dossier pool. That use is not selection, so no extra run is needed.
   - **The estimand change is disclosed** in the plan and the report: a single proposal under frozen information, not learning across rounds, and keeps descriptive. The cycle-3 /goal should restate its self-improvement endpoint.
+
+### C2 — post-confirmation-3 allocation pre-registered (E007 path)  [cycle 2, 2026-10-22 ~02:00 UTC; before any confirmation-3 data; no spend]
+- **Why:**
+  - Luna left ≈ 8.1k, of which confirmation-3 holds 4.5k (≈ 3.0k if it needs no relaunch).
+  - E007, the strongest harness (+17.1 pp vs E002 on dev), was never confirmed: look 2 was integrity-invalid on a coincidental hidden-test name.
+  - If confirmation-3 is not SUPPORTED (P ≈ 0.14 at E002's dev estimate), the only route to the goal's condition before 11-30 is a valid E007 look, then confirmation-4.
+  - That does not fit beside gym v3's Luna pilot, so the order is fixed now, before the outcome is known.
+- **Rule** (plan addendum, commit deba82487): SUPPORTED → close. Otherwise:
+  1. Budget check (≥ 4.8k left).
+  2. Look 3, under look 1's rule: first job after `decision.json`, on confirmation-3's binary, strict hidden-name rule.
+  3. Power gate: P(SUPPORTED) ≥ 0.5 at +12 pp.
+  4. Confirmation-4: D, B and X:E007; Sol-authored with opaque hidden-test names; reviewed; no relaunch (disclosed); spent by 11-30.
+  - Any failed check sends the remainder to gym v3's pilot.
+  - Every confirmation attempt is listed in the report.

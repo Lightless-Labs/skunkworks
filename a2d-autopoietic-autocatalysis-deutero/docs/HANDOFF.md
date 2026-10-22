@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-22 01:40 UTC (session 145, cont.: phase-B sizing for gym v3 pre-registered (Sol-reviewed); claims pre-written per confirmation-3 outcome; **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
+**Last updated:** 2026-10-22 02:10 UTC (session 145, cont.: post-confirmation-3 allocation pre-registered (E007 path if not SUPPORTED); phase-B sizing for gym v3 pre-registered (Sol-reviewed); claims pre-written per confirmation-3 outcome; **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -62,6 +62,12 @@
      2. Commit and push `runs/c2-confirm3/manifest-r*.json`.
      3. `python3 -I -B nano/confirm3.py score --registered-at fb5110e7…`, which writes `decision.json`.
      4. Only then unseal confirmation-2 (§0.8).
+     5. **Apply the post-confirmation-3 allocation** (cycle-2 plan addendum 2026-10-22, pre-registered):
+        - **SUPPORTED** → close cycle 2: freeze E002, publish `results.tsv` and the report.
+        - **Otherwise** → recount Luna; if ≥ 4.8k left, **look 3 (E007 vs D on the dev-holdout) is the first job**. It runs on confirmation-3's own binary and the pinned codex, *before* the `eval.py` dedup fix, any merge or any `cargo build`.
+        - Then the power gate (`c3_power.py` model, P(SUPPORTED) ≥ 0.5 at +12 pp).
+        - Then confirmation-4: Sol-authored, opaque hidden-test names, reviewed, no relaunch, spent by 11-30.
+        - Any failed check → gym v3's pilot instead.
    - **During the generation windows (10-24 and 10-25 from 00:05), run no phase-B round and no other Luna/Sol job.** Do not upgrade codex: a fingerprint change voids the replicate.
    - **If a replicate's generation fails** (the qrun line exits non-zero and not deferred), follow the failure_policy:
      - relaunch once with `--relaunch`, logged, run as `PATH=~/.a2d-codex-pin/0.162.0/bin:$PATH python3 -I -B nano/confirm3.py generate --rep <n> --relaunch …`;
