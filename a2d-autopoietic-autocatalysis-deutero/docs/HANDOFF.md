@@ -23,15 +23,21 @@
 - **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
-0. **State, 10-21 11:15 UTC (read first; supersedes the phase-B lines of the 07:35 block):**
+0. **State, 10-21 11:15 UTC, updated 10-22 01:15 UTC (read first; supersedes the phase-B lines of the 07:35 block):**
    - **Phase B is closed (10-22 00:36 UTC; LOG "C2-PB round 4 and close").** Round 4 was valid: informed −1, uninformed +1, both screen-fail.
      - The R = 4 endpoints (`runs/c2-pc/analysis.json`): keeps 0/4 vs 0/4. Informed − uninformed all-pass −1.4 pp, CI [−3.6, +0.7].
      - The label join is in `runs/c2-pc/labels-join.json`. The report's phase-B Result is filled.
      - Inconclusive by construction: the incumbent failed exactly 1 task per round, so the maximum net gain was +1 against a +2 screen. The comparison re-runs on gym v3.
      - **results.tsv defect:** `eval.log_result` de-duplicates on (id, stage, decision) without the proposer. It silently dropped all 4 uninformed rows; they were restored by `c2_phaseb_backfill.py`, checked against the informed rows. Fix eval.py after the freeze (`todos/results-log-dedup-key.md`). `confirm3.py` does not use `log_result`.
-     - `docs/experiments/analysis/__pycache__/` (from the round-4 job) is untracked and harmless. It is outside the gate paths; do not commit it.
+     - `docs/experiments/analysis/__pycache__/` (4 cpython-39 caches dated 10-20/21, older than round 4) is untracked and harmless. It is outside the gate paths; do not commit it.
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`; tooling merged at 09c80774f after Sol + fresh-Claude reviews and a fix pass; `python3 -I -m unittest discover -s tools/gym/tests`, 59 tests, ~50 min): **no gym model call (Sol or Luna) before BOTH confirmation-3 replicates have a non-aborted `generation_complete` (first attempt or relaunch), and none while confirmation-3 is scored.** Gate (a) enforces both; gate (b) checks that the frozen paths still equal fb5110e7.
-     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Gate (b) is strict, bytecode caches included (Sol review). The three old `tools/holdout/__pycache__` caches were moved to the session scratchpad. If a launch gives `launch-gate-closed` after the spend, look for a new `tools/holdout/__pycache__` first. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
+     **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Gate (b) is strict, bytecode caches included (Sol review). The three old `tools/holdout/__pycache__` caches were moved to the session scratchpad. If a launch gives `launch-gate-closed` after the spend, look for a new `tools/holdout/__pycache__` first.
+     **A known producer remains:** the frozen `confirm3.drained()` (line 778) starts `python -I tools/holdout/c3_author.py --drained` without `-B`, and that child imports `c3lib`.
+     - In this session the interpreter (Xcode/CLT 3.9.6) never writes bytecode (`sys.flags.dont_write_bytecode` is 1 even under `env -i … -I`).
+     - Other contexts did write the 10-21 cpython-39 caches, so `c3lib.cpython-39.pyc` (or another `c3_*` module) may appear after L41.
+     - That only closes the gym's gate; it does not touch confirmation-3.
+     - Remedy: confirm that only `tools/holdout` module names appear, move the dir to the scratchpad (do not delete it), and re-check `frozen_since`.
+     - Checked 10-22: no `tools/holdout/__pycache__` and no `nano/__pycache__`. `confirm3.py` does not load `nano/eval.py`. Model-free pre-flight **done 19:50 UTC 10-21** against the real pin and the production gym root (scratch `preflight/preflight.py`). All checks were True:
      - `isolation_ok`, `codex_pinned` (14 s) and `codex_smoke`;
      - the fingerprint: 42 files, the codex and host hashes equal the registration, 5 s;
      - the full `isolation_check`, with every sealed path denied (9 s).
