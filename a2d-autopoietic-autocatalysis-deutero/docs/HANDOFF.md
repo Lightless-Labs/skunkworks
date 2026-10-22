@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-22 03:00 UTC (session 145, cont.: phase-B sizing for gym v3 pre-registered (Sol-reviewed); claims pre-written per confirmation-3 outcome; **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
+**Last updated:** 2026-10-22 01:40 UTC (session 145, cont.: phase-B sizing for gym v3 pre-registered (Sol-reviewed); claims pre-written per confirmation-3 outcome; **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)

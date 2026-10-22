@@ -2037,7 +2037,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `confirm3.py` does not call `log_result`. The eval.py fix waits for the freeze to lift (`todos/results-log-dedup-key.md`).
 - **Phase B is closed.** No rounds 5–6. Report updated. The proposer comparison re-runs on gym v3, with headroom.
 
-### Gym v3 — phase-B sizing method pre-registered before gym v3 exists (model-free; one Sol review)  [2026-10-22 ~01:00–03:00 UTC; Sol high, copies only, 0 web searches; no Luna]
+### Gym v3 — phase-B sizing method pre-registered before gym v3 exists (model-free; one Sol review)  [2026-10-22 ~00:55–01:40 UTC; Sol high, copies only, 0 web searches; no Luna]
 - **Why now:** the plan required re-sizing phase B by simulation before re-running it, and nothing else can move before confirmation-3's replicates (10-24/25). The *method* is fixed now; the *numbers* are filled in from gym v3's own A/A before any proposal.
 - **Calibration** (`c2_noise_calibration.py`, dev runs only, aggregates):
   - A/A discordance is 0.41–0.57 of the binomial value (v0 0.19, E002 0.11, E007 0.05).
