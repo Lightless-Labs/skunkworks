@@ -76,12 +76,17 @@ def draw_gym(n_families, pi, d, shape, rng):
     return ps, fams
 
 
-def shifted(ps, fams, delta, tau, pi, rng):
-    """Candidate pass probabilities for a proposal with mean effect delta."""
+def shifted(ps, fams, delta, tau, pi, rng, task_sd=0.0):
+    """Candidate pass probabilities for a proposal with mean effect delta.
+
+    tau spreads the effect by family; task_sd by task, so one proposal can help some tasks and hurt
+    others. The mean shift is delta in expectation over draws of the gym and of those spreads."""
     effect = {f: delta + tau * rng.gauss(0, 1) for f in set(fams)} if tau else None
     out = []
     for p, f in zip(ps, fams):
         e = effect[f] if effect else delta
+        if task_sd:
+            e += task_sd * rng.gauss(0, 1)
         q = p + e * (1 - p) / (1 - pi) if e >= 0 else p + e * p / pi
         out.append(min(1.0, max(0.0, q)))
     return out
@@ -186,6 +191,98 @@ def round_test(rounds):
     return sd > 0 and mu / (sd / math.sqrt(R)) > t95(R - 1)
 
 
+def effect_draw(dist, mean, sd, z):
+    """A proposal's mean effect. z is a standard normal (shared across arms for covariance).
+
+    normal: mean + sd·z. skew: rare large wins, the same mean and SD: -sd/3 with probability 0.9,
+    +3·sd with probability 0.1 (driven by z through the normal CDF)."""
+    if dist == "normal":
+        return mean + sd * z
+    if dist == "skew":
+        u = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+        return mean + sd * (3.0 if u > 0.9 else -1 / 3)
+    raise ValueError(dist)
+
+
+def schedule(n_fams, nf, R, kind, rng):
+    """Families per round: independent random subsets, or disjoint quarters cycled and reshuffled."""
+    if kind == "random":
+        return [set(rng.sample(range(n_fams), nf)) for _ in range(R)]
+    if kind == "quarters":
+        out = []
+        while len(out) < R:
+            order = list(range(n_fams))
+            rng.shuffle(order)
+            out += [set(order[i:i + nf]) for i in range(0, n_fams - nf + 1, nf)]
+        return out[:R]
+    raise ValueError(kind)
+
+
+def registered_bootstrap_test(rounds, reps=1000, seed=17):
+    """c2_phaseb.precision() as registered: resample (round, family) clusters, percentile 90% CI;
+    the directional claim is CI low > 0 (reps reduced from 4000 for speed)."""
+    by = {}
+    for ri, r in enumerate(rounds):
+        for fam, x in r:
+            by.setdefault((ri, fam), []).append(x)
+    clusters = sorted(by)
+    rng = random.Random(seed)
+    boot = []
+    for _ in range(reps):
+        vals = [v for _ in clusters for v in by[rng.choice(clusters)]]
+        boot.append(sum(vals) / len(vals))
+    boot.sort()
+    return boot[int(0.05 * (reps - 1))] > 0
+
+
+SCENARIOS = {
+    "base": {},
+    "sd5": {"sd_delta": 0.05},
+    "skew_informed": {"dist_inf": "skew"},          # the informed arm's ideas are mostly small, sometimes big
+    "rho_pos": {"rho": 0.5},                        # both proposers react to the same incumbent
+    "rho_neg": {"rho": -0.3},
+    "task_mixed": {"task_sd": 0.10},                # each proposal helps some tasks and hurts others
+    "family": {"tau": 0.03},
+    "quarters": {"schedule": "quarters"},
+    "conservative": {"sd_delta": 0.05, "dist_inf": "skew", "task_sd": 0.10, "tau": 0.03, "schedule": "quarters"},
+}
+
+
+def scenario_rows(p, scenario, designs, gaps, sims, seed, bootstrap=False):
+    """Size and power of the round-level test (and the cluster stand-in) for one scenario."""
+    s = {"sd_delta": p["sd_delta"], "dist_inf": "normal", "dist_un": "normal", "rho": 0.0, "task_sd": 0.0,
+         "tau": p["tau"], "schedule": "random", **scenario}
+    rng = random.Random(seed)
+    n_fams = p["n_dev"] // 4
+    out = []
+    for nf, R in designs:
+        for gap in gaps:
+            rej = {"round": 0, "cluster": 0, "bootstrap": 0}
+            for _ in range(sims):
+                ps, fams = draw_gym(n_fams, p["pi"], p["d"], p["shape"], rng)
+                rounds = []
+                for round_fams in schedule(n_fams, nf, R, s["schedule"], rng):
+                    idx = [i for i, f in enumerate(fams) if f in round_fams]
+                    sub_p, sub_f = [ps[i] for i in idx], [fams[i] for i in idx]
+                    z1 = rng.gauss(0, 1)
+                    z2 = s["rho"] * z1 + math.sqrt(1 - s["rho"] ** 2) * rng.gauss(0, 1)
+                    d_inf = effect_draw(s["dist_inf"], p["mu"] + gap, s["sd_delta"], z1)
+                    d_un = effect_draw(s["dist_un"], p["mu"], s["sd_delta"], z2)
+                    x_inf = bern(shifted(sub_p, sub_f, d_inf, s["tau"], p["pi"], rng, s["task_sd"]), rng)
+                    x_un = bern(shifted(sub_p, sub_f, d_un, s["tau"], p["pi"], rng, s["task_sd"]), rng)
+                    rounds.append(list(zip(sub_f, [a - b for a, b in zip(x_inf, x_un)])))
+                rej["round"] += round_test(rounds)
+                rej["cluster"] += cluster_test(rounds)
+                if bootstrap:
+                    rej["bootstrap"] += registered_bootstrap_test(rounds)
+            row = {"round_tasks": 4 * nf, "R": R, "gap": gap, "reject_round": rej["round"] / sims,
+                   "reject_cluster": rej["cluster"] / sims, "luna_rounds": 3 * 4 * nf * R * p["calls_per_task"]}
+            if bootstrap:
+                row["reject_registered_bootstrap"] = rej["bootstrap"] / sims
+            out.append(row)
+    return out
+
+
 def keep_probability(table, design, round_tasks):
     """Linear interpolation of P(keep | delta) from a screen table."""
     pts = sorted((r["delta"], r["p_keep"]) for r in table if r["design"] == design and r["round_tasks"] == round_tasks)
@@ -249,9 +346,27 @@ def main():
     ap.add_argument("--rounds", type=int, nargs="+", default=[4, 6, 10, 15, 20])
     ap.add_argument("--gaps", type=float, nargs="+", default=[0.0, 0.025, 0.05, 0.075])
     ap.add_argument("--seed", type=int, default=20261022)
+    ap.add_argument("--scenarios", nargs="*", help="run the stress scenarios (names from SCENARIOS, or all)")
+    ap.add_argument("--designs", nargs="+", default=["6x40", "9x30", "15x20"], help="families-per-round x R")
+    ap.add_argument("--bootstrap", action="store_true", help="also run the registered bootstrap (slow)")
+    ap.add_argument("--sims", type=int, default=1500)
     ap.add_argument("--out")
     args = ap.parse_args()
     p = {key: getattr(args, key) for key in DEFAULTS}
+    if args.scenarios is not None:
+        names = list(SCENARIOS) if not args.scenarios or args.scenarios == ["all"] else args.scenarios
+        designs = [tuple(int(x) for x in d.split("x")) for d in args.designs]
+        result = {"method": "tools/gym/phaseb_sim.py scenarios", "params": p, "sims": args.sims,
+                  "scenarios": {name: {"spec": SCENARIOS[name],
+                                       "rows": scenario_rows(p, SCENARIOS[name], designs, args.gaps, args.sims,
+                                                             args.seed + i, args.bootstrap)}
+                                for i, name in enumerate(names)}}
+        text = json.dumps(result, indent=1)
+        if args.out:
+            with open(args.out, "w") as fh:
+                fh.write(text + "\n")
+        print(text)
+        return 0
     sims_screen, sims_cmp = (200, 200) if args.quick else (3000, 1500)
     round_fams = args.round_fams
     designs = ["fixed", "aa", "half"]

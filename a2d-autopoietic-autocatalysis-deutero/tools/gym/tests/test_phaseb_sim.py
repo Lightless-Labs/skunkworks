@@ -93,5 +93,38 @@ class ComparisonTest(unittest.TestCase):
         self.assertAlmostEqual(sim.t95(500), sim.Z95)
 
 
+class ScenarioTest(unittest.TestCase):
+    def test_skew_effect_matches_normal_mean_and_sd(self):
+        rng = random.Random(10)
+        xs = [sim.effect_draw("skew", 0.01, 0.035, rng.gauss(0, 1)) for _ in range(60000)]
+        self.assertAlmostEqual(sum(xs) / len(xs), 0.01, delta=0.0006)
+        self.assertAlmostEqual(sim.statistics.pstdev(xs), 0.035, delta=0.001)
+        self.assertAlmostEqual(sim.effect_draw("normal", 0.01, 0.035, 1.0), 0.045)
+
+    def test_quarters_are_disjoint_and_cover_each_cycle(self):
+        rounds = sim.schedule(60, 15, 8, "quarters", random.Random(11))
+        self.assertEqual(len(rounds), 8)
+        for cycle in (rounds[:4], rounds[4:]):
+            self.assertEqual(set().union(*cycle), set(range(60)))
+            self.assertEqual(sum(len(r) for r in cycle), 60)
+
+    def test_task_spread_keeps_the_mean_and_mixes_signs(self):
+        rng = random.Random(12)
+        ps, fams = sim.draw_gym(5000, 0.5, 0.25, 1.5, rng)
+        q = sim.shifted(ps, fams, 0.05, 0.0, 0.5, rng, task_sd=0.10)
+        self.assertAlmostEqual(sum(q) / len(q) - sum(ps) / len(ps), 0.05, delta=0.008)
+        self.assertTrue(any(b < a for a, b in zip(ps, q)))       # some tasks regress
+
+    def test_registered_bootstrap_direction(self):
+        pos = [[(f, 1) for f in range(6)] + [(f, 0) for f in range(6)] for _ in range(4)]
+        zero = [[(f, 1) for f in range(3)] + [(f, -1) for f in range(3, 6)] for _ in range(4)]
+        self.assertTrue(sim.registered_bootstrap_test(pos, reps=200))
+        self.assertFalse(sim.registered_bootstrap_test(zero, reps=200))
+
+    def test_round_test_size_under_the_conservative_scenario(self):
+        rows = sim.scenario_rows(dict(sim.DEFAULTS), sim.SCENARIOS["conservative"], [(9, 20)], [0.0], 500, 13)
+        self.assertLess(rows[0]["reject_round"], 0.09)
+
+
 if __name__ == "__main__":
     unittest.main()
