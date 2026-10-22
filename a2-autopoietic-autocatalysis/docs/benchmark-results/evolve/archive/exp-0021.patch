@@ -1,0 +1,69 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..b8c965c
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For never-visible-pass tasks, keep the first two retries independent and repair the strongest candidate on the final call only when it passed a visible check, preserving demonstrated behavior while using earlier calls for diversity.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..7f8d06a 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""Use independent attempts, then repair the strongest partial candidate on the final call."""
+ 
+ from __future__ import annotations
+ 
+@@ -12,6 +12,10 @@ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++REPAIR_HEADER = (
++    "\n\n---\nRepair the selected candidate using its verifier results below. "
++    "Keep behavior covered by passing checks while fixing the failures:\n"
++)
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,6 +39,22 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
++def passing_count(candidate: dict) -> int:
++    return sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", []))
++
++
++def render_repair_verify(result: dict) -> str:
++    lines = [
++        f"[pass] {test.get('name', test.get('index', '?'))}"
++        for test in result.get("tests", [])
++        if test.get("outcome") == "pass"
++    ]
++    failures = render_verify(result)
++    if failures != "No passing visible tests were reported.":
++        lines.append(failures)
++    return "\n".join(lines) or "No visible verifier results were reported."
++
++
+ def choose_action(state: dict, effort: str | None = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+@@ -44,10 +64,15 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
++        if state["budget"]["agent_calls_left"] == 1:
++            best = max(candidates, key=lambda candidate: (passing_count(candidate), candidate["index"]))
++            if passing_count(best) > 0:
++                prompt = state["problem_statement"] + REPAIR_HEADER + render_repair_verify(best.get("verify", {}))
++                return {"agent": {"base": best["index"], "prompt": prompt, "effort": effort}}
+         prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+         return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+-        sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
++        passing_count(candidate),
+         candidate["index"],
+     ))
+     return {"submit": {"candidate": best["index"]}}
