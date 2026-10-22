@@ -2036,3 +2036,21 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Neither arm's inputs were affected (the informed brief filters pc-uninformed rows), and neither were the endpoints (they read scores.json).
   - `confirm3.py` does not call `log_result`. The eval.py fix waits for the freeze to lift (`todos/results-log-dedup-key.md`).
 - **Phase B is closed.** No rounds 5–6. Report updated. The proposer comparison re-runs on gym v3, with headroom.
+
+### Gym v3 — phase-B sizing method pre-registered before gym v3 exists (model-free; one Sol review)  [2026-10-22 ~01:00–03:00 UTC; Sol high, copies only, 0 web searches; no Luna]
+- **Why now:** the plan required re-sizing phase B by simulation before re-running it, and nothing else can move before confirmation-3's replicates (10-24/25). The *method* is fixed now; the *numbers* are filled in from gym v3's own A/A before any proposal.
+- **Calibration** (`c2_noise_calibration.py`, dev runs only, aggregates):
+  - A/A discordance is 0.41–0.57 of the binomial value (v0 0.19, E002 0.11, E007 0.05).
+  - Family-cluster SE / iid SE ≈ 0.96.
+  - Proposal-effect SD ≈ 3.5 pp, which is a scenario, not a calibration.
+- **Simulator** (`tools/gym/phaseb_sim.py`, 15 tests). Main findings:
+  - Protocol v2's registered (round, family) bootstrap attenuates the between-proposal variance (about 1/F). It is nominal at cycle 2's own size (0.050) but reaches 0.07–0.10 with larger rounds or more spread. Cycle 2's phase-B analysis was not materially affected.
+  - A round-level t-test holds 0.041–0.062 in every stress scenario.
+  - Power is limited by the number of proposal pairs: conservative scenario, 24 tasks × 52 rounds gives 0.835 at +5 pp for about 8.4k Luna.
+  - The goal's keep-rate comparison is at most 1 vs 0 under protocol v2's cap, so it is descriptive by construction.
+- **Sol review:** *Ready with blockers*, all accepted.
+  - B1: feedback breaks i.i.d. → the primary design is frozen information, with no outcome feedback between rounds.
+  - B2: stress scenarios.
+  - B3: a complete pre-registration rule (deterministic design, ring-fenced budget, v2's validity and invalid-proposal rules carried over).
+  - The revisions implement Sol's recommendations and were not re-reviewed.
+- **Where:** plan `2026-10-21-gym-v3.md`, "Phase B on gym v3 → Sizing method"; outputs in `runs/c2-phaseb-sim/`.

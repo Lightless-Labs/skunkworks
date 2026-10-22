@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-22 01:00 UTC (session 145, cont.: **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
+**Last updated:** 2026-10-22 03:00 UTC (session 145, cont.: phase-B sizing for gym v3 pre-registered (Sol-reviewed); claims pre-written per confirmation-3 outcome; **phase B closed at R = 4: 0/4 vs 0/4 keeps, inconclusive by construction** (the incumbent failed exactly 1 task per round, against a +2 screen); results.tsv's dropped uninformed rows restored; **gym v3 tooling merged (09c80774f)**. **Gym v3** (harder dev gym, plan 2026-10-21-gym-v3, reviewed) is the next deliverable: tooling only until confirmation-3 replicate 2 has generated. Confirmation-3 is registered at fb5110e7 and queued for 10-24/25.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -30,6 +30,10 @@
      - Inconclusive by construction: the incumbent failed exactly 1 task per round, so the maximum net gain was +1 against a +2 screen. The comparison re-runs on gym v3.
      - **results.tsv defect:** `eval.log_result` de-duplicates on (id, stage, decision) without the proposer. It silently dropped all 4 uninformed rows; they were restored by `c2_phaseb_backfill.py`, checked against the informed rows. Fix eval.py after the freeze (`todos/results-log-dedup-key.md`). `confirm3.py` does not use `log_result`.
      - `docs/experiments/analysis/__pycache__/` (4 cpython-39 caches dated 10-20/21, older than round 4) is untracked and harmless. It is outside the gate paths; do not commit it.
+   - **10-22, model-free work done while waiting for confirmation-3:**
+     - The report's claims are pre-written for each confirmation-3 outcome (the decision selects one).
+     - **Phase-B sizing for gym v3 is pre-registered** (plan "Sizing method", Sol-reviewed). Primary: a frozen-information, round-level t-test. Design: chosen deterministically from gym v3's measured A/A under a conservative scenario (about 24 × 52 rounds, about 8.4k Luna at the placeholders).
+     - Measure π, d and Luna per task-arm on gym v3 and freeze them in a LOG entry before any phase-B proposal.
    - **Gym v3** (`docs/plans/2026-10-21-gym-v3.md`; tooling merged at 09c80774f after Sol + fresh-Claude reviews and a fix pass; `python3 -I -m unittest discover -s tools/gym/tests`, 59 tests, ~50 min): **no gym model call (Sol or Luna) before BOTH confirmation-3 replicates have a non-aborted `generation_complete` (first attempt or relaunch), and none while confirmation-3 is scored.** Gate (a) enforces both; gate (b) checks that the frozen paths still equal fb5110e7.
      **Runbook:** before `confirm3.py manifest`, run `python3 -I tools/gym/gym_author.py --stop` and wait for `--drained`. Gate (b) is strict, bytecode caches included (Sol review). The three old `tools/holdout/__pycache__` caches were moved to the session scratchpad. If a launch gives `launch-gate-closed` after the spend, look for a new `tools/holdout/__pycache__` first.
      **A known producer remains:** the frozen `confirm3.drained()` (line 778) starts `python -I tools/holdout/c3_author.py --drained` without `-B`, and that child imports `c3lib`.
