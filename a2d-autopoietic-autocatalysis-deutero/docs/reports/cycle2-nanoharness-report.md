@@ -4,7 +4,7 @@
 - the confirmation-3 result (replicates on 10-24 and 10-25, then manifest and score);
 - confirmation-2's sealed numbers, descriptive only, released after confirmation-3's decision;
 - look-1 numbers, released at close;
-- the final claims wording.
+- the final claims wording (pre-written per outcome on 10-22; the decision selects one).
 
 Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, per its read discipline.
 
@@ -188,7 +188,28 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 
 ## Claims and scope
 
-- **[pending: final wording after confirmation-2]**
+- **[pending: confirmation-3's `decision.json` selects one of the blocks below]**
+- **Pre-written 2026-10-22, before any confirmation-3 data exists.**
+  - The class comes from `nano/confirm3.py decide()` and is copied, not interpreted.
+  - Numbers are reported vs D and vs B, as lift with its 90% whole-family CI, on complete tuples and under the registered imputation. Calls and tokens by lane go beside them.
+  - Registered power (`c3_power.py`): P(SUPPORTED) = 0.14 / 0.33 / 0.47 / 0.96 at a true +7.1 / +8.9 / +10 / +15 pp, and P(RULED OUT | 0) = 0.91. At E002's dev confirm estimate (+7.1 pp), INCONCLUSIVE or RULED OUT is the likely outcome.
+  - **SUPPORTED:** the claim is the registered wording, verbatim (`registration.json` `claim_wording`), with its qualifiers kept in the same paragraph:
+    - the equal invocation cap (5 calls per task), not equal cost;
+    - X used about 4.6× D's tokens on dev;
+    - Sol is a stronger model from the same vendor, not a different family;
+    - the tasks were Sol-authored, with a Sol judge lane (author-judge alignment), so the claim covers this authoring distribution only.
+    - The harness is frozen as the cycle's result.
+  - **RULED OUT:** "On a blind 144-task set, frozen E002 does not deliver a +10 pp all-pass lift over Luna's plain repair loop at an equal invocation cap."
+    - It rules out the bar, not an effect. The point estimate and CI are reported, and a positive lift below +10 pp stays possible: dev estimated +7.1 pp (SE 3.5) at the fresh confirm.
+    - E002 stays the frozen best harness of cycle 2's *confirmed* line, with no claim.
+  - **INCONCLUSIVE (any variant, including the worst-case and best-case imputation ones):** "No claim: confirmation-3 neither supports nor rules out a +10 pp lift."
+    - The numbers are reported descriptively, with the registered power beside them, so that a low-power null is not read as evidence of no effect.
+    - The set is spent.
+  - **IntegrityReview or Invalid:** "No claim; the set is spent." The report gives only the triggering counts (the fixed vocabulary). The cause is examined only on copies, and only after the decision.
+  - **In every case:**
+    - **Self-improvement:** there is no claim that A²D's own proposer beats an uninformed one. Phase B was inconclusive by construction (0/4 vs 0/4 keeps; one task of headroom per round).
+    - **E007** (+17.1 pp vs E002 on the dev confirm replicate) is a dev result only: its one dev-holdout look was invalid, and it was never confirmed.
+    - **Confirmation-2's** sealed numbers are reported descriptively under their own heading, never as a claim.
 - Wording rules already fixed:
   - "at an equal invocation cap", never "equal cost";
   - Sol is the same vendor as Luna, so not a cross-family claim;
