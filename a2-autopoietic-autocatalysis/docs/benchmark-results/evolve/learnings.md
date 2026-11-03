@@ -1,6 +1,6 @@
 # What the loop has learned: campaign 1 analysis (plan §1(b))
 
-**Status:** all 22 experiments are done (2026-11-03). The pre-registered exp-0012r re-run is in progress. Its result is added below, and this becomes final when it lands.
+**Status:** final (2026-11-03). All 22 experiments and the pre-registered exp-0012r re-run are done. No variant was kept, so the sealed set stays untouched and this document is the plan §1(b) analysis.
 **Reviewed:** 2026-11-03, by Codex `gpt-6-luna` (xhigh), with every per-task claim checked against the raw rows and the stage-B power simulated. Its corrections are applied. The sources are [`log.jsonl`](log.jsonl), [`archive/`](archive/) and [`noise-floor.md`](noise-floor.md).
 
 ## Campaign so far
@@ -19,6 +19,7 @@
 | 0010 | reproduce-only first call, then fix | never visible-pass | +0.41 | — | — | 16 M | discard (A) |
 | 0011 | low-effort fresh 2nd attempt, then configured effort | never visible-pass | −0.59 | — | — | 18 M | discard (A) |
 | 0012 | continue only when the visible pass count strictly improves, else restart | never visible-pass | passed | — | — | 16 M | invalid (disk full in B) |
+| 0012r | pre-registered re-run of 0012 from its archived patch | never visible-pass | +0.46 | — | — | 17 M | discard (A) |
 | 0013 | contrast the two latest verifier runs (persistent, new, recovered) | never visible-pass | +1.18 | — | — | 17 M | discard (A) |
 | 0014 | one repair call after an execution-error first run | never visible-pass | +0.50 | — | — | 16 M | discard (A) |
 | 0015 | medium effort first, escalate to configured effort | never visible-pass | +0.50 | — | — | 16 M | discard (A) |
@@ -47,7 +48,7 @@
    The 22 experiments totalled 724 M tokens and about 116 h of loop time (2026-10-16 to 10-22). Five reached stage B.
 8. **Reproduce-first stalls because the agent cannot run anything.** exp-0010's first call asked for a reproduction and no fix. Agents reported that they could not run one: "`ansible-test` requires Python 3.11–3.13, but only Python 3.9.6 is available; `pytest` and `pexpect` are also missing". In 34 of 36 first calls they made no edits at all. Under the fixed classifier the re-run scored those stalls as failures and still reached +0.41, because the two remaining calls recovered most tasks. This is the most direct evidence yet for the in-call verifier as the next genome (below).
 9. **The loop's own evaluator had a scoring hole, which exp-0010 exposed.** a2ctl reports `tokens=0` for timeouts and no-edit calls. The evaluator read every zero-token call as a provider error, so these agent failures got a free retry, and were dropped from scoring when the retry also failed. A genome that timed out or stalled on hard tasks would have had those tasks excluded. exp-0010 hit the hole rather than exploiting it: 17 of its 19 screen rows were flagged and the infra guard stalled the loop. The classifier now reads the call logs (protocol-v2 `[addendum_2026_10_20]`, noise-floor addendum 2026-10-20). exp-0001 to exp-0009 were decided under the old classifier. Both sides got the free retries, and those decisions stand.
-10. **exp-0012 passed stage A and was lost to a full disk in stage B** ([blocker](../../blockers/2026-10-20-disk-full-exp-0012.md)). It is the fourth repair-family variant, and the first to pass the screen since exp-0008. It is due a re-run from its archived patch. exp-0016 has since tested the same policy logic (only the repair prompt's wording differs) and scored +0.50 at stage A, below the bar. That is an independent replication, and it suggests exp-0012's stage A pass was partly screen noise. The pre-registered re-run still goes ahead as written.
+10. **exp-0012 passed stage A and was lost to a full disk in stage B** ([blocker](../../blockers/2026-10-20-disk-full-exp-0012.md)). It is the fourth repair-family variant, and the first to pass the screen since exp-0008. It is due a re-run from its archived patch. exp-0016 has since tested the same policy logic (only the repair prompt's wording differs) and scored +0.50 at stage A, below the bar. That is an independent replication, and it suggests exp-0012's stage A pass was partly screen noise. The pre-registered re-run, exp-0012r, ran on 2026-11-03 from fresh rows and scored +0.46 at stage A, below the bar of +1.46: discard. Two fresh runs of the same rule (0016 and 0012r) both fell short, so the original pass was most likely screen noise.
 
 ## Why nothing was kept: sparse per-task effects against a rule that averages
 

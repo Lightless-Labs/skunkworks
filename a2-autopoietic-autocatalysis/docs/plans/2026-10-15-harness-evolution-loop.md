@@ -2,7 +2,8 @@
 
 **Created:** 2026-10-15
 **Reviewed:** 2026-10-15, by Codex `gpt-6-luna` (xhigh) and an independent Claude review, plus advisor review. Revision notes are in §11.
-**Status:** Active
+**Status:** Completed
+**Completed:** 2026-11-03, via the §1(b) branch. 22 unattended experiments plus one pre-registered re-run; none kept, so the sealed set is untouched. The analysis and next genome are in [`learnings.md`](../benchmark-results/evolve/learnings.md).
 **Deadline:** a first promoted variant, or a written analysis, by 2026-12-15
 **Inputs:**
 - `docs/benchmark-results/external-value/e1/decision.md`, including its addenda;
