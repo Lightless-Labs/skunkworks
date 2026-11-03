@@ -1,0 +1,66 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..d840a32
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++For tasks that never pass all visible checks, continue from the latest candidate only when its visible pass count strictly exceeds every earlier attempt; this preserves demonstrated progress while fresh retries escape stagnating or regressing patches.
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..48bebe2 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -7,11 +7,17 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++REPAIR_HEADER = (
++    "\n\n---\nA previous attempt improved the visible verifier score but still failed. "
++    "Continue from the supplied candidate code, preserve behavior that already passes, "
++    "and address the remaining verifier failures. Verifier output from that attempt:\n"
++)
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,7 +41,14 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def passing_count(candidate: dict) -> int:
++    return sum(
++        test.get("outcome") == "pass"
++        for test in candidate.get("verify", {}).get("tests", [])
++    )
++
++
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+@@ -44,12 +57,14 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+-        return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+-    best = max(candidates, key=lambda candidate: (
+-        sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
+-        candidate["index"],
+-    ))
++        last_score = passing_count(last)
++        prior_best = max((passing_count(candidate) for candidate in candidates[:-1]), default=0)
++        improving = last_score > prior_best
++        base = last["index"] if improving else "fresh"
++        header = REPAIR_HEADER if improving else FEEDBACK_HEADER
++        prompt = state["problem_statement"] + header + render_verify(last.get("verify", {}))
++        return {"agent": {"base": base, "prompt": prompt, "effort": effort}}
++    best = max(candidates, key=lambda candidate: (passing_count(candidate), candidate["index"]))
+     return {"submit": {"candidate": best["index"]}}
+ 
+ 
